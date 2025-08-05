@@ -66,8 +66,7 @@ class DataBuffer(BaseProcessingObj):
             print(f"DataBuffer: reset buffers at time {self.current_time}")
 
     def finalize(self):
-        """Emit any remaining data in buffers"""
-        self.trigger_code()
+        """Emit any remaining data in buffers"""        
         if self.step_counter > 0:
             self.emit_buffered_data()
             self.reset_buffers()
