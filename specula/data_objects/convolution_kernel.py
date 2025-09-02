@@ -125,6 +125,9 @@ class ConvolutionKernel(BaseDataObj):
                  positive_shift_tt: bool=True,
                  target_device_idx: int=None,
                  precision: int=None):
+        """
+        Initialize a :class:`~specula.data_objects.convolution_kernel.ConvolutionKernel` object.
+        """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         self.dimx = dimx
@@ -309,6 +312,7 @@ class ConvolutionKernel(BaseDataObj):
         # Create an HDUList and write to file
         hdul = fits.HDUList([primary_hdu, kernel_hdu])
         hdul.writeto(filename, overwrite=True)   
+        hdul.close()  # Force close for Windows
 
     def prepare_for_sh(self, sodium_altitude=None, sodium_intensity=None, current_time=None):
         # Update the kernel parameters if provided
@@ -355,7 +359,7 @@ class ConvolutionKernel(BaseDataObj):
             raise ValueError(f'Unknown version {version}. Only version=1.1 is supported')
 
         if kernel_obj is None:
-            kernel_obj = ConvolutionKernel.from_header(hdr)
+            kernel_obj = ConvolutionKernel.from_header(hdr, target_device_idx=target_device_idx)
         else:
             # If a kernel object is provided, use it
             # check if the dimensions match
@@ -398,10 +402,10 @@ class ConvolutionKernel(BaseDataObj):
     def get_value(self):
         return self.real_kernels
     
-    def set_value(self, v, force_copy=False):
+    def set_value(self, v):
         '''Set new kernels.
         Arrays are not reallocated.'''
         assert v.shape == self.real_kernels.shape, \
             f"Error: input array shape {v.shape} does not match real_kernels shape {self.real_kernels.shape}"
 
-        self.real_kernels[:] = self.to_xp(v, force_copy=force_copy)
+        self.real_kernels[:] = self.to_xp(v)

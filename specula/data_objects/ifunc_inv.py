@@ -10,9 +10,12 @@ class IFuncInv(BaseDataObj):
                  target_device_idx=None,
                  precision=None
                 ):
+        """
+        Initialize an :class:`~specula.data_objects.ifunc_inv.IFuncInv` object.
+        """
         super().__init__(precision=precision, target_device_idx=target_device_idx)
         self._doZeroPad = False
-        
+
         self.ifunc_inv = self.to_xp(ifunc_inv)
         self.mask_inf_func = self.to_xp(mask)
         self.idx_inf_func = self.xp.where(self.mask_inf_func)
@@ -33,6 +36,7 @@ class IFuncInv(BaseDataObj):
         hdul.append(fits.ImageHDU(data=cpuArray(self.ifunc_inv.T), name='INFLUENCE_FUNCTION_INV'))
         hdul.append(fits.ImageHDU(data=cpuArray(self.mask_inf_func), name='MASK_INF_FUNC'))
         hdul.writeto(filename, overwrite=overwrite)
+        hdul.close()  # Force close for Windows
 
     @staticmethod
     def restore(filename, target_device_idx=None, exten=1):
@@ -44,13 +48,13 @@ class IFuncInv(BaseDataObj):
     def get_value(self):
         return self.ifunc_inv
     
-    def set_value(self, v, force_copy=False):
+    def set_value(self, v):
         '''Set a new influence function.
         Arrays are not reallocated.'''
         assert v.shape == self.ifunc_inv.shape, \
             f"Error: input array shape {v.shape} does not match inverse influence function shape {self.ifunc_inv.shape}"
 
-        self.ifunc_inv[:] = self.to_xp(v, force_copy=force_copy)
+        self.ifunc_inv[:] = self.to_xp(v)
 
     @staticmethod
     def from_header(hdr):
