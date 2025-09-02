@@ -1,11 +1,11 @@
-import sys
+import re
 import typing
 import inspect
 import itertools
 from copy import deepcopy
 from pathlib import Path
 from collections import Counter, namedtuple
-from specula import process_comm, process_rank, MPI_DBG
+from specula import process_rank, MPI_DBG
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_data_obj import BaseDataObj
 
@@ -56,7 +56,7 @@ class Simul():
         self.diagram = diagram
         self.diagram_title = diagram_title
         self.diagram_filename = diagram_filename
-    
+
     def split_output(self, output_name, get_ref=False, use_inputs=False):
         '''
         Split the output name into object name and output key.
@@ -100,7 +100,7 @@ class Simul():
             ref = None
 
         return Output(obj_name, output_key, delay, ref, input_name)
-            
+
     def output_owner(self, output_name):
         output = self.split_output(output_name)
         return output.obj_name
@@ -126,7 +126,7 @@ class Simul():
         '''
         output = self.split_output(input_name, get_ref=True, use_inputs=True)
         return output.ref
-        
+
     def output_delay(self, output_name):
         return self.split_output(output_name).delay
 
@@ -149,7 +149,7 @@ class Simul():
             if maxdelay == 0:
                 return False
         return True
-    
+
     def has_delayed_output(self, obj_name, params):
         '''
         Find out if an object has an output
@@ -165,7 +165,7 @@ class Simul():
                 elif isinstance(output_name, list):
                     outputs_list = output_name
                 else:
-                    raise ValueError('Malformed output: must be either str or list')
+                    raise ValueError('Malformed output: must be either str or list: '+str(output_name))
 
                 for x in outputs_list:
                     owner = self.output_owner(x)
@@ -264,13 +264,17 @@ class Simul():
 
             if pars['class'] == 'DataBuffer':
                 self.objs[key].setOutputs()
-   
+
     def build_objects(self, params):
 
         self.setSimulParams(params)
 
         cm = CalibManager(self.mainParams['root_dir'])
         skip_pars = 'class inputs outputs'.split()
+        if 'add_modules' in self.mainParams:
+            additional_modules = self.mainParams['add_modules']
+        else:
+            additional_modules = []
 
         if MPI_DBG: print(process_rank, 'building objects')
 
@@ -282,20 +286,20 @@ class Simul():
             except KeyError:
                 raise KeyError(f'Object {key} does not define the "class" parameter')
 
-            klass = import_class(classname)
+            klass = import_class(classname, additional_modules)
             args = inspect.getfullargspec(getattr(klass, '__init__')).args
             hints = get_type_hints(klass)
 
             target_device_idx = pars.get('target_device_idx', None)
-                        
+ 
             par_target_rank = pars.get('target_rank', None)
             if par_target_rank is None:
                 target_rank = 0
                 self.all_objs_ranks[key] = 0
             else:
-                target_rank = par_target_rank     
+                target_rank = par_target_rank
                 self.all_objs_ranks[key] = par_target_rank
-                del pars['target_rank']        
+                del pars['target_rank']
 
             # create the simulations objects for this process. Data Objects are created
             # on all ranks (processes) by default, unless a specific rank has been specified.
@@ -321,15 +325,15 @@ class Simul():
                 self.objs[key] = klass.restore(filename, target_device_idx=target_device_idx)
                 self.objs[key].printMemUsage()
                 self.objs[key].name = key
+                self.objs[key].tag = pars['tag']
                 continue
 
             pars2 = {}
             for name, value in pars.items():
 
-                if key != 'data_source' and name in skip_pars:
-                    continue
-
-                if key == 'data_source' and name in ['class']:
+                # Skip special parameters, unless explictly present in __init__
+                # e.g. "outputs" in DataSource
+                if name in skip_pars and name not in args:
                     continue
 
                 # dict_ref field contains a dictionary of names and associated data objects (defined in the same yml file)
@@ -369,6 +373,9 @@ class Simul():
                         print('Restoring:', filename)
                         parobj = partype.restore(filename, target_device_idx=target_device_idx)
                         parobj.printMemUsage()
+
+                        # Set data_tag 
+                        parobj.tag = value
 
                         pars2[parname] = parobj
                     else:
@@ -511,6 +518,32 @@ class Simul():
     def isReplay(self, params):
         return 'data_source' in params
 
+    def data_store_to_data_source(self, datastore_pars, set_store_dir=None):
+        '''
+        Convert data store parameters to data source.
+
+        Returns a tuple (pars, refs), where:
+        - pars is a parameter dictionary for a DataSource object
+        - objnames is a list of objects referenced by original DataStore inpus
+        '''
+        data_source_pars = {}
+        data_source_pars['class'] = 'DataSource'
+        data_source_pars['outputs'] = []
+        if 'data_format' in datastore_pars:
+            data_source_pars['data_format'] = datastore_pars['data_format']
+        if set_store_dir:
+            data_source_pars['store_dir'] = set_store_dir
+        else:
+            data_source_pars['store_dir'] = datastore_pars['store_dir']
+
+        objnames = []
+        for _, fullname in self.iterate_inputs(datastore_pars):
+            output = self.split_output(fullname)
+            data_source_pars['outputs'].append(output.input_name)
+            objnames.append(output.obj_name)
+
+        return data_source_pars, objnames
+
     def build_replay(self, params):
         replay_params = deepcopy(params)
         obj_to_remove = []
@@ -522,14 +555,8 @@ class Simul():
                 raise KeyError(f'Object {key} does not define the "class" parameter')
 
             if classname=='DataStore':
-                replay_params['data_source'] = replay_params[key]
-                replay_params['data_source']['class'] = 'DataSource'
-                del replay_params[key]
-                for output_name_full in pars['inputs']['input_list']:
-                    input_name, output_name = output_name_full.split('-')
-                    output_obj, output_name_small = output_name.split('.')                     
-                    data_source_outputs[output_name] = 'data_source.' + input_name # 'source.' + output_obj + '-' + output_name_small                    
-                    obj_to_remove.append(output_obj)
+                data_source_pars, obj_to_remove = self.data_store_to_data_source(pars)
+                replay_params['data_source'] = data_source_pars
 
         for obj_name in set(obj_to_remove):
             del replay_params[obj_name]
@@ -544,17 +571,81 @@ class Simul():
                         if output_name_full in data_source_outputs.keys():
                             replay_params[key]['inputs'][input_name] = data_source_outputs[output_name_full]
 
-            if key=='data_source':
-                replay_params[key]['outputs'] = []
-                for v in replay_params[key]['inputs']['input_list']:
-                    kk, vv = v.split('-')
-                    replay_params[key]['outputs'].append(kk)
-                del replay_params[key]['inputs']
         return replay_params
+
+    def build_targeted_replay(self, params, *target_object_names, set_store_dir=None):
+        '''
+        Build a replay file making sure that the target objects
+        still exist, and therefore all their inputs are either loaded
+        from disk or computed, recursively.
+        
+        SimulParams parameters are replicated unchanged.
+        DataStore parameters are converted to DataSource
+        '''
+        # Create new parameter dict and copy SimulParams without changes
+        replay_params = {}
+        datastore_outputs = {}
+
+        for key, pars in params.items():
+            if pars['class'] == 'SimulParams':
+                main_pars = pars
+                break
+        else:
+            raise ValueError('Parameter file does not contain a SimulParams class')
+
+        replay_params[key] = main_pars.copy()
+
+        # Copy DataStore params and convert it to DataSource
+        for key, pars in params.items():
+            if pars['class'] == 'DataStore':
+                data_source_pars, _ = self.data_store_to_data_source(pars, set_store_dir=set_store_dir)
+                replay_params['data_source'] = data_source_pars
+
+                # Remember all datastore outputs
+                for _, fullname in self.iterate_inputs(pars):
+                    output = self.split_output(fullname)
+                    datastore_outputs[output.output_key] = output.input_name
+    
+        def add_key(key):
+            if key in replay_params:
+                return
+            replay_params[key] = params[key].copy()  
+            for k, _input in self.iterate_inputs(params[key]):
+                desc = self.split_output(_input)
+                if desc.output_key in datastore_outputs:
+                    replay_params[key]['inputs'][k] = 'data_source.' + datastore_outputs[desc.output_key]
+                    continue
+                else:
+                    add_key(desc.obj_name)
+
+        for key in target_object_names:
+            add_key(key)
+        
+        return replay_params
+
+    def iterate_inputs(self, pars):
+        '''
+        Iterate over all inputs of a parameter dictionary.
+        Yields a series of (key, value) tuples suitable
+        for dictionary-like iteration.
+        '''
+        if 'inputs' not in pars:
+            return
+        inputs = pars['inputs']
+        if 'input_list' in inputs:
+            for x in inputs['input_list']:
+                yield ('input_list', x)
+        else:
+            for k, v in inputs.items():
+                if type(v) is list:
+                    for xx in v:
+                        yield (k, xx)
+                else:
+                    yield (k, v)
 
     def remove_inputs(self, params, obj_to_remove):
         '''
-        Modify params removing all references to the specificed object name
+        Modify params removing all references to the specified object name
         '''
         for objname, obj in params.items():
             for key in ['inputs']:
@@ -583,27 +674,19 @@ class Simul():
         Add/update/remove params with additional_params
         '''
         for name, values in additional_params.items():
-            doRemoveIdx = False            
-            if '_' in name:
-                ri = name.split('_')
-                # check for a remove (with simulation index) list, something of the form:  remove_3: ['atmo', 'rec', 'dm2']                
-                if len(ri) == 2:
-                    if ri[0] == 'remove':
-                        if int(ri[1]) == self.simul_idx:
-                            doRemoveIdx = True
-                        else:
-                            continue
-                # check for a override (with simulation index) parameters structure, something of the form:  dm_override_2: { ... }                
-                if ri[-1].isnumeric() and ri[-2] == 'override':
-                    if int(ri[-1]) == self.simul_idx:
-                        separator = "_"
-                        objname = separator.join(ri[:-2])                        
-                        if objname not in params:
-                            raise ValueError(f'Parameter file has no object named {objname}')
-                        params[objname].update(values)
+            # Check if "name" ends with _ followed by a number, in that case 
+            # the number is a simulation index and we skip these parameters
+            # if our simul_idx is not equal to the number.
+            # e.g. dm_override_2: { ... } or remove_3: ['atmo', 'rec', 'dm2']
+            match = re.search(r'^(.*)_(\d+)$', name)
+            if match:
+                idx = int(match.group(2))
+                if idx != self.simul_idx:
                     continue
+                else:
+                    name = match.group(1)
 
-            if name == 'remove' or doRemoveIdx:
+            if name == 'remove':
                 for objname in values:
                     if objname not in params:
                         raise ValueError(f'Parameter file has no object named {objname}')
@@ -741,8 +824,8 @@ class Simul():
     def get_info(self):
         '''Quick info string intended for web interfaces'''
         name= f'{self.param_files[0]}'
-        curtime= f'{self.loop._t / self.loop._time_resolution:.3f}'
-        stoptime= f'{self.loop._run_time / self.loop._time_resolution:.3f}'
+        curtime= f'{self.loop.t / self.loop._time_resolution:.3f}'
+        stoptime= f'{self.loop.run_time / self.loop._time_resolution:.3f}'
 
         info = f'{curtime}/{stoptime}s'
         return name, info

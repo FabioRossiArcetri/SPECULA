@@ -13,6 +13,9 @@ class Lenslet(BaseDataObj):
                  n_lenses: int=1,
                  target_device_idx:int =None,
                  precision:int =None):
+        """
+        Initialize a :class:`~specula.data_objects.lenslet.Lenslet` object.
+        """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
         self.n_lenses = n_lenses
         self._lenses = []
@@ -20,9 +23,9 @@ class Lenslet(BaseDataObj):
         if n_lenses > 1:
             x, y = make_xy(n_lenses, 1.0, xp=self.xp)
         else:
-            x = [0.0]
-            y = [0.0]
-        
+            x = self.xp.array([[0.0]])
+            y = self.xp.array([[0.0]])
+
         subap_size = 2.0 / n_lenses
 
         for i in range(n_lenses):
@@ -35,7 +38,7 @@ class Lenslet(BaseDataObj):
     def get_value(self):
         raise NotImplementedError
 
-    def set_value(self, v, force_copy=True):
+    def set_value(self, v):
         raise NotImplementedError
 
     @property
@@ -71,6 +74,3 @@ class Lenslet(BaseDataObj):
     def restore(filename, target_device_idx=None):
         hdr = fits.getheader(filename)
         return Lenslet.from_header(hdr, target_device_idx=target_device_idx)
-
-
-
