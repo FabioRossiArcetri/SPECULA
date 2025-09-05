@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 
 mplcolors = plt.get_cmap("tab10").colors
 
-def int_to_rgb(val: int, maxval=16) -> tuple[int, int, int]:    
+def int_to_rgb(val: int, maxval=16):
     val += 1
     if val>=0 and val<len(mplcolors):
         return mplcolors[val]
