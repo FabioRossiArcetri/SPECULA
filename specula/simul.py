@@ -1,5 +1,4 @@
 import re
-from tkinter.font import BOLD
 import typing
 import inspect
 import itertools
@@ -53,7 +52,8 @@ class Simul():
                  overrides=None,
                  diagram=False,
                  diagram_title=None,
-                 diagram_filename=None
+                 diagram_filename=None,
+                 diagram_colors_on=False
                  ):
         if len(param_files) < 1:
             raise ValueError('At least one Yaml parameter file must be present')
@@ -76,6 +76,8 @@ class Simul():
         self.diagram = diagram
         self.diagram_title = diagram_title
         self.diagram_filename = diagram_filename
+        self.diagram_colors_on = diagram_colors_on
+        print('self.diagram_colors_on', self.diagram_colors_on)
 
     def split_output(self, output_name, get_ref=False, use_inputs=False):
         '''
@@ -793,48 +795,59 @@ class Simul():
                     fs = FontStyle.NORMAL
                     fb = FontWeight.NORMAL
 
+                if self.diagram_colors_on:
+                    cstroke = Color(*int_to_rgb(target_rank-1, self.max_rank+1))
+                    refcstroke = Color(0,0.5,0)
+                    cfill = Color(*int_to_rgb(target_device_idx, self.max_target_device_idx+1))
+                    swidth = 12
+                else:
+                    cstroke = Color(0,0,0)
+                    refcstroke = Color(0,0,0)
+                    cfill = Color(1,1,1)
+                    swidth = 2
+
                 d.add_block(b,
                             scale=2,
-                            stroke=Color(*int_to_rgb(target_rank-1, self.max_rank+1)),
-                            fill=Color(*int_to_rgb(target_device_idx, self.max_target_device_idx+1)),
-                            stroke_width=12,
+                            stroke=cstroke,
+                            fill=cfill,
+                            stroke_width=swidth,
                             min_height=96,
                             min_width=192,
                             font_size=14,
                             font_weight=fb, 
                             font_style=fs)
         
-        legend_row1 = []
-        for td in range(self.max_target_device_idx+1):
-            legend_row1.append("Device Index=" + str(td))
-        d.add_row(legend_row1)
-        for td in range(self.max_target_device_idx+1):
-            d.add_block("Device Index=" + str(td),
-                        fill=Color(*int_to_rgb(td, self.max_target_device_idx+1)),
-                        stroke=Color(1.0,1.0,1.0),
-                        stroke_width=12,
-                        min_height=96,
-                        min_width=192,
-                        font_size=14)
+        if self.diagram_colors_on:
+            legend_row1 = []
+            for td in range(self.max_target_device_idx+1):
+                legend_row1.append("Device Index=" + str(td))
+            d.add_row(legend_row1)
+            for td in range(self.max_target_device_idx+1):
+                d.add_block("Device Index=" + str(td),
+                            fill=Color(*int_to_rgb(td, self.max_target_device_idx+1)),
+                            stroke=Color(1.0,1.0,1.0),
+                            stroke_width=12,
+                            min_height=96,
+                            min_width=192,
+                            font_size=14)
 
-        legend_row2 = []
-        ri=0
-        base_rank=0
-        for rank in range(self.max_rank+1):
-            legend_row2.append("Process rank=" + str(rank))            
-            if int(rank+1) % row_len == 0 or rank==self.max_rank:
-                d.add_row(legend_row2)
-                for ii in range(len(legend_row2)):
-                    d.add_block("Process rank=" + str(ii+base_rank),
-                                stroke=Color(*int_to_rgb(ii+base_rank-1, self.max_rank+1)), 
-                                stroke_width=12,
-                                min_height=96,
-                                min_width=192,
-                                font_size=14)
-                legend_row2 = []
-                ri += 1
-                base_rank += row_len
-        
+            legend_row2 = []
+            ri=0
+            base_rank=0
+            for rank in range(self.max_rank+1):
+                legend_row2.append("Process rank=" + str(rank))            
+                if int(rank+1) % row_len == 0 or rank==self.max_rank:
+                    d.add_row(legend_row2)
+                    for ii in range(len(legend_row2)):
+                        d.add_block("Process rank=" + str(ii+base_rank),
+                                    stroke=Color(*int_to_rgb(ii+base_rank-1, self.max_rank+1)), 
+                                    stroke_width=12,
+                                    min_height=96,
+                                    min_width=192,
+                                    font_size=14)
+                    legend_row2 = []
+                    ri += 1
+                    base_rank += row_len            
 
         for c in self.connections:
             if c['start_label'] is None:
@@ -847,7 +860,7 @@ class Simul():
 
         for c in self.references:
             if c['end'] != 'main':
-                aconn = d.add_connection(c['start'], c['end'],  stroke=Color(0.0, 0.5, 0.0), buffer_width=1, stroke_width=2.0, #  group=c['end'],
+                aconn = d.add_connection(c['start'], c['end'],  stroke=refcstroke, buffer_width=1, stroke_width=2.0, #  group=c['end'],
                                 exits=[Side.LEFT], entrances=[Side.RIGHT, Side.BOTTOM, Side.TOP], stroke_dasharray=[3,3])
 
 
