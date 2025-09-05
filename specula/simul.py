@@ -531,6 +531,14 @@ class Simul():
 
                     output = self.split_output(single_output_name, get_ref=True)
 
+                    a_connection = {}
+                    a_connection['start'] = output.obj_name
+                    a_connection['end'] = dest_object
+                    a_connection['start_label'] = output.output_key
+#                    a_connection['middle_label'] = self.objs[dest_object].inputs[use_input_name]
+                    a_connection['end_label'] = input_name
+                    self.connections.append(a_connection)
+
                     # Remote-to-remote: nothing to do
                     if not local_dest_object and output.ref is None:
                         continue
@@ -541,13 +549,6 @@ class Simul():
                         print(f'Exception while connecting {single_output_name} {dest_object}.{input_name}')
                         raise
 
-                    a_connection = {}
-                    a_connection['start'] = output.obj_name
-                    a_connection['end'] = dest_object
-                    a_connection['start_label'] = output.output_key
-#                    a_connection['middle_label'] = self.objs[dest_object].inputs[use_input_name]
-                    a_connection['end_label'] = input_name
-                    self.connections.append(a_connection)
 
     def isReplay(self, params):
         return 'data_source' in params
