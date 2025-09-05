@@ -4,11 +4,12 @@ import torch.nn as nn
 from specula.base_processing_obj import BaseProcessingObj
 from specula.connections import InputValue
 from specula.base_value import BaseValue
+import numpy as np
 
 class Conv2dNetTester(BaseProcessingObj):
     def __init__(self,
                  network_filename,
-                 nmodes = 5,
+                 nmodes = 10,
                  target_device_idx: int = None,
                  precision: int = None):
 
@@ -34,10 +35,14 @@ class Conv2dNetTester(BaseProcessingObj):
         self.outputs["loss"] = None
         self.outputs["prediction"] = None
 
+
         self.meanp = 0
-        self.stdp = 884.0701904296875
+        self.stdp = 956.945068359375
         self.meanmodes = 0 # -10.492571141174995
-        self.stdmodes = 382.37760440241357
+        self.stdmodes = 421.98581314113693
+        self.avgErr = 0
+        self.count = 0
+
 
     def rescale(self, v):        
         mean = self.xp.mean(v)
@@ -65,10 +70,10 @@ class Conv2dNetTester(BaseProcessingObj):
 #        ph, self.meanp, self.stdp = self.rescale(ph)
 #        modes, self.meanmodes, self.stdmodes = self.rescale(modes)
 
-        ph -= self.meanp
-        ph /= self.stdp
-        modes -= self.meanmodes
-        modes /= self.stdmodes
+        #ph -= self.meanp
+        #ph /= self.stdp
+        #modes -= self.meanmodes
+        #modes /= self.stdmodes
 
         inputs = torch.tensor(ph, dtype=torch.float32, device=self.device)
         targets = torch.tensor(modes, dtype=torch.float32, device=self.device)
@@ -79,8 +84,20 @@ class Conv2dNetTester(BaseProcessingObj):
 
         self.outputs["loss"] = loss
         self.outputs["prediction"] = preds
-        if self.verbose:
+        errorInNm = (preds-targets) #*self.stdp
+        if self.verbose:            
             print(f"[{self.name}] Eval loss: {loss:.6f}, preds: {preds}, targets: {targets}")
+            print(f"Error: {errorInNm}")
+
+        self.avgErr += np.abs(errorInNm.numpy()) # **2
+        self.count += 1
+            
+    def finalize(self):
+        #print('RMS', np.sqrt(self.avgErr/self.count))
+        print('Mean error', self.avgErr/self.count)
+        
+        return super().finalize()
+    
 
     def post_trigger(self):
         super().post_trigger()
