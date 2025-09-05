@@ -896,7 +896,7 @@ class Simul():
         self.create_input_list_inputs(params)
         self.connect_objects(params)
 
-        if self.diagram or self.diagram_filename or self.diagram_title:
+        if process_rank==0 and self.diagram or self.diagram_filename or self.diagram_title:
             if self.diagram_filename is None:
                 self.diagram_filename = str(Path(self.param_files[0]).with_suffix('.png'))
             if self.diagram_title is None:
