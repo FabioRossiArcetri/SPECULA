@@ -2,12 +2,11 @@
 
 main:
   class:             'SimulParams'
-  #root_dir:          '/home/alcheffot/ANDES/IDL/'
   root_dir:          '/raid2/gcarla/git/ANDES/andes/PASSATA_scripts/data/'
   pixel_pupil:       400
   pixel_pitch:       0.0975                 # 39./400. [m] Pitch of the pupil phase array
   total_time:        5.000                  # [s] Total simulation running time
-  time_step:         0.002                  # [s] Simulation time step
+  time_step:         0.001                  # [s] Simulation time step
   zenithAngleInDeg:  30.0                   # [deg] Zenith angle
   display_server:    true
 
@@ -63,40 +62,21 @@ static_aber_M1:
   tag: 'M1stat_ps400_layer'
 
 
-disturbance_M1:
+disturbance_ttDefAstigComaM1:
   class:                'TimeHistoryGenerator'
-  time_hist_object:     'M1wind2mps_backstructure+hardpact_Optical2022_specula'
+  time_hist_object:     'ttDefAstigComaM1_1kHz_seed2_n5000steps_specula'
   outputs: ['output']
 
 
-dm_M1:
+dm_ttDefAstigComaM1:
   class:             'DM'
   simul_params_ref:  'main'
-  ifunc_object:      'M1_400pix_ifunc'
+  ifunc_object:      'ttDefAstigComaM1'
   sign:              1
-  nmodes:            2394                    # number of modes
+  nmodes:            2401                    # number of modes
   height:            0                       # DM height [m]
   inputs:
-    in_command: 'disturbance_M1.output'
-  outputs: ['out_layer']
-
-
-windshake_M2:
-  class:                'TimeHistoryGenerator'
-  time_hist_object:     'M2windShake500HzT30.0s_2022_startFrom0_s0_specula'
-  outputs: ['output']
-
-
-dm_M2:
-  class:             'DM'
-  simul_params_ref:  'main'
-  type_str:          'zernike'              # modes type
-  sign:              1
-  nmodes:            2                      # number of modes
-  obsratio:          0.2                    # obstruction dimension ratio w.r.t. diameter  
-  height:            0                      # DM height [m]
-  inputs:
-    in_command: 'windshake_M2.output'
+    in_command: 'disturbance_ttDefAstigComaM1.output'
   outputs: ['out_layer']
 
 
@@ -106,7 +86,7 @@ prop:
   source_dict_ref:      ['wfs_source']
   inputs:
     atmo_layer_list: ['atmo.layer_list']
-    common_layer_list: ['pupilstop', 'static_aber_M1', 'dm_M1.out_layer', 'dm_M2.out_layer', 'dm.out_layer:-1']
+    common_layer_list: ['pupilstop', 'static_aber_M1', 'dm_ttDefAstigComaM1.out_layer', 'dm.out_layer:-1']
   outputs: ['out_wfs_source_ef']
 
 
@@ -171,52 +151,33 @@ modalrec:
 gain_ramp:
   class:             'ScheduleGenerator'
   scheduled_values: [
-# values optimized for case w/o M1 and M2 disturbances
-#      [3.0,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0],
-#      [3.0,  1.0,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0],
-#      [2.5,  1.0,  1.0,  1.0,  0.0,  0.0,  0.0,  0.0],
-#      [2.5,  1.0,  1.0,  1.0,  1.0,  0.0,  0.0,  0.0],
-#      [2.0,  1.0,  1.0,  1.0,  1.0,  1.0,  0.0,  0.0],
-#      [1.5,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  0.0],
-#      [1.5,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0],
-#      [1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0]
-#  ]
-#  modes_per_group: [2, 1078, 350, 399, 448, 497, 546, 680]
-# values optimized for case w/ M1 and M2 disturbances
-      [9.0,  6.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0, 0.0],
-      [7.0,  5.0,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0, 0.0],
-      [5.0,  4.0,  1.0,  1.0,  0.0,  0.0,  0.0,  0.0, 0.0],
-      [4.0,  3.0,  1.0,  1.0,  1.0,  0.0,  0.0,  0.0, 0.0],
-      [3.0,  2.5,  1.0,  1.0,  1.0,  1.0,  0.0,  0.0, 0.0],
-      [2.0,  2.0,  1.0,  1.0,  1.0,  1.0,  1.0,  0.0, 0.0],
-      [1.5,  1.5,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0, 0.0],
-      [1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0, 1.0]
+      [2.8,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0],
+      [2.8,  1.0,  1.0,  0.0,  0.0,  0.0,  0.0,  0.0],
+      [2.3,  1.0,  1.0,  1.0,  0.0,  0.0,  0.0,  0.0],
+      [2.3,  1.0,  1.0,  1.0,  1.0,  0.0,  0.0,  0.0],
+      [1.8,  1.0,  1.0,  1.0,  1.0,  1.0,  0.0,  0.0],
+      [1.3,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  0.0],
+      [1.3,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0],
+      [1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0]
   ]
-  modes_per_group: [2, 8, 1070, 350, 399, 448, 497, 546, 680]
-  scheduled_times: [0.05,0.1,0.15,0.2,0.25,0.3,0.35]
+  modes_per_group: [2, 1079, 350, 399, 448, 497, 546, 679]
+  scheduled_times: [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35]
 
 
 # IIR on TT and integrator for other modes
 temporal_filter:
   class:            'IirFilterData'
-  # case w/o forgetting factors
-  #ordnum:           [3,                       2]
-  #ordden:           [3,                       2]
-  #num:              [[0.19125, -0.65,  0.5],   [ 0.0, 0.50, 0.0]]
-  #den:              [[0.995,   -1.995, 1.0],   [-1.0,  1.0, 0.0]]
-  #n_modes:          [2,                        3998]
-  # case w/ forgetting factors (leaky integrators)
-  ordnum:           [3,                       2,                   2,                   2,                   2,                   2]
-  ordden:           [3,                       2,                   2,                   2,                   2,                   2]
-  num:              [[0.19125, -0.65,  0.5],  [ 0.0, 0.50, 0.0],   [ 0.0, 0.50, 0.0],   [ 0.0, 0.50, 0.0],   [ 0.0, 0.50, 0.0],   [ 0.0, 0.50, 0.0]]
-  den:              [[0.995,   -1.995, 1.0],  [-1.0,  1.0, 0.0],   [-0.99, 1.0, 0.0],   [-0.98, 1.0, 0.0],   [-0.95, 1.0, 0.0],   [-0.9, 1.0, 0.0]]
-  n_modes:          [2,                       98,                  900,                 1000,                1000,                1000]
+  ordnum:           [5,                       2]
+  ordden:           [5,                       2]
+  num:              [[-0.00443481, -0.0861377,   0.6231995,  -1.0742105,   0.55 ],  [ 0.0, 0.45, 0, 0, 0]]
+  den:              [[0.190358, -1.34285, 3.11424, -2.96175, 1.00000],            [-1.0,  1.0, 0, 0, 0]]
+  n_modes:          [2,                       3998]
 
 
 control:
   class:                'IirFilter'
   simul_params_ref:     'main'
-  delay:                2                      # Total temporal delay in time steps
+  delay:                1.68                      # Total temporal delay in time steps
   iir_filter_data_ref:  'temporal_filter'
   inputs:
     delta_comm: 'modalrec.out_modes'
@@ -252,6 +213,13 @@ psf:
   inputs:
     in_ef: 'prop.out_wfs_source_ef'
   outputs: ['out_psf', 'out_sr']
+
+
+contrast:
+  class:             'ContrastEstimator'
+  inputs:
+    in_psf: 'psf.out_psf'
+  outputs: ['radial_profile', 'contrast', 'lowest_profile', 'highest_profile']  
 
 
 data_store:
