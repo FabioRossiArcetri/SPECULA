@@ -531,6 +531,14 @@ class Simul():
 
                     output = self.split_output(single_output_name, get_ref=True)
 
+                    a_connection = {}
+                    a_connection['start'] = output.obj_name
+                    a_connection['end'] = dest_object
+                    a_connection['start_label'] = output.output_key
+#                    a_connection['middle_label'] = self.objs[dest_object].inputs[use_input_name]
+                    a_connection['end_label'] = input_name
+                    self.connections.append(a_connection)
+
                     # Remote-to-remote: nothing to do
                     if not local_dest_object and output.ref is None:
                         continue
@@ -541,13 +549,6 @@ class Simul():
                         print(f'Exception while connecting {single_output_name} {dest_object}.{input_name}')
                         raise
 
-                    a_connection = {}
-                    a_connection['start'] = output.obj_name
-                    a_connection['end'] = dest_object
-                    a_connection['start_label'] = output.output_key
-#                    a_connection['middle_label'] = self.objs[dest_object].inputs[use_input_name]
-                    a_connection['end_label'] = input_name
-                    self.connections.append(a_connection)
 
     def isReplay(self, params):
         return 'data_source' in params
@@ -896,7 +897,7 @@ class Simul():
         self.create_input_list_inputs(params)
         self.connect_objects(params)
 
-        if self.diagram or self.diagram_filename or self.diagram_title:
+        if process_rank==0 and self.diagram or self.diagram_filename or self.diagram_title:
             if self.diagram_filename is None:
                 self.diagram_filename = str(Path(self.param_files[0]).with_suffix('.png'))
             if self.diagram_title is None:
