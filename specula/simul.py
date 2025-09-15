@@ -50,6 +50,7 @@ class Simul():
                  *param_files,
                  simul_idx=0,
                  overrides=None,
+                 stepping=False,
                  diagram=False,
                  diagram_title=None,
                  diagram_filename=None,
@@ -73,6 +74,7 @@ class Simul():
             self.overrides = []
         else:
             self.overrides = overrides
+        self.stepping = stepping
         self.diagram = diagram
         self.diagram_title = diagram_title
         self.diagram_filename = diagram_filename
@@ -562,6 +564,7 @@ class Simul():
         - objnames is a list of objects referenced by original DataStore inpus
         '''
         data_source_pars = {}
+        data_source_outputs = {}
         data_source_pars['class'] = 'DataSource'
         data_source_pars['outputs'] = []
         if 'data_format' in datastore_pars:
@@ -575,13 +578,15 @@ class Simul():
         for _, fullname in self.iterate_inputs(datastore_pars):
             output = self.split_output(fullname)
             data_source_pars['outputs'].append(output.input_name)
+            data_source_outputs[output.obj_name+'.'+output.output_key] = output.input_name
             objnames.append(output.obj_name)
 
-        return data_source_pars, objnames
+        return data_source_pars, objnames, data_source_outputs
 
     def build_replay(self, params):
         replay_params = deepcopy(params)
         obj_to_remove = []
+        data_source_objname =''
         data_source_outputs = {}
         for key, pars in params.items():
             try:
@@ -590,8 +595,10 @@ class Simul():
                 raise KeyError(f'Object {key} does not define the "class" parameter')
 
             if classname=='DataStore':
-                data_source_pars, obj_to_remove = self.data_store_to_data_source(pars)
+                data_source_pars, obj_to_remove, data_source_outputs = self.data_store_to_data_source(pars)
                 replay_params['data_source'] = data_source_pars
+                data_source_objname = key
+                obj_to_remove.append(data_source_objname)
 
         for obj_name in set(obj_to_remove):
             del replay_params[obj_name]
@@ -603,8 +610,9 @@ class Simul():
                         if type(output_name_full) is list:
                             print('TODO: list of inputs is not handled in output replay')
                             continue
+                        print('output_name_full', output_name_full)
                         if output_name_full in data_source_outputs.keys():
-                            replay_params[key]['inputs'][input_name] = data_source_outputs[output_name_full]
+                            replay_params[key]['inputs'][input_name] = 'data_source.' + data_source_outputs[output_name_full]
 
         return replay_params
 
@@ -633,18 +641,20 @@ class Simul():
         # Copy DataStore params and convert it to DataSource
         for key, pars in params.items():
             if pars['class'] == 'DataStore':
-                data_source_pars, _ = self.data_store_to_data_source(pars, set_store_dir=set_store_dir)
+                data_source_pars, _, _ = self.data_store_to_data_source(pars, set_store_dir=set_store_dir)
                 replay_params['data_source'] = data_source_pars
 
                 # Remember all datastore outputs
                 for _, fullname in self.iterate_inputs(pars):
                     output = self.split_output(fullname)
                     datastore_outputs[output.output_key] = output.input_name
-    
+
         def add_key(key):
             if key in replay_params:
                 return
+
             replay_params[key] = params[key].copy()  
+            # Add all inputs
             for k, _input in self.iterate_inputs(params[key]):
                 desc = self.split_output(_input)
                 if desc.output_key in datastore_outputs:
@@ -652,6 +662,13 @@ class Simul():
                     continue
                 else:
                     add_key(desc.obj_name)
+            # Add all references to other objects
+            for k, v in params[key].items():
+                if k.endswith('_dict_ref'):
+                    for objname in v:
+                        add_key(objname)
+                elif k.endswith('_ref'):
+                    add_key(v)
 
         for key in target_object_names:
             add_key(key)
@@ -774,8 +791,12 @@ class Simul():
         from orthogram import Color, DiagramDef, write_png, Side,  FontWeight, FontStyle
 
         print('Building diagram...')        
-
-        d = DiagramDef(label=self.diagram_title, text_fill=Color(0, 0, 0), scale=2.0, collapse_connections=False, font_size=24, connection_distance=16)
+        title_fontsize = 48
+        block_fontsize = 28
+        arrow_fontsize = 18
+        arrow_base_value = 6.0
+        
+        d = DiagramDef(label=self.diagram_title, text_fill=Color(0, 0, 0), scale=2.0, collapse_connections=False, font_size=title_fontsize, connection_distance=20)
         rows = self.arrangeInGrid(self.trigger_order, self.trigger_order_idx)
         row_len = len(rows[0])        
         # a row is a list of strings, which are labels for the cells        
@@ -814,7 +835,7 @@ class Simul():
                             stroke_width=swidth,
                             min_height=96,
                             min_width=192,
-                            font_size=14,
+                            font_size=block_fontsize,
                             font_weight=fb, 
                             font_style=fs)
         
@@ -830,7 +851,7 @@ class Simul():
                             stroke_width=12,
                             min_height=96,
                             min_width=192,
-                            font_size=14)
+                            font_size=block_fontsize)
 
             legend_row2 = []
             ri=0
@@ -845,7 +866,7 @@ class Simul():
                                     stroke_width=12,
                                     min_height=96,
                                     min_width=192,
-                                    font_size=14)
+                                    font_size=block_fontsize)
                     legend_row2 = []
                     ri += 1
                     base_rank += row_len            
@@ -855,14 +876,30 @@ class Simul():
                 ostring = ""
             else:
                 ostring = str(c['start_label'])
-            aconn = d.add_connection(c['start'], c['end'], buffer_fill=Color(1.0,1.0,1.0), buffer_width=1, 
-                             exits=[Side.RIGHT], entrances=[Side.LEFT, Side.BOTTOM, Side.TOP], 
-                             label = ostring + " → " + str(c['end_label']))
+            aconn = d.add_connection( c['start'],
+                                      c['end'],
+                                      buffer_fill=Color(1.0,1.0,1.0),
+                                      buffer_width=2,
+                                      stroke_width=2.0,
+                                      stroke=cstroke,                                      
+                                      arrow_base=arrow_base_value,
+                                      exits=[Side.RIGHT],
+                                      entrances=[Side.LEFT, Side.BOTTOM, Side.TOP],
+                                      font_size=arrow_fontsize,
+                                      label = ostring + " → " + str(c['end_label']) )
 
         for c in self.references:
             if c['end'] != 'main':
-                aconn = d.add_connection(c['start'], c['end'],  stroke=refcstroke, buffer_width=1, stroke_width=2.0, #  group=c['end'],
-                                exits=[Side.LEFT], entrances=[Side.RIGHT, Side.BOTTOM, Side.TOP], stroke_dasharray=[3,3])
+                aconn = d.add_connection( c['start'],
+                                          c['end'],
+                                          buffer_fill=Color(1.0,1.0,1.0),
+                                          buffer_width=2,
+                                          stroke_width=2.0,
+                                          stroke=refcstroke,
+                                          arrow_base=arrow_base_value,
+                                          exits=[Side.LEFT],
+                                          entrances=[Side.RIGHT, Side.BOTTOM, Side.TOP], 
+                                          stroke_dasharray=[6,6] )
 
 
         write_png(d, self.diagram_filename)
@@ -910,7 +947,7 @@ class Simul():
                     obj.setReplayParams(replay_params)
 
         # Initialize housekeeping objects
-        self.loop = LoopControl()
+        self.loop = LoopControl(stepping=self.stepping)
 
         # Build loop
         for name, idx in zip(self.trigger_order, self.trigger_order_idx):
