@@ -12,6 +12,7 @@ def main():
     parser.add_argument('--profile', action='store_true')
     parser.add_argument('--mpi', action='store_true')
     parser.add_argument('--mpidbg', action='store_true')
+    parser.add_argument('--stepping', action='store_true')
     parser.add_argument('--diagram', action='store_true', help='Save image block diagram')
     parser.add_argument('--diagram-title', type=str, default=None, help='Block diagram title')
     parser.add_argument('--diagram-filename', type=str, default=None, help='Block diagram filename')

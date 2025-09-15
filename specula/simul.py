@@ -50,6 +50,7 @@ class Simul():
                  *param_files,
                  simul_idx=0,
                  overrides=None,
+                 stepping=False,
                  diagram=False,
                  diagram_title=None,
                  diagram_filename=None,
@@ -73,6 +74,7 @@ class Simul():
             self.overrides = []
         else:
             self.overrides = overrides
+        self.stepping = stepping
         self.diagram = diagram
         self.diagram_title = diagram_title
         self.diagram_filename = diagram_filename
@@ -910,7 +912,7 @@ class Simul():
                     obj.setReplayParams(replay_params)
 
         # Initialize housekeeping objects
-        self.loop = LoopControl()
+        self.loop = LoopControl(stepping=self.stepping)
 
         # Build loop
         for name, idx in zip(self.trigger_order, self.trigger_order_idx):
