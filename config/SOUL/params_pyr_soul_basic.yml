@@ -1,43 +1,36 @@
----
 
 main:
   class:             'SimulParams'
-  root_dir:          '/raid1/guido/PASSATA/LBT'         # Root directory for calibration manager  
+  root_dir:          '/raid1/guido/PASSATA/LBT' # Root directory for calibration manager  
   pixel_pupil:       220                    # Linear dimension of pupil phase array
   pixel_pitch:       0.037372727            # [m] Pitch of the pupil phase array
-  total_time:        10.9956                # [s] Total simulation running time
+  total_time:        0.002                # [s] Total simulation running time
   time_step:         0.000588               # [s] Simulation time step
   zenithAngleInDeg:  0.000
+  stepping:   True
   display_server:    False
-
 
 seeing:
   class:             'WaveGenerator'
-  constant:          0.8                   # ["] seeing value
-
+  constant:          0.8                    #  seeing value
 
 wind_speed:
   class:             'WaveGenerator'
-  constant:          [2.,4.,6.,25.]      # [m/s] Wind speed value
-
+  constant:          [2.,4.,6.,25.]         # [m/s] Wind speed value
 
 wind_direction:
   class:             'WaveGenerator'
-  #constant:          [0.,30.,-30.,45.]   # [degrees] Wind direction value
-  constant:          [0.,0.,0.,0.]   # [degrees] Wind direction value
-
-
+  constant:          [0.,30.,-30.,45.]      # [degrees] Wind direction value
+  
 on_axis_source:
   class:             'Source'
-  polar_coordinates:  [0.0, 0.0]           # [arcsec, degrees] source polar coordinates
-  magnitude:         8                    # source magnitude
-  wavelengthInNm:    750                   # [nm] wavelength
-
+  polar_coordinates:  [0.0, 0.0]            # [arcsec, degrees] source polar coordinates
+  magnitude:         8                      # source magnitude
+  wavelengthInNm:    750                    # [nm] wavelength
 
 pupilstop:                                 # Default parameters (circular pupil)
   class: 'Pupilstop'
   simul_params_ref: 'main'
-
 
 atmo:
   class:                'AtmoEvolution'
@@ -63,14 +56,12 @@ prop:
                   'dm.out_layer:-1']
   outputs: ['out_on_axis_source_ef']
 
-
 modal_analysis:
   class:                'ModalAnalysis'
   ifunc_inv_object:     'KLmatrix_KL_v10_inv'
   inputs:
     in_ef: 'prop.out_on_axis_source_ef'
   outputs: ['out_modes']
-
 
 pyramid:
   class:             'ModulatedPyramid'
@@ -84,16 +75,12 @@ pyramid:
   inputs:
     in_ef: 'prop.out_on_axis_source_ef'
 
-
 detector:
   class:             'CCD'
   simul_params_ref:  'main'
   size:              [120,120]               # Detector size in pixels
   dt:                0.000588                # [s] Detector integration time
   bandw:             300                     # [nm] Sensor bandwidth
-  #photon_noise:      True                    # activate photon noise
-  #readout_noise:     True                    # activate readout noise
-  #excess_noise:      True
   photon_noise:      False                    # activate photon noise
   readout_noise:     False                    # activate readout noise
   excess_noise:      False
@@ -102,14 +89,12 @@ detector:
   inputs:
     in_i: 'pyramid.out_i'
 
-
 slopec:
   class:             'PyrSlopec'  
   pupdata_object:    'soul_KLv10_ps220p0.037_pyr40x40_wl750_fv2.1_ft3.0_bn1_th0.30a0.30b'            # tag of the pyramid WFS pupils
   inputs:
     in_pixels:        'detector.out_pixels'
   outputs: ['out_slopes']
-
 
 rec:
   class:              'Modalrec'
@@ -121,13 +106,12 @@ rec:
 control:
   class:             'Integrator'
   simul_params_ref:  'main'
-  delay:             2                      # Total temporal delay in time steps
+  delay:             2                    # Total temporal delay in time steps
   int_gain:          [0.55,   0.45,     0.40,     0.35]
   ff:                [1.0,    0.999996, 0.999365, 0.977895]
   n_modes:           [30,     70,       100,      300]
   inputs:
       delta_comm: 'rec.out_modes'
-
 
 dm:
   class:             'DM'
@@ -137,27 +121,18 @@ dm:
   inputs:
       in_command: 'control.out_comm'
 
-
 psf:
   class:             'PSF'
   simul_params_ref:  'main'
-  wavelengthInNm:    1650                 # [nm] Imaging wavelength
-  nd:                8                    # padding coefficient for PSF computation
+  wavelengthInNm:    1650                # [nm] Imaging wavelength
+  nd:                8                   # padding coefficient for PSF computation
   start_time:        0.05                # PSF integration start time
   inputs:
       in_ef:  'prop.out_on_axis_source_ef'
 
-
 data_store:
   class:             'DataStore'
-  #store_dir:         './output'             # Data result directory: 'store_dir'/TN/
-  store_dir:         '/raid1/guido/result4comparison/SOUL'             # Data result directory: 'store_dir'/TN/
+  store_dir:         './output'         # Data result directory: 'store_dir'/TN/
   data_format:       'fits'
   inputs:
-    input_list: ['wfsPhi-prop.out_on_axis_source_ef',
-                 'resMod-modal_analysis.out_modes',
-                 'ccdframes-detector.out_pixels',
-                 'slopes-slopec.out_slopes',
-                 'deltaComm-rec.out_modes',
-                 'comm-control.out_comm',
-                 'srRes-psf.out_sr']
+    input_list: ['wfsPhi-prop.out_on_axis_source_ef']

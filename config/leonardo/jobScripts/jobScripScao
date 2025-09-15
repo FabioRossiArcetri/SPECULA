@@ -9,24 +9,26 @@
 #SBATCH --gres=gpu:4                          # Number of GPUs per node (adjust to match hardware)
 #SBATCH --partition=boost_usr_prod            # GPU-enabled partition
 #SBATCH --qos=boost_qos_dbg                   # Quality of Service
-#SBATCH --output=speculaJobScao.out         # File for standard output
-#SBATCH --error=speculaJobScao.err          # File for standard error
+#SBATCH --output=speculaJobScao.out           # File for standard output
+#SBATCH --error=speculaJobScao.err            # File for standard error
 #SBATCH --account=try25_rossi                 # Project account number
 
 # Load necessary modules (adjust to your environment)
 
-# module load your_app_dependencies             # Load any other required modules
-module load cuda/12.1                         # Load CUDA toolkit
-module load openmpi                           # Load MPI implementation
-module load nvhpc/23.1
-
+module unload cuda
+module unload openmpi
+module unload nvhpc
+# module load your_app_dependencies           # Load any other required modules
+module load cuda/12.2                         # Load CUDA toolkit
+module load openmpi/4.1.6--nvhpc--23.11       # Load MPI implementation
+module load nvhpc/23.11
 
 # Optional: Set environment variables for performance tuning
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK   # Set OpenMP threads per task
-export NCCL_DEBUG=INFO                        # Enable NCCL debugging (for multi-GPU communication)
+# export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK # Set OpenMP threads per task
+# export NCCL_DEBUG=INFO                      # Enable NCCL debugging (for multi-GPU communication)
 
 # Launch the distributed GPU application
 # Replace with your actual command (e.g., mpirun or srun)
-#srun --mpi=pmix ./my_distributed_gpu_app --config config.yaml
-srun --mpi=none bash -c "./launch_scao.sh"
+srun --mpi=none bash -c "specula --mpi $WORK/SPECULA/config/scao/params_scao_sh.yml $WORK/SPECULA/config/scao/params_scao_mpi_override.yml"
+"
 

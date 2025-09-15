@@ -5,7 +5,7 @@ main:
   #root_dir:          '/home/alcheffot/ANDES/IDL/'
   root_dir:          '/raid2/gcarla/git/ANDES/andes/PASSATA_scripts/data/'
   pixel_pupil:       400
-  pixel_pitch:       0.0975                 # 39./400. [m] Pitch of the pupil phase array
+  pixel_pitch:       0.0974999999999        # 39./400. [m] Pitch of the pupil phase array
   total_time:        5.000                  # [s] Total simulation running time
   time_step:         0.001                  # [s] Simulation time step
   zenithAngleInDeg:  30.0                   # [deg] Zenith angle
