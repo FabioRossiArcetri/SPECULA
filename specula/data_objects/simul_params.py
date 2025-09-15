@@ -31,6 +31,7 @@ class SimulParams(BaseDataObj):
                 time_step: float = 0.001,
                 zenithAngleInDeg: float = 0,
                 display_server: bool = False,
+                stepping: bool = False,
                 add_modules: List[str] = [],
     ):
         super().__init__()
@@ -47,4 +48,5 @@ class SimulParams(BaseDataObj):
         self.time_step = time_step
         self.zenithAngleInDeg = zenithAngleInDeg
         self.display_server = display_server
+        self.stepping = stepping
         self.add_modules = add_modules
