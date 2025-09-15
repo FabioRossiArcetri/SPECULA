@@ -16,7 +16,7 @@ def main():
     parser.add_argument('--profile', action='store_true', help='Enable python profiler and print stats at the end')
     parser.add_argument('--mpi', action='store_true', help='Use MPI for parallel execution')
     parser.add_argument('--mpidbg', action='store_true', help='Activate MPI debug output')
-    parser.add_argument('--stepping', action='store_true', help='Activate MPI debug output')
+    parser.add_argument('--stepping', action='store_true', help='Allow simulation stepping')
     parser.add_argument('--diagram', action='store_true', help='Save image block diagram')
     parser.add_argument('--diagram-title', type=str, default=None, help='Block diagram title')
     parser.add_argument('--diagram-filename', type=str, default=None, help='Block diagram filename')
