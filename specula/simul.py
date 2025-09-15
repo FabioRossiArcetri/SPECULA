@@ -639,7 +639,7 @@ class Simul():
         # Copy DataStore params and convert it to DataSource
         for key, pars in params.items():
             if pars['class'] == 'DataStore':
-                data_source_pars, _ = self.data_store_to_data_source(pars, set_store_dir=set_store_dir)
+                data_source_pars, _, _ = self.data_store_to_data_source(pars, set_store_dir=set_store_dir)
                 replay_params['data_source'] = data_source_pars
 
                 # Remember all datastore outputs
@@ -936,7 +936,7 @@ class Simul():
                     obj.setReplayParams(replay_params)
 
         # Initialize housekeeping objects
-        self.loop = LoopControl()
+        self.loop = LoopControl(manual_stepping=self.mainParams['manual_stepping'])
 
         # Build loop
         for name, idx in zip(self.trigger_order, self.trigger_order_idx):
