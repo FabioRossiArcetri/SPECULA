@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=specula_mpi                 # Descriptive job name
+#SBATCH --job-name=spMSPREAD                   # Descriptive job name
 #SBATCH --time=00:10:00                        # Maximum wall time (hh:mm:ss)
 #SBATCH --nodes=4                              # Number of nodes to use
 #SBATCH --ntasks-per-node=4                    # Number of MPI tasks per node (e.g., 1 per GPU)
@@ -12,19 +12,11 @@
 #SBATCH --error=speculaJobMorfeoMpiSpread.err  # File for standard error
 #SBATCH --account=try25_rossi                  # Project account number
 
-# Load necessary modules (adjust to your environment)
-
-# module load your_app_dependencies            # Load any other required modules
-module unload cuda
-module unload openmpi
-module unload nvhpc
-module load cuda/12.2                          # Load CUDA toolkit
+module load cuda/12.3                          # Load CUDA toolkit
 module load openmpi/4.1.6--nvhpc--23.11        # Load MPI implementation
 module load nvhpc/23.11
 
-# Launch the distributed GPU application
-# Replace with your actual command (e.g., mpirun or srun)
-srun --mpi=none bash -c "./launchers/launch_morfeo_full_mpi_spread.sh"
+srun --mpi=none bash -c "specula --mpi --diagram-filename morfeoSpread.png --diagram-colors-on $WORK/SPECULA/config/MORFEO/params_morfeo_full.yml $WORK/SPECULA/config/leonardo/overrides/ov_MORFEO_leonardo_spread.yml"
 
 
 

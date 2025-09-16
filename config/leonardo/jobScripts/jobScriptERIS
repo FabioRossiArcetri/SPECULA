@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=speculaERIS                # Descriptive job name
+#SBATCH --job-name=spERIS                     # Descriptive job name
 #SBATCH --time=00:10:00                       # Maximum wall time (hh:mm:ss)
 #SBATCH --nodes=1                             # Number of nodes to use
 #SBATCH --ntasks-per-node=1                   # Number of MPI tasks per node (e.g., 1 per GPU)
@@ -12,10 +12,7 @@
 #SBATCH --error=speculaJobERIS.err            # File for standard error
 #SBATCH --account=try25_rossi                 # Project account number
 
-module unload cuda
-module unload openmpi
-module unload nvhpc
-module load cuda/12.1                         # Load CUDA toolkit
+module load cuda/12.3                         # Load CUDA toolkit
 module load openmpi/4.1.6--nvhpc--23.11       # Load MPI implementation
 module load nvhpc/23.11
 

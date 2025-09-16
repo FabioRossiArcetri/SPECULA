@@ -1,7 +1,7 @@
 #!/bin/bash
 
 
-#SBATCH --job-name=specula                    # Descriptive job name
+#SBATCH --job-name=spSCAO                     # Descriptive job name
 #SBATCH --time=00:10:00                       # Maximum wall time (hh:mm:ss)
 #SBATCH --nodes=2                             # Number of nodes to use
 #SBATCH --ntasks-per-node=4                   # Number of MPI tasks per node (e.g., 1 per GPU)
@@ -13,22 +13,8 @@
 #SBATCH --error=speculaJobScao.err            # File for standard error
 #SBATCH --account=try25_rossi                 # Project account number
 
-# Load necessary modules (adjust to your environment)
-
-module unload cuda
-module unload openmpi
-module unload nvhpc
-# module load your_app_dependencies           # Load any other required modules
-module load cuda/12.2                         # Load CUDA toolkit
+module load cuda/12.3                         # Load CUDA toolkit
 module load openmpi/4.1.6--nvhpc--23.11       # Load MPI implementation
 module load nvhpc/23.11
 
-# Optional: Set environment variables for performance tuning
-# export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK # Set OpenMP threads per task
-# export NCCL_DEBUG=INFO                      # Enable NCCL debugging (for multi-GPU communication)
-
-# Launch the distributed GPU application
-# Replace with your actual command (e.g., mpirun or srun)
-srun --mpi=none bash -c "specula --mpi $WORK/SPECULA/config/scao/params_scao_sh.yml $WORK/SPECULA/config/scao/params_scao_mpi_override.yml"
-"
-
+srun --mpi=none bash -c 'specula --mpi $WORK//SPECULA/config/scao/params_scao_sh.yml $WORK/SPECULA/config/scao/params_scao_mpi_override.yml'

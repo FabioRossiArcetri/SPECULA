@@ -562,14 +562,14 @@ tomo_polc_ref:
     in_commands:            'control_ref.out_comm:-1'
   outputs:  ['out_modes', 'out_pseudo_ol_modes']
 
-# Not used.
-iir_ref:
-  class:             'IirFilter'
-  simul_params_ref:  'main'
-  iir_filter_data_object: 'int0.0_293modes'
-  inputs:
-      delta_comm: 'tomo_polc_ref.out_modes'     
-  outputs:  ['out_comm']
+# Commenting since this is not used.
+# iir_ref:
+#   class:             'IirFilter'
+#   simul_params_ref:  'main'
+#   iir_filter_data_object: 'int0.0_293modes'
+#   inputs:
+#       delta_comm: 'tomo_polc_ref.out_modes'
+#   outputs:  ['out_comm']
 
 control_ref: 
   class:             'Integrator'
