@@ -287,6 +287,7 @@ iir_lgs:
 
 modal_combination:
   class:        'LinearCombination'
+  simul_params_ref:  'main'
   inputs:
     in_vectors_list: ['iir_lgs.out_comm', 'iir_focus.out_comm', 'iir_lift.out_comm', 'iir_ngs.out_comm']
   outputs: ['out_vector']

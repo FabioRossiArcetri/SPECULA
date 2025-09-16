@@ -2,7 +2,6 @@
 
 main:
   class:             'SimulParams'
-  #root_dir:          '/home/alcheffot/ANDES/IDL/'
   root_dir:          '/raid2/gcarla/git/ANDES/andes/PASSATA_scripts/data/'
   pixel_pupil:       400
   pixel_pitch:       0.0975                 # 39./400. [m] Pitch of the pupil phase array
