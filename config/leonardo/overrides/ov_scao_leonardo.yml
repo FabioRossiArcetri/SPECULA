@@ -19,6 +19,10 @@ pupilstop_override:
   target_rank: 0
 
 # works
+pupilstop_override:
+  target_rank: 1
+
+# works
 prop_override:
   target_rank: 1
 

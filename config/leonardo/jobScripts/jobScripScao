@@ -17,4 +17,4 @@ module load cuda/12.3                         # Load CUDA toolkit
 module load openmpi/4.1.6--nvhpc--23.11       # Load MPI implementation
 module load nvhpc/23.11
 
-srun --mpi=none bash -c 'specula --mpi $WORK//SPECULA/config/scao/params_scao_sh.yml $WORK/SPECULA/config/scao/params_scao_mpi_override.yml'
+srun --mpi=none bash -c 'specula --mpi $WORK//SPECULA/config/scao/params_scao_sh.yml $WORK/SPECULA/config/leonardo/overrides/ov_scao_leonardo.yml'
