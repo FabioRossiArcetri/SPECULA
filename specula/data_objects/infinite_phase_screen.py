@@ -7,7 +7,7 @@ from seeing.sympyHelpers import *
 from seeing.formulary import *
 from seeing.integrator import *
 
-from scipy.special import gamma, kv
+# from scipy.special import gamma, kv
 from symao.turbolence import createTurbolenceFormulary, ft_phase_screen0
 
 turbolenceFormulas = createTurbolenceFormulary()
@@ -30,25 +30,12 @@ def cn2_to_seeing(cn2, wvl=500.e-9):
 
 class InfinitePhaseScreen(BaseDataObj):
 
-    def __init__(self, 
-                 mx_size, 
-                 pixel_scale, 
-                 r0, 
-                 L0, 
-                 l0, 
-                 xp=np, 
-                 random_seed=None, 
-                 stencil_size_factor=1, 
-                 target_device_idx=0, 
-                 precision=0):
-        """
-        Initialize an :class:`~specula.data_objects.infinite_phase_screen.InfinitePhaseScreen` object.
-        """
+    def __init__(self, mx_size, pixel_scale, r0, L0, l0, random_seed=None, stencil_size_factor=1, xp=np, target_device_idx=0, precision=0):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
-        
+
         self.random_data_col = None
         self.random_data_row = None
-        self.requested_mx_size = mx_size
+        self.requested_mx_size = int(mx_size)
         self.mx_size = 2 ** (int( np.ceil(np.log2(mx_size)))) + 1
         self.pixel_scale = pixel_scale
         self.r0 = r0
@@ -56,15 +43,19 @@ class InfinitePhaseScreen(BaseDataObj):
         self.l0 = l0
         self.xp = xp
         self.stencil_size_factor = stencil_size_factor
-        self.stencil_size = stencil_size_factor * self.mx_size        
-        if random_seed is not None:
-            self.xp.random.seed(random_seed)
+        self.stencil_size = stencil_size_factor * self.mx_size
+        if random_seed is None:
+            raise ValueError("random_seed must be provided")
+        else:
+            self.random_seed = int(random_seed)
+        self.rng = self.xp.random.default_rng(self.random_seed)
+
         #self.set_stencil_coords_basic()
         self.set_stencil_coords()
         self.setup()
 
     def phase_covariance(self, r, r0, L0):
-        r = self.xp.asnumpy(r)
+        r = cpuArray(r)
         r0 = float(r0)
         L0 = float(L0)
         # Get rid of any zeros
@@ -77,8 +68,8 @@ class InfinitePhaseScreen(BaseDataObj):
 #        B2 = ((24. / 5) * gamma(6. / 5)) ** (5. / 6)
 #        C = (((2 * self.xp.pi * r) / L0) ** (5. / 6)) * kv(5. / 6, (2 * self.xp.pi * r) / L0)
 #        cov = A * B1 * B2 * C / 2
-        
-        cov = self.xp.asarray(cov) / 2
+
+        cov = self.xp.asarray(cov)
 
         return cov
 
@@ -157,23 +148,23 @@ class InfinitePhaseScreen(BaseDataObj):
         self.A_mat.append(self.xp.fliplr(self.xp.flipud(A_mat)))
         self.B_mat.append(B_mat)
         # make initial screen
-        tmp, _, _ = ft_phase_screen0( turbolenceFormulas, self.r0, self.stencil_size, self.pixel_scale, self.L0)
+        tmp, _, _ = ft_phase_screen0( turbolenceFormulas, self.r0, self.stencil_size, self.pixel_scale, self.L0, seed=self.random_seed)
         self.full_scrn = self.xp.asarray(tmp) / 2
         self.full_scrn -= self.xp.mean(self.full_scrn)
-        # print(self.full_scrn.shape)  
+        # print(self.full_scrn.shape)
 
     def prepare_random_data_col(self):
         if self.random_data_col is None:
 #            print('generating new random data col')
-            self.random_data_col = self.xp.random.normal(size=self.stencil_size)            
+            self.random_data_col = self.rng.standard_normal(size=self.stencil_size)
         else:
             pass
 #            print('using old random data col')
 
     def prepare_random_data_row(self):
         if self.random_data_row is None:
-#            print('generating new random data row')            
-            self.random_data_row = self.xp.random.normal(size=self.stencil_size)
+#            print('generating new random data row')
+            self.random_data_row = self.rng.standard_normal(size=self.stencil_size)
         else:
             pass
 #            print('using old random data row')
@@ -182,10 +173,10 @@ class InfinitePhaseScreen(BaseDataObj):
         if row:
             self.prepare_random_data_row()
             stencil_data = self.xp.asarray(self.full_scrn[self.stencil_coords[after][:, 1], self.stencil_coords[after][:, 0]])
-            new_line = self.A_mat[after].dot(stencil_data) + self.B_mat[after].dot(self.random_data_row)  
+            new_line = self.A_mat[after].dot(stencil_data) + self.B_mat[after].dot(self.random_data_row)
         else:
             self.prepare_random_data_col()
-            stencil_data = self.xp.asarray(self.full_scrn[self.stencil_coords[after][:, 0], self.stencil_coords[after][:, 1]])            
+            stencil_data = self.xp.asarray(self.full_scrn[self.stencil_coords[after][:, 0], self.stencil_coords[after][:, 1]])
             new_line = self.A_mat[after].dot(stencil_data) + self.B_mat[after].dot(self.random_data_col)
         return new_line
 
@@ -217,7 +208,7 @@ class InfinitePhaseScreen(BaseDataObj):
 
     @property
     def scrn(self):
-        return self.full_scrn[:self.requested_mx_size, :self.requested_mx_size].get()
+        return cpuArray(self.full_scrn[:self.requested_mx_size, :self.requested_mx_size])
 
     @property
     def scrnRaw(self):
