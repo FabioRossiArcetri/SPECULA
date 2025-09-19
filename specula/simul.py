@@ -340,9 +340,9 @@ class Simul():
             # If not build, remember the remote rank of this object (needed for connections setup)
             if not build_this_object:
                 self.remote_objs_ranks[key] = target_rank
-                continue
+                # continue
 
-            if 'tag' in pars:
+            if 'tag' in pars and build_this_object:
                 if 'target_device_idx' in pars:
                     del pars['target_device_idx']
                 if len(pars) > 2:
@@ -366,8 +366,9 @@ class Simul():
 
                 # dict_ref field contains a dictionary of names and associated data objects (defined in the same yml file)
                 elif name.endswith('_dict_ref'):
-                    data = {x : self.objs[x] for x in value}
-                    pars2[name[:-4]] = data                    
+                    if build_this_object:
+                        data = {x : self.objs[x] for x in value}
+                        pars2[name[:-4]] = data
                     for x in value:
                         a_ref = {}
                         a_ref['start'] = key
@@ -375,22 +376,23 @@ class Simul():
                         self.references.append(a_ref)
 
                 elif name.endswith('_ref'):
-                    data = self.objs[value]
-                    pars2[name[:-4]] = data
+                    if build_this_object:
+                        data = self.objs[value]
+                        pars2[name[:-4]] = data
                     a_ref = {}
                     a_ref['start'] = key
                     a_ref['end'] = value
                     self.references.append(a_ref)
 
                 # data fields are read from a fits file
-                elif name.endswith('_data'):
+                elif name.endswith('_data') and build_this_object:
                     data = cm.read_data(value)
                     pars2[name[:-5]] = data
 
                 # object fields are data objects which are loaded from a fits file
                 # the name of the object is the string preceeding the "_object" suffix,
                 # while its type is inferred from the constructor of the current class
-                elif name.endswith('_object'):
+                elif name.endswith('_object') and build_this_object:
                     parname = name[:-7]
                     if value is None:
                         pars2[parname] = None
@@ -419,7 +421,11 @@ class Simul():
                         raise ValueError(f'No type hint for parameter {parname} of class {classname}')
 
                 else:
-                    pars2[name] = value
+                    if build_this_object:
+                        pars2[name] = value
+
+            if not build_this_object:
+                continue
 
             # Add global and class-specific params if needed
             my_params = {}
@@ -767,7 +773,8 @@ class Simul():
 
     def arrangeInGrid(self, trigger_order, trigger_order_idx):
         rows = []
-        n_cols = max(trigger_order_idx) + 1                
+        center = False
+        n_cols = max(trigger_order_idx) + 1
         n_rows = max( list(dict(Counter(trigger_order_idx)).values()))        
         # names_to_orders = dict(zip(trigger_order, trigger_order_idx))
         orders_to_namelists = {}
@@ -780,24 +787,32 @@ class Simul():
             r = []
             for ci in range(n_cols):
                 col_elements = len(orders_to_namelists[ci])
-                if ri<col_elements:
-                    block_name = orders_to_namelists[ci][ri]
+                col_offset = int((n_rows-col_elements)/2)
+                ri_f = ri - col_offset
+                if center:
+                    if ri<col_elements+col_offset and ri>=col_offset:
+                        block_name = orders_to_namelists[ci][ri_f]
+                    else:
+                        block_name = ""
                 else:
-                    block_name = ""                
+                    if ri<col_elements:
+                        block_name = orders_to_namelists[ci][ri]
+                    else:
+                        block_name = ""
                 r.append(block_name)
             rows.append(r)
         return rows
     
     def buildDiagram(self, params):
-        from orthogram import Color, DiagramDef, write_png, Side,  FontWeight, FontStyle
+        from orthogram import Color, DiagramDef, write_png, Side,  FontWeight, FontStyle, TextOrientation
 
         print('Building diagram...')        
-        title_fontsize = 48
-        block_fontsize = 28
-        arrow_fontsize = 18
-        arrow_base_value = 6.0
+        title_fontsize = 48*2
+        block_fontsize = 42*2
+        arrow_fontsize = 24*2
+        arrow_base_value = 12.0
         
-        d = DiagramDef(label=self.diagram_title, text_fill=Color(0, 0, 0), scale=2.0, collapse_connections=False, font_size=title_fontsize, connection_distance=20)
+        d = DiagramDef(label=self.diagram_title, text_fill=Color(0, 0, 0), scale=1.0, collapse_connections=False, font_size=title_fontsize, connection_distance=28)
         rows = self.arrangeInGrid(self.trigger_order, self.trigger_order_idx)
         row_len = len(rows[0])        
         # a row is a list of strings, which are labels for the cells        
@@ -830,12 +845,17 @@ class Simul():
                     swidth = 2
 
                 d.add_block(b,
-                            scale=2,
+                            scale=1,
+                            label_distance=40,
                             stroke=cstroke,
                             fill=cfill,
                             stroke_width=swidth,
-                            min_height=96,
-                            min_width=192,
+                            min_height=block_fontsize*3,
+                            min_width=450,
+                            margin_top=16,
+                            margin_bottom=16,
+                            margin_right=16,
+                            margin_left=16,
                             font_size=block_fontsize,
                             font_weight=fb, 
                             font_style=fs)
@@ -843,30 +863,40 @@ class Simul():
         if self.diagram_colors_on:
             legend_row1 = []
             for td in range(self.max_target_device_idx+1):
-                legend_row1.append("Device Index=" + str(td))
+                legend_row1.append("GPU Id=" + str(td))
             d.add_row(legend_row1)
             for td in range(self.max_target_device_idx+1):
-                d.add_block("Device Index=" + str(td),
+                d.add_block("GPU Id=" + str(td),
+                            label_distance=40,
                             fill=Color(*int_to_rgb(td, self.max_target_device_idx+1)),
                             stroke=Color(1.0,1.0,1.0),
                             stroke_width=12,
-                            min_height=96,
-                            min_width=192,
+                            min_height=block_fontsize*3,
+                            min_width=450,
+                            margin_top=16,
+                            margin_bottom=16,
+                            margin_right=16,
+                            margin_left=16,
                             font_size=block_fontsize)
 
             legend_row2 = []
             ri=0
             base_rank=0
             for rank in range(self.max_rank+1):
-                legend_row2.append("Process rank=" + str(rank))            
+                legend_row2.append("Rank=" + str(rank)) 
                 if int(rank+1) % row_len == 0 or rank==self.max_rank:
                     d.add_row(legend_row2)
                     for ii in range(len(legend_row2)):
-                        d.add_block("Process rank=" + str(ii+base_rank),
+                        d.add_block("Rank=" + str(ii+base_rank),
+                                    label_distance=40,
                                     stroke=Color(*int_to_rgb(ii+base_rank-1, self.max_rank+1)), 
                                     stroke_width=12,
-                                    min_height=96,
-                                    min_width=192,
+                                    min_height=block_fontsize*3,
+                                    min_width=450,
+                                    margin_top=16,
+                                    margin_bottom=16,
+                                    margin_right=16,
+                                    margin_left=16,
                                     font_size=block_fontsize)
                     legend_row2 = []
                     ri += 1
@@ -882,12 +912,13 @@ class Simul():
                                       buffer_fill=Color(1.0,1.0,1.0),
                                       buffer_width=2,
                                       stroke_width=2.0,
-                                      stroke=cstroke,                                      
+                                      stroke=Color(0.0,0.0,0.0), 
                                       arrow_base=arrow_base_value,
-                                      exits=[Side.RIGHT],
-                                      entrances=[Side.LEFT, Side.BOTTOM, Side.TOP],
+                                      exits=[Side.RIGHT, Side.BOTTOM],
+                                      entrances=[Side.LEFT, Side.TOP],
                                       font_size=arrow_fontsize,
-                                      label = ostring + " → " + str(c['end_label']) )
+                                      text_orientation=TextOrientation.HORIZONTAL,
+                                      label = ostring + "→" + str(c['end_label']) )
 
         for c in self.references:
             if c['end'] != 'main':

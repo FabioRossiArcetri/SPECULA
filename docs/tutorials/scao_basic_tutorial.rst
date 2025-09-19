@@ -350,6 +350,7 @@ Create a YAML file, for example ``params_scao_pyr_test_rec.yml``:
    # to command the DM and compute the interaction matrix
    pushpull:
      class:     'PushPullGenerator'
+     nmodes:    54
      amplitude: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0,
                  50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0,
                  50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0,
