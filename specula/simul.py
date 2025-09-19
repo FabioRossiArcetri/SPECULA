@@ -340,7 +340,6 @@ class Simul():
             # If not build, remember the remote rank of this object (needed for connections setup)
             if not build_this_object:
                 self.remote_objs_ranks[key] = target_rank
-                # continue
 
             if 'tag' in pars and build_this_object:
                 if 'target_device_idx' in pars:
