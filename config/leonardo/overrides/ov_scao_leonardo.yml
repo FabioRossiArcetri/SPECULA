@@ -1,3 +1,6 @@
+main_override:
+  total_time:      0.100
+
 # works
 #seeing_override:
 #  target_rank: 1
@@ -53,7 +56,6 @@ sh_override:
 # works
 #psf_override:
 #  target_rank: 1
-
 
 # not sure it works
 #data_store_override:

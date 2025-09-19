@@ -15,14 +15,6 @@ main:
   zenithAngleInDeg:  30.0                   # [deg] Airmass correction
   display_server:    true                   # Display server on auto-selected port
 
-data_store:
-  class:             'DataStore'
-  store_dir:         './output'             # Data result directory: 'store_dir'/TN/
-  inputs:    
-    input_list: [ 'ref-control_ref.out_comm',
-                  'psf-psf.out_sr'
-]
-
 
 seeing:
   class:             'WaveGenerator'
@@ -452,14 +444,13 @@ modal_combination:
 #  inputs:
 #    in_value1: 'modal_integrator.out_comm'
 #    in_value2: 'combine_avc.out_value'
-#s  outputs: ['out_value']
+#  outputs: ['out_value']
 
-zerocmd:
-  class:             'WaveGenerator'
-  constant:          0.0
-  vsize:             6263
-  outputs: ['output']
-
+#zerocmd:
+#  class:             'WaveGenerator'
+#  constant:          0.0
+#  vsize:             6263
+#  outputs: ['output']
 
 dm1:
   class:             'DM'
@@ -607,6 +598,14 @@ psf:
   inputs:
       in_ef:  'prop.out_source_on_axis_ef'
   outputs:  ['out_psf', 'out_sr']
+
+
+data_store:
+  class:             'DataStore'
+  store_dir:         './output'             # Data result directory: 'store_dir'/TN/
+  inputs:    
+    input_list: [ 'ref-control_ref.out_comm',
+                  'psf-psf.out_sr']
 
 
 # ---------------
