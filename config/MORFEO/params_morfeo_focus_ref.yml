@@ -19,10 +19,10 @@ seeing:
 
 wind_speed:
   class:             'WaveGenerator'
-  constant:          [5.5, 5.5, 5.1, 5.5, 5.6, 5.7, 5.8, 6.0, 6.5, 7.0,
-                      7.5, 8.5, 9.5, 11.5, 17.5, 23.0, 26.0, 29.0, 32.0, 27.0,
-                      22.0, 14.5, 9.5, 6.3, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0,
-                      8.5, 9.0, 9.5, 10.0, 10.0]      # [m/s] Wind speed value
+  constant:          [5.786,  5.786,  5.365, 5.786,  5.891, 5.996,  6.102,  6.312,  6.838,  7.364,
+                      7.89,   8.942,  9.994, 12.098, 18.41, 24.196, 27.352, 30.508, 33.664, 28.404,
+                      23.144, 15.254, 9.994, 6.6276, 5.786, 6.312,  6.838,  7.364,  7.89,   8.416,
+                      8.942,  9.468,  9.994, 10.52,  10.52] # [m/s] Wind speed value
   outputs: ['output']
 
 
@@ -135,13 +135,13 @@ sodium_altitude:
 
 sodium_intensity:
   class:             'WaveGenerator'
-  constant_data:     'na_profile_multipeak_y' # [m] sodium layer intensity values
+  constant_data:     'na_profile_multipeak_y' # sodium layer intensity values
   outputs: ['output']
 
 launcher1: &LAUNCHER
   class:             'LaserLaunchTelescope'
   simul_params_ref:  'main'
-  spot_size:          0.3
+  spot_size:          1.5
   tel_position:       [15.2, 15.2, 0]
   beacon_focus:       91275.7
 
@@ -159,7 +159,7 @@ sh_lgs1: &LGS_SH
   subap_npx:         14                      # Output sampling [usually corresponding to CCD pixels]
   subap_on_diameter: 68                      # Number of subapertures in diameter
   wavelengthInNm:    589                     # [nm] Pyramid wavelength
-  fov_ovs_coeff:     1.6                     # Force phase interpolation to a multiple of 68
+  fov_ovs_coeff:     1.52                    # Force phase interpolation to a multiple of 68
   rotAnglePhInDeg:   6.2
   laser_launch_tel_ref: 'launcher1'
   inputs: &LGS_SH_INPUTS
@@ -168,7 +168,7 @@ sh_lgs1: &LGS_SH
     sodium_intensity: 'sodium_intensity.output'
   outputs:  ['out_i']
 
-sh_lgs2: { <<: *LGS_SH, rotAnglePhInDeg: 14.2, laser_launch_tel_ref: 'launcher1',
+sh_lgs2: { <<: *LGS_SH, rotAnglePhInDeg: 14.2, laser_launch_tel_ref: 'launcher2',
           inputs: {<<: *LGS_SH_INPUTS, in_ef: 'prop.out_source_lgs2_ef'}}
 sh_lgs3: { <<: *LGS_SH, rotAnglePhInDeg: -6.2, laser_launch_tel_ref: 'launcher3',
           inputs: {<<: *LGS_SH_INPUTS, in_ef: 'prop.out_source_lgs3_ef'}}
@@ -267,7 +267,7 @@ detector_ngs1: &NGS_DETECTOR
   simul_params_ref:  'main'
   size:              [240,240]               # Detector size in pixels
   dt:                0.002                   # [s] Detector integration time
-  bandw:             330                      # [nm] Sensor bandwidth
+  bandw:             330                     # [nm] Sensor bandwidth
   photon_noise:      True                    # activate photon noise
   readout_noise:     True                    # activate readout noise
   readout_level:     1.0                     # readout noise in [e-/pix/frame]
@@ -354,14 +354,15 @@ tomo_polc_lgs:
   in_commands_size:   6564
   inputs:
     in_slopes_list:        ['slopec_lgs1.out_slopes','slopec_lgs2.out_slopes','slopec_lgs3.out_slopes','slopec_lgs4.out_slopes','slopec_lgs5.out_slopes','slopec_lgs6.out_slopes']
-    in_commands:            'modal_combination.out_vector:-1'
+    in_commands:            'iir_lgs.out_comm:-1'
   outputs:  ['out_modes', 'out_pseudo_ol_modes']
 
 iir_lgs:
   class:             'Integrator'
   simul_params_ref:  'main'
   int_gain: [0.0,0.25,0.0,0.25]
-  n_modes:  [2,5538,3,1021]
+  n_modes:  [3,5537,3,1021]
+  delay: 1.75
   inputs:
     delta_comm: 'tomo_polc_lgs.out_modes'
   outputs:  ['out_comm']
@@ -382,6 +383,7 @@ iir_ngs:
   simul_params_ref:  'main'
   int_gain: [0.1,0.1]
   n_modes:  [2,3]
+  delay: 1.75
   inputs:
     delta_comm: 'tomo_ngs.out_modes'
   outputs:  ['out_comm']
@@ -488,7 +490,7 @@ psf:
 
 modal_analysis:
   class: 'ModalAnalysis'
-  ifunc_inv_object: 'MAORY_480pix_99nacts_cir_spiRouObsCen_5zern_10000.0cn_inv'
+  ifunc_inv_object: 'MAORY_480pix_99nacts_cir_spider2023_5zern_10000.0cn_inv'
   inputs:
     in_ef: 'prop.out_source_on_axis_ef'
   outputs: ['out_modes']
