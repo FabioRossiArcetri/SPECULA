@@ -100,10 +100,10 @@ Moving data between GPU and CPU:
 
    # Original data on GPU
    gpu_slopes = Slopes(target_device_idx=0)  # GPU device 0
-   
+
    # Transfer to CPU for analysis
    cpu_slopes = gpu_slopes.copyTo(target_device_idx=-1)  # CPU
-   
+
    # Data is automatically converted between CuPy and NumPy arrays
 
 Persistence Example

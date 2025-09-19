@@ -56,13 +56,6 @@ prop:
                   'dm.out_layer:-1']
   outputs: ['out_on_axis_source_ef']
 
-modal_analysis:
-  class:                'ModalAnalysis'
-  ifunc_inv_object:     'KLmatrix_KL_v10_inv'
-  inputs:
-    in_ef: 'prop.out_on_axis_source_ef'
-  outputs: ['out_modes']
-
 pyramid:
   class:             'ModulatedPyramid'
   simul_params_ref:  'main'
@@ -95,6 +88,13 @@ slopec:
   inputs:
     in_pixels:        'detector.out_pixels'
   outputs: ['out_slopes']
+
+modal_analysis:
+  class:                'ModalAnalysis'
+  ifunc_inv_object:     'KLmatrix_KL_v10_inv'
+  inputs:
+    in_ef: 'prop.out_on_axis_source_ef'
+  outputs: ['out_modes']
 
 rec:
   class:              'Modalrec'

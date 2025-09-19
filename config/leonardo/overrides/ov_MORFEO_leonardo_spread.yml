@@ -1,6 +1,6 @@
 main_override:
   root_dir:        '/leonardo_work/try25_rossi/MORFEO_DATA0'         # Root directory for calibration manager
-  total_time:      0.200
+  total_time:      0.100
   display_server:  false
 
 # Parallelization over GPUs on a single node
@@ -65,6 +65,7 @@ slopec_ref2_override: { target_device_idx: 1, target_rank: 13 }
 slopec_ref3_override: { target_device_idx: 2, target_rank: 14 }
 
 tomo_ngs_override: { target_device_idx: 3, target_rank: 7 }
+iir_ngs_override: { target_device_idx: 3, target_rank: 7 }
 iir_focus_override: { target_device_idx: 3, target_rank: 7 }
 subtract_ref_override: { target_device_idx: 3, target_rank: 7 }
 
