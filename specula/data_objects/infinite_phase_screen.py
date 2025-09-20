@@ -1,7 +1,7 @@
 import numpy as np
 
 from specula.base_data_obj import BaseDataObj
-from specula import ASEC2RAD, RAD2ASEC
+from specula import ASEC2RAD, RAD2ASEC, cpuArray
 
 from seeing.sympyHelpers import *
 from seeing.formulary import *
