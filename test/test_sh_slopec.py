@@ -184,18 +184,15 @@ class TestShSlopec(unittest.TestCase):
         last_weights_2d_flat[slopec.subap_idx.flatten()] = last_weights.T.flatten()
         last_weights_2d = last_weights_2d_flat.reshape(last_weights_2d.shape)
 
-        # first step is skipped in the int_pixels computation, so the expected weights
-        # are the average of the second and third frame
-        expected_weights = (intensity + xp.roll(intensity, shift=1, axis=0))
+        # the expected weights are the average of frames
+        expected_weights = 2 * intensity + xp.roll(intensity, shift=1, axis=0)
         expected_weights = expected_weights / expected_weights.max()
 
         np.testing.assert_allclose(cpuArray(last_weights_2d), cpuArray(expected_weights), atol=1e-3)
 
         # Then compares slopec.int_pixels.pixels and slopec.pixels.pixels:
         # they must be equal because the accumulation was resetted
-        # expect for a scalar factor equal factor = float(self.seconds_to_t(t-self.t_previous)) / float(self.weight_int_pixel_dt)
-        factor = t_seconds / weight_int_pixel_dt
-        expected_int_pixels = pixels.pixels.astype(slopec.dtype) * factor
+        expected_int_pixels = pixels.pixels.astype(slopec.dtype)
         np.testing.assert_allclose(cpuArray(slopec.int_pixels.pixels), cpuArray(expected_int_pixels), atol=1e-3)
 
     @cpu_and_gpu
@@ -205,6 +202,7 @@ class TestShSlopec(unittest.TestCase):
         with a specific weight_int_pixel_dt and window_int_pixel.
         """
         weight_int_pixel_dt = 2.0
+        window_int_threshold = 1.0
 
         sh, v, m, flat_ef, subapdata = self.get_sh(target_device_idx, xp, with_laser_launch=True)
         t_seconds = 1.0
@@ -220,11 +218,12 @@ class TestShSlopec(unittest.TestCase):
 
         # Compute slopes using ShSlopec
         pixels = Pixels(*intensity.shape, target_device_idx=target_device_idx)
-        pixels.pixels = intensity
+        pixels.pixels = intensity/intensity.max()*10
         pixels.generation_time = t
 
         # Create the slope computer object with the given parameters
-        slopec = ShSlopec(subapdata, weight_int_pixel_dt=weight_int_pixel_dt, window_int_pixel=True, target_device_idx=target_device_idx)
+        slopec = ShSlopec(subapdata, weight_int_pixel_dt=weight_int_pixel_dt, window_int_threshold=window_int_threshold,
+                          window_int_pixel=True, target_device_idx=target_device_idx)
         slopec.inputs['in_pixels'].set(pixels)
 
         # Simulate 2 frames with known values
