@@ -41,7 +41,13 @@ class IdealDerivativeSensor(BaseProcessingObj):
 
         # Conversion factor from derivative to slopes
         # slope_value = derivative [nm] * 1e-9 / pixel_pitch [m] * rad2asec / FoV [asec] (radius)
-        self.slope_factor = 1e-9 * RAD2ASEC / (self.pixel_pitch * self.fov / 2.0)
+
+        # Correction to ensure consistent scaling with SH
+        # make_xy (used in in the SH slope computer) has spacing 2.0/np_sub while linspace has 2.0/(np_sub-1)
+        np_sub = self.subapdata.np_sub
+        spacing_correction = (np_sub - 1) / np_sub
+
+        self.slope_factor = 1e-9 * RAD2ASEC / (self.pixel_pitch * self.fov / 2.0) * spacing_correction
 
         # Initialize slopes output
         self.slopes = Slopes(length=self.subapdata.n_subaps * 2,
@@ -80,7 +86,6 @@ class IdealDerivativeSensor(BaseProcessingObj):
         """Pre-compute indices for each subaperture."""
         npixels = ef_size[0]
         nx = self.subapdata.nx
-        ny = self.subapdata.ny
         np_sub = npixels // nx  # pixels per subaperture
 
         self._subap_indices = []

@@ -6,6 +6,7 @@ specula.init(0)  # Default target device
 import unittest
 
 from specula import cpuArray
+from specula import np
 
 from specula.data_objects.source import Source
 from specula.base_time_obj import BaseTimeObj
@@ -73,8 +74,8 @@ class TestAtmoEvolution(unittest.TestCase):
                 obj.trigger()
 
             for obj in objlist:
-               obj.post_trigger()
-            
+                obj.post_trigger()
+
         ef_onaxis = cpuArray(prop.outputs['out_on_axis_source_ef'])
         ef_offaxis = cpuArray(prop.outputs['out_lgs1_source_ef'])
 
@@ -152,7 +153,7 @@ class TestAtmoEvolution(unittest.TestCase):
                 obj.trigger()
 
             for obj in objlist:
-               obj.post_trigger()
+                obj.post_trigger()
 
         id_a1 = id(atmo.outputs['layer_list'][0].field)
         id_b1 = id(atmo.outputs['layer_list'][1].field)
@@ -165,7 +166,7 @@ class TestAtmoEvolution(unittest.TestCase):
                 obj.trigger()
 
             for obj in objlist:
-               obj.post_trigger()
+                obj.post_trigger()
 
         id_a2 = id(atmo.outputs['layer_list'][0].field)
         id_b2 = id(atmo.outputs['layer_list'][1].field)
@@ -196,10 +197,10 @@ class TestAtmoEvolution(unittest.TestCase):
 
         for obj in [seeing, wind_speed, wind_direction]:
             obj.setup()
-            
+ 
         with self.assertRaises(ValueError):
             atmo.setup()
-        
+
     @cpu_and_gpu
     def test_wrong_wind_speed_length_is_checked(self, target_device_idx, xp):
 
@@ -223,7 +224,7 @@ class TestAtmoEvolution(unittest.TestCase):
 
         for obj in [seeing, wind_speed, wind_direction]:
             obj.setup()
- 
+
         with self.assertRaises(ValueError):
             atmo.setup()
 
@@ -250,10 +251,9 @@ class TestAtmoEvolution(unittest.TestCase):
 
         for obj in [seeing, wind_speed, wind_direction]:
             obj.setup()
-            
+
         with self.assertRaises(ValueError):
             atmo.setup()
-
 
     @cpu_and_gpu
     def test_extra_delta_time(self, target_device_idx, xp):
@@ -292,7 +292,7 @@ class TestAtmoEvolution(unittest.TestCase):
                 obj.trigger()
 
             for obj in objlist:
-               obj.post_trigger()
+                obj.post_trigger()
 
             for obj in objlist:
                 obj.check_ready(delta_t)
@@ -301,41 +301,26 @@ class TestAtmoEvolution(unittest.TestCase):
                 obj.trigger()
 
             for obj in objlist:
-               obj.post_trigger()
+                obj.post_trigger()
 
         assert atmo.delta_time == delta_time + extra_delta_time
 
     @cpu_and_gpu
-    def test_reverse_atmo_layer_list(self, target_device_idx, xp):
-        '''Test that reverse_atmo_layer_list reverses the order of atmo_layer_list in AtmoPropagation'''
-        simulParams = SimulParams(pixel_pupil=160, pixel_pitch=0.05, time_step=1)
-        seeing = WaveGenerator(constant=0.65, target_device_idx=target_device_idx)
-        wind_speed = WaveGenerator(constant=[5.5, 2.5, 10.0], target_device_idx=target_device_idx)
-        wind_direction = WaveGenerator(constant=[0, 10, -10], target_device_idx=target_device_idx)
-
-        atmo = AtmoEvolution(simulParams,
+    def test_pupil_distances_are_scaled_by_airmass(self, target_device_idx, xp):
+        """
+        Test that pupil_distances are correctly computed as heights * airmass
+        """
+        pixel_pupil = 160
+        zenith = 30.0  # degrees
+        simul_params = SimulParams(pixel_pupil=pixel_pupil, pixel_pitch=0.05, zenithAngleInDeg=zenith, time_step=1)
+        heights = [1000.0, 5000.0, 12000.0]
+        airmass = 1.0 / np.cos(np.radians(zenith))
+        atmo = AtmoEvolution(simul_params,
                              L0=23,
                              data_dir=self.data_dir,
-                             heights=[30.0, 5000.0, 20000.0],
-                             Cn2=[0.5, 0.25, 0.25],
-                             fov=0.0,
+                             heights=heights,
+                             Cn2=[1/3, 1/3, 1/3],
+                             fov=120.0,
                              target_device_idx=target_device_idx)
-
-        atmo.inputs['seeing'].set(seeing.output)
-        atmo.inputs['wind_direction'].set(wind_direction.output)
-        atmo.inputs['wind_speed'].set(wind_speed.output)
-        atmo.setup()
-
-        original_layers = list(atmo.outputs['layer_list'])
-
-        prop = AtmoPropagation(simulParams,
-                               source_dict={'src': Source(polar_coordinates=[0.0, 0.0], magnitude=8, wavelengthInNm=750)},
-                               reverse_atmo_layer_list=True,
-                               target_device_idx=target_device_idx)
-        prop.inputs['atmo_layer_list'].set(atmo.outputs['layer_list'])
-        prop.setup()
-
-        reversed_layers = prop.atmo_layer_list
-
-        assert reversed_layers != original_layers
-        assert reversed_layers == original_layers[::-1]
+        expected = cpuArray(heights) * airmass
+        np.testing.assert_allclose(atmo.pupil_distances, expected, rtol=1e-8)

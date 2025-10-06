@@ -43,12 +43,6 @@ We'll simulate a modern SCAO system similar to those used on 8-10m class telesco
 Part 1: System Configuration
 ----------------------------
 
-Notes on script running
-~~~~~~~~~~~~~~~~~~~~~~~
-
-This tutorial uses the *main_simul.py* script in several places, which is located in *SPECULA/main/scao*.
-It is assumed that the user will *cd* into this directory before starting.
-
 Calculate and save the influence functions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -273,7 +267,7 @@ Create a script ``compute_influence_functions.py`` (inspired by ``test_modal_bas
 
           # Test M2C loading
           loaded_m2c = M2C.restore(m2c_filename)
-          assert loaded_m2c.m2c.shape == kl_basis.shape
+          assert loaded_m2c.m2c.shape == m2c.shape
           print("OK: M2C loading test passed")
           
       except Exception as e:
@@ -1039,7 +1033,7 @@ and saving the result in a different output directory, using the ``overrides`` f
     for mag in magnitudes:
         overrides = ("{"
                     f"source_ngs.magnitude: {mag}, "
-                    f"data_store.store_dir: ./output/magnitude/mag{mag}"
+                    f"data_store.store_dir: ./output/magnitude/mag_{mag}"
                     "}")
 
         specula.main_simul(yml_files=[base_config], overrides=overrides)

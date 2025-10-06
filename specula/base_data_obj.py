@@ -74,7 +74,10 @@ class BaseDataObj(BaseTimeObj):
                     with warnings.catch_warnings():
                         if self.PerformanceWarning:
                             warnings.simplefilter("ignore", category=self.PerformanceWarning)
-                        dest_attr[:] = self_attr
+                        try:
+                            dest_attr[:] = self_attr
+                        except:
+                            dest_attr = self_attr
                 elif DtH:
                     # Do not set blocking=True for cupy 12.x compatibility.
                     # Blocking is True by default in later versions anyway

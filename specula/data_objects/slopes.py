@@ -1,6 +1,3 @@
-
-
-import numpy as np
 from astropy.io import fits
 
 from specula import cpuArray
@@ -222,7 +219,7 @@ class Slopes(BaseDataObj):
         """
         hdr = fits.Header()
         hdr['VERSION'] = 3
-        hdr['OBJ_TYPE'] = 'Intensity'
+        hdr['OBJ_TYPE'] = 'Slopes'
         hdr['INTRLVD'] = int(self.interleave)
         hdr['LENGTH'] = self.size
         hdr['PUPDTAG'] = self.pupdata_tag if self.pupdata_tag is not None else ''

@@ -28,6 +28,20 @@ def computeTag(output_obj_name, dest_object, output_attr_name, input_attr_name):
     return rr
 
 
+import matplotlib.pyplot as plt
+
+mplcolors = plt.get_cmap("tab10").colors
+
+def int_to_rgb(val: int, maxval=16):
+    val += 1
+    if val>=0 and val<len(mplcolors):
+        return mplcolors[val]
+    scale = 255 / maxval
+    r = int((val * scale * 611) % 256)
+    g = int((val * scale * 551) % 256)
+    b = int((val * scale * 501) % 256)
+    return (1.0 - r/255.0, 1.0 - g/255.0, 1.0 - b/255.0)
+
 class Simul():
     '''
     Simulation organizer
@@ -36,13 +50,20 @@ class Simul():
                  *param_files,
                  simul_idx=0,
                  overrides=None,
+                 stepping=False,
                  diagram=False,
                  diagram_title=None,
-                 diagram_filename=None
+                 diagram_filename=None,
+                 diagram_colors_on=False
                  ):
         if len(param_files) < 1:
             raise ValueError('At least one Yaml parameter file must be present')
+        self.is_dataobj = {}
+        self.connections = []
+        self.references = []
         self.all_objs_ranks = {}
+        self.max_rank = 0
+        self.max_target_device_idx = 0
         self.remote_objs_ranks = {}
         self.param_files = param_files
         self.objs = {}
@@ -53,9 +74,12 @@ class Simul():
             self.overrides = []
         else:
             self.overrides = overrides
+        self.stepping = stepping
         self.diagram = diagram
         self.diagram_title = diagram_title
         self.diagram_filename = diagram_filename
+        self.diagram_colors_on = diagram_colors_on
+        print('self.diagram_colors_on', self.diagram_colors_on)
 
     def split_output(self, output_name, get_ref=False, use_inputs=False):
         '''
@@ -175,7 +199,7 @@ class Simul():
                         return True
         return False
 
-    def trigger_order(self, params_orig):
+    def build_trigger_order(self, params_orig):
         '''
         Work on a copy of the parameter file.
         1. Find leaves, add them to trigger
@@ -289,8 +313,9 @@ class Simul():
             klass = import_class(classname, additional_modules)
             args = inspect.getfullargspec(getattr(klass, '__init__')).args
             hints = get_type_hints(klass)
-
             target_device_idx = pars.get('target_device_idx', None)
+            if (not target_device_idx is None) and target_device_idx > self.max_target_device_idx:
+                self.max_target_device_idx = target_device_idx
  
             par_target_rank = pars.get('target_rank', None)
             if par_target_rank is None:
@@ -299,10 +324,13 @@ class Simul():
             else:
                 target_rank = par_target_rank
                 self.all_objs_ranks[key] = par_target_rank
+                if par_target_rank > self.max_rank:
+                    self.max_rank = par_target_rank
                 del pars['target_rank']
 
             # create the simulations objects for this process. Data Objects are created
             # on all ranks (processes) by default, unless a specific rank has been specified.
+            self.is_dataobj[key] = issubclass(klass, BaseDataObj)
 
             build_this_object = (process_rank == target_rank) or \
                                 (issubclass(klass, BaseDataObj) and (par_target_rank == None)) or \
@@ -312,9 +340,8 @@ class Simul():
             # If not build, remember the remote rank of this object (needed for connections setup)
             if not build_this_object:
                 self.remote_objs_ranks[key] = target_rank
-                continue
 
-            if 'tag' in pars:
+            if 'tag' in pars and build_this_object:
                 if 'target_device_idx' in pars:
                     del pars['target_device_idx']
                 if len(pars) > 2:
@@ -338,22 +365,33 @@ class Simul():
 
                 # dict_ref field contains a dictionary of names and associated data objects (defined in the same yml file)
                 elif name.endswith('_dict_ref'):
-                    data = {x : self.objs[x] for x in value}
-                    pars2[name[:-4]] = data
+                    if build_this_object:
+                        data = {x : self.objs[x] for x in value}
+                        pars2[name[:-4]] = data
+                    for x in value:
+                        a_ref = {}
+                        a_ref['start'] = key
+                        a_ref['end'] = x
+                        self.references.append(a_ref)
 
                 elif name.endswith('_ref'):
-                    data = self.objs[value]
-                    pars2[name[:-4]] = data
+                    if build_this_object:
+                        data = self.objs[value]
+                        pars2[name[:-4]] = data
+                    a_ref = {}
+                    a_ref['start'] = key
+                    a_ref['end'] = value
+                    self.references.append(a_ref)
 
                 # data fields are read from a fits file
-                elif name.endswith('_data'):
+                elif name.endswith('_data') and build_this_object:
                     data = cm.read_data(value)
                     pars2[name[:-5]] = data
 
                 # object fields are data objects which are loaded from a fits file
                 # the name of the object is the string preceeding the "_object" suffix,
                 # while its type is inferred from the constructor of the current class
-                elif name.endswith('_object'):
+                elif name.endswith('_object') and build_this_object:
                     parname = name[:-7]
                     if value is None:
                         pars2[parname] = None
@@ -382,7 +420,11 @@ class Simul():
                         raise ValueError(f'No type hint for parameter {parname} of class {classname}')
 
                 else:
-                    pars2[name] = value
+                    if build_this_object:
+                        pars2[name] = value
+
+            if not build_this_object:
+                continue
 
             # Add global and class-specific params if needed
             my_params = {}
@@ -406,7 +448,7 @@ class Simul():
             try:
                 self.objs[key] = klass(**my_params)
             except Exception:
-                print(f'Exception building', key)
+                print('Exception building', key)
                 raise
             if classname != 'SimulParams':
                 self.objs[key].stopMemUsageCount()
@@ -454,7 +496,6 @@ class Simul():
                                                                             output.delay))
                 
     def connect_objects(self, params):
-        self.connections = []
         
         for dest_object, pars in params.items():
 
@@ -497,6 +538,14 @@ class Simul():
 
                     output = self.split_output(single_output_name, get_ref=True)
 
+                    a_connection = {}
+                    a_connection['start'] = output.obj_name
+                    a_connection['end'] = dest_object
+                    a_connection['start_label'] = output.output_key
+#                    a_connection['middle_label'] = self.objs[dest_object].inputs[use_input_name]
+                    a_connection['end_label'] = input_name
+                    self.connections.append(a_connection)
+
                     # Remote-to-remote: nothing to do
                     if not local_dest_object and output.ref is None:
                         continue
@@ -507,13 +556,6 @@ class Simul():
                         print(f'Exception while connecting {single_output_name} {dest_object}.{input_name}')
                         raise
 
-                    a_connection = {}
-                    a_connection['start'] = output.obj_name
-                    a_connection['end'] = dest_object
-                    a_connection['start_label'] = output.output_key
-#                    a_connection['middle_label'] = self.objs[dest_object].inputs[use_input_name]
-#                    a_connection['end_label'] = self.objs[dest_object].inputs[use_input_name]
-                    self.connections.append(a_connection)
 
     def isReplay(self, params):
         return 'data_source' in params
@@ -527,6 +569,7 @@ class Simul():
         - objnames is a list of objects referenced by original DataStore inpus
         '''
         data_source_pars = {}
+        data_source_outputs = {}
         data_source_pars['class'] = 'DataSource'
         data_source_pars['outputs'] = []
         if 'data_format' in datastore_pars:
@@ -540,13 +583,15 @@ class Simul():
         for _, fullname in self.iterate_inputs(datastore_pars):
             output = self.split_output(fullname)
             data_source_pars['outputs'].append(output.input_name)
+            data_source_outputs[output.obj_name+'.'+output.output_key] = output.input_name
             objnames.append(output.obj_name)
 
-        return data_source_pars, objnames
+        return data_source_pars, objnames, data_source_outputs
 
     def build_replay(self, params):
         replay_params = deepcopy(params)
         obj_to_remove = []
+        data_source_objname =''
         data_source_outputs = {}
         for key, pars in params.items():
             try:
@@ -555,8 +600,10 @@ class Simul():
                 raise KeyError(f'Object {key} does not define the "class" parameter')
 
             if classname=='DataStore':
-                data_source_pars, obj_to_remove = self.data_store_to_data_source(pars)
+                data_source_pars, obj_to_remove, data_source_outputs = self.data_store_to_data_source(pars)
                 replay_params['data_source'] = data_source_pars
+                data_source_objname = key
+                obj_to_remove.append(data_source_objname)
 
         for obj_name in set(obj_to_remove):
             del replay_params[obj_name]
@@ -568,8 +615,9 @@ class Simul():
                         if type(output_name_full) is list:
                             print('TODO: list of inputs is not handled in output replay')
                             continue
+                        print('output_name_full', output_name_full)
                         if output_name_full in data_source_outputs.keys():
-                            replay_params[key]['inputs'][input_name] = data_source_outputs[output_name_full]
+                            replay_params[key]['inputs'][input_name] = 'data_source.' + data_source_outputs[output_name_full]
 
         return replay_params
 
@@ -598,25 +646,35 @@ class Simul():
         # Copy DataStore params and convert it to DataSource
         for key, pars in params.items():
             if pars['class'] == 'DataStore':
-                data_source_pars, _ = self.data_store_to_data_source(pars, set_store_dir=set_store_dir)
+                data_source_pars, _, datastore_mapping = self.data_store_to_data_source(pars, set_store_dir=set_store_dir)
                 replay_params['data_source'] = data_source_pars
 
-                # Remember all datastore outputs
-                for _, fullname in self.iterate_inputs(pars):
-                    output = self.split_output(fullname)
-                    datastore_outputs[output.output_key] = output.input_name
-    
+                # Merge all datastore outputs using the complete key (obj_name.output_key)
+                datastore_outputs.update(datastore_mapping)
+
         def add_key(key):
             if key in replay_params:
                 return
-            replay_params[key] = params[key].copy()  
+
+            replay_params[key] = params[key].copy()
+
+            # Add all inputs
             for k, _input in self.iterate_inputs(params[key]):
                 desc = self.split_output(_input)
-                if desc.output_key in datastore_outputs:
-                    replay_params[key]['inputs'][k] = 'data_source.' + datastore_outputs[desc.output_key]
+                # Use the complete key for lookup
+                complete_key = f"{desc.obj_name}.{desc.output_key}"
+                if complete_key in datastore_outputs:
+                    replay_params[key]['inputs'][k] = 'data_source.' + datastore_outputs[complete_key]
                     continue
                 else:
                     add_key(desc.obj_name)
+            # Add all references to other objects
+            for k, v in params[key].items():
+                if k.endswith('_dict_ref'):
+                    for objname in v:
+                        add_key(objname)
+                elif k.endswith('_ref'):
+                    add_key(v)
 
         for key in target_object_names:
             add_key(key)
@@ -714,7 +772,8 @@ class Simul():
 
     def arrangeInGrid(self, trigger_order, trigger_order_idx):
         rows = []
-        n_cols = max(trigger_order_idx) + 1                
+        center = False
+        n_cols = max(trigger_order_idx) + 1
         n_rows = max( list(dict(Counter(trigger_order_idx)).values()))        
         # names_to_orders = dict(zip(trigger_order, trigger_order_idx))
         orders_to_namelists = {}
@@ -727,28 +786,153 @@ class Simul():
             r = []
             for ci in range(n_cols):
                 col_elements = len(orders_to_namelists[ci])
-                if ri<col_elements:
-                    block_name = orders_to_namelists[ci][ri]
+                col_offset = int((n_rows-col_elements)/2)
+                ri_f = ri - col_offset
+                if center:
+                    if ri<col_elements+col_offset and ri>=col_offset:
+                        block_name = orders_to_namelists[ci][ri_f]
+                    else:
+                        block_name = ""
                 else:
-                    block_name = ""                
+                    if ri<col_elements:
+                        block_name = orders_to_namelists[ci][ri]
+                    else:
+                        block_name = ""
                 r.append(block_name)
             rows.append(r)
         return rows
+    
+    def buildDiagram(self, params):
+        from orthogram import Color, DiagramDef, write_png, Side,  FontWeight, FontStyle, TextOrientation
 
-    def buildDiagram(self):
-        from orthogram import Color, DiagramDef, write_png, Side, FontWeight, TextOrientation
-
-        print('Building diagram...')
-
-        d = DiagramDef(label=self.diagram_title, text_fill=Color(0, 0, 1), scale=2.0, collapse_connections=True)
+        print('Building diagram...')        
+        title_fontsize = 48*2
+        block_fontsize = 42*2
+        arrow_fontsize = 24*2
+        arrow_base_value = 12.0
+        
+        d = DiagramDef(label=self.diagram_title, text_fill=Color(0, 0, 0), scale=1.0, collapse_connections=False, font_size=title_fontsize, connection_distance=28)
         rows = self.arrangeInGrid(self.trigger_order, self.trigger_order_idx)
-        # a row is a list of strings, which are labels for the cells
+        row_len = len(rows[0])        
+        # a row is a list of strings, which are labels for the cells        
         for r in rows:
-            d.add_row(r)        
+            d.add_row(r)
+            for b in r:
+                target_device_idx = 0
+                target_rank = 0
+                if b in params and 'target_device_idx' in params[b]:
+                    target_device_idx = params[b]['target_device_idx']
+                if b in self.all_objs_ranks:
+                    target_rank = self.all_objs_ranks[b]
+                
+                if b in self.is_dataobj and not self.is_dataobj[b]:
+                    fs = FontStyle.ITALIC
+                    fb = FontWeight.BOLD
+                else:
+                    fs = FontStyle.NORMAL
+                    fb = FontWeight.NORMAL
+
+                if self.diagram_colors_on:
+                    cstroke = Color(*int_to_rgb(target_rank-1, self.max_rank+1))
+                    refcstroke = Color(0,0.5,0)
+                    cfill = Color(*int_to_rgb(target_device_idx, self.max_target_device_idx+1))
+                    swidth = 12
+                else:
+                    cstroke = Color(0,0,0)
+                    refcstroke = Color(0,0,0)
+                    cfill = Color(1,1,1)
+                    swidth = 2
+
+                d.add_block(b,
+                            scale=1,
+                            label_distance=40,
+                            stroke=cstroke,
+                            fill=cfill,
+                            stroke_width=swidth,
+                            min_height=block_fontsize*3,
+                            min_width=450,
+                            margin_top=16,
+                            margin_bottom=16,
+                            margin_right=16,
+                            margin_left=16,
+                            font_size=block_fontsize,
+                            font_weight=fb, 
+                            font_style=fs)
+        
+        if self.diagram_colors_on:
+            legend_row1 = []
+            for td in range(self.max_target_device_idx+1):
+                legend_row1.append("GPU Id=" + str(td))
+            d.add_row(legend_row1)
+            for td in range(self.max_target_device_idx+1):
+                d.add_block("GPU Id=" + str(td),
+                            label_distance=40,
+                            fill=Color(*int_to_rgb(td, self.max_target_device_idx+1)),
+                            stroke=Color(1.0,1.0,1.0),
+                            stroke_width=12,
+                            min_height=block_fontsize*3,
+                            min_width=450,
+                            margin_top=16,
+                            margin_bottom=16,
+                            margin_right=16,
+                            margin_left=16,
+                            font_size=block_fontsize)
+
+            legend_row2 = []
+            ri=0
+            base_rank=0
+            for rank in range(self.max_rank+1):
+                legend_row2.append("Rank=" + str(rank)) 
+                if int(rank+1) % row_len == 0 or rank==self.max_rank:
+                    d.add_row(legend_row2)
+                    for ii in range(len(legend_row2)):
+                        d.add_block("Rank=" + str(ii+base_rank),
+                                    label_distance=40,
+                                    stroke=Color(*int_to_rgb(ii+base_rank-1, self.max_rank+1)), 
+                                    stroke_width=12,
+                                    min_height=block_fontsize*3,
+                                    min_width=450,
+                                    margin_top=16,
+                                    margin_bottom=16,
+                                    margin_right=16,
+                                    margin_left=16,
+                                    font_size=block_fontsize)
+                    legend_row2 = []
+                    ri += 1
+                    base_rank += row_len            
+
         for c in self.connections:
-            aconn = d.add_connection(c['start'], c['end'], buffer_fill=Color(1.0,1.0,1.0), buffer_width=1, 
-                             exits=[Side.RIGHT], entrances=[Side.LEFT, Side.BOTTOM, Side.TOP])
-            #aconn.set_start_label(c['middle_label'],font_weight=FontWeight.BOLD, text_fill=Color(0, 0.5, 0), text_orientation=TextOrientation.HORIZONTAL)
+            if c['start_label'] is None:
+                ostring = ""
+            else:
+                ostring = str(c['start_label'])
+            aconn = d.add_connection( c['start'],
+                                      c['end'],
+                                      buffer_fill=Color(1.0,1.0,1.0),
+                                      buffer_width=2,
+                                      stroke_width=2.0,
+                                      stroke=Color(0.0,0.0,0.0), 
+                                      arrow_base=arrow_base_value,
+                                      exits=[Side.RIGHT, Side.BOTTOM],
+                                      entrances=[Side.LEFT, Side.TOP],
+                                      font_size=arrow_fontsize,
+                                      text_orientation=TextOrientation.HORIZONTAL,
+                                      label = ostring + "→" + str(c['end_label']) )
+
+        for c in self.references:
+            if c['end'] != 'main':
+                aconn = d.add_connection( c['start'],
+                                          c['end'],
+                                          buffer_fill=Color(1.0,1.0,1.0),
+                                          buffer_width=2,
+                                          stroke_width=2.0,
+                                          stroke=refcstroke,
+                                          arrow_base=arrow_base_value,
+                                          exits=[Side.LEFT],
+                                          entrances=[Side.RIGHT, Side.BOTTOM, Side.TOP], 
+                                          stroke_dasharray=[6,6] )
+
+
         write_png(d, self.diagram_filename)
         print('Diagram saved.')
 
@@ -768,7 +952,7 @@ class Simul():
         # Actual creation code
         self.apply_overrides(params)
 
-        self.trigger_order, self.trigger_order_idx = self.trigger_order(params)
+        self.trigger_order, self.trigger_order_idx = self.build_trigger_order(params)
         print(f'{self.trigger_order=}')
         print(f'{self.trigger_order_idx=}')
 
@@ -780,6 +964,14 @@ class Simul():
         self.build_objects(params)
         self.create_input_list_inputs(params)
         self.connect_objects(params)
+        
+        if (process_rank == 0 or process_rank is None) and \
+           (self.diagram or self.diagram_filename or self.diagram_title):
+            if self.diagram_filename is None:
+                self.diagram_filename = str(Path(self.param_files[0]).with_suffix('.png'))
+            if self.diagram_title is None:
+                self.diagram_title = str(Path(self.param_files[0]).with_suffix(''))
+            self.buildDiagram(params)
 
         if replay_params is not None:
             for obj in self.objs.values():
@@ -787,14 +979,7 @@ class Simul():
                     obj.setReplayParams(replay_params)
 
         # Initialize housekeeping objects
-        self.loop = LoopControl()
-
-        if self.diagram or self.diagram_filename or self.diagram_title:
-            if self.diagram_filename is None:
-                self.diagram_filename = str(Path(self.param_files[0]).with_suffix('.png'))
-            if self.diagram_title is None:
-                self.diagram_title = str(Path(self.param_files[0]).with_suffix(''))
-            self.buildDiagram()
+        self.loop = LoopControl(stepping=self.stepping)
 
         # Build loop
         for name, idx in zip(self.trigger_order, self.trigger_order_idx):

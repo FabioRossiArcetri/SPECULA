@@ -2,7 +2,7 @@
 import re
 import typing
 import importlib
-
+import warnings
 
 def camelcase_to_snakecase(s):
     '''
@@ -17,6 +17,7 @@ def camelcase_to_snakecase(s):
             result.append('_')
         result.append(t)
     return ''.join([x.lower() for x in result])
+
 
 def import_class(classname, additional_modules=[]):
     '''
@@ -56,15 +57,23 @@ def import_class(classname, additional_modules=[]):
                     'specula.display'] + additional_modules
     
     for module_path in module_paths:
+        module_to_import = f'{module_path}.{modulename}'
         try:
-            mod = importlib.import_module(f'{module_path}.{modulename}')
+            mod = importlib.import_module(module_to_import)
             try:
                 return getattr(mod, classname)
             except AttributeError:
                 raise AttributeError(f'Class {classname} not found in file {modulename}.py')
-        except ModuleNotFoundError:
-            # import_module failed, try with next module
-            pass
+        except ModuleNotFoundError as e:
+            match = re.search(r"No module named '([^']+)'", str(e))
+            # Check if the failed import was for the wanted module,
+            # or something else (e.g. imports of missing third-party
+            # packages inside that module)
+            if match:
+                this_module = match.group(1)
+                if this_module != module_to_import:
+                    # This is not an exception for our module, re-raise it
+                    raise
 
     raise ImportError(f'Class {classname} must be defined in a file called {modulename}.py but it cannot be found')
 
@@ -187,3 +196,49 @@ def psd_to_signal(psd, fs, xp, dtype, complex_dtype, seed=1):
     out = xp.real(temp).astype(dtype)
     im = xp.imag(temp).astype(dtype)
     return out, im
+
+def local_mean_rebin(arr, mask, xp, block_size=5):
+    """
+    Compute the local mean over non-overlapping blocks of size block_size x block_size,
+    ignoring invalid pixels (where mask is False). Invalid pixels are replaced with NaN,
+    so the mean is computed only over valid pixels.
+
+    Parameters:
+        arr: 2D array of values (phase, etc.)
+        mask: 2D boolean array, True for valid pixels, False for invalid
+        xp: numpy or cupy module
+        block_size: size of the block for local averaging
+
+    Returns:
+        result: 2D array of same shape as arr, filled with local means for invalid pixels
+    """
+    # Compute global mean only on valid pixels
+    global_mean = xp.mean(arr[mask]) if xp.any(mask) else xp.nan
+
+    # Replace invalid pixels with NaN
+    arr_valid = xp.where(mask, arr, xp.nan)
+    h, w = arr_valid.shape
+
+    # Crop array to be divisible by block_size
+    h_crop = h - (h % block_size)
+    w_crop = w - (w % block_size)
+    arr_valid = arr_valid[:h_crop, :w_crop]
+
+    # Reshape to blocks
+    arr_blocks = arr_valid.reshape(h_crop // block_size, block_size, w_crop // block_size, block_size)
+    arr_blocks = arr_blocks.transpose(0, 2, 1, 3)  # shape: (h_blocks, w_blocks, block_size, block_size)
+
+    # Compute mean ignoring NaNs
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        block_means = xp.nanmean(arr_blocks, axis=(2, 3))
+    block_means = xp.where(xp.isnan(block_means), global_mean, block_means)
+
+    # Expand block means back to original shape
+    local_mean = xp.repeat(xp.repeat(block_means, block_size, axis=0), block_size, axis=1)
+
+    # Fill result array with local means, keep original shape
+    result = xp.full_like(arr, xp.nan, dtype=arr.dtype)
+    result[:h_crop, :w_crop] = local_mean
+
+    return result

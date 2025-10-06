@@ -22,7 +22,7 @@ if hasattr(np, 'exceptions'):
 
 @fuse(kernel_name='abs2')
 def abs2(u_fp, out, xp):
-     out[:] = xp.real(u_fp * xp.conj(u_fp))
+    out[:] = xp.real(u_fp * xp.conj(u_fp))
 
 
 class SH(BaseProcessingObj):
@@ -88,6 +88,8 @@ class SH(BaseProcessingObj):
         self._reference_indices = None
         self._coefficients = None
         self._valid_indices = None
+        self._amplitude_is_binary = None
+        self._mask_threshold = 1e-3  # threshold to consider a pixel inside the mask
 
         # TODO these are fixed but should become parameters
         self._fov_ovs = 1
@@ -118,6 +120,7 @@ class SH(BaseProcessingObj):
         if self._np_sub * n_lenses > ef_size:
             self._np_sub -= 1
 
+        # this is the number of pixels per sub-aperture
         np_sub = (ef_size * lens[2]) / 2.0
 
         sensor_pxscale_arcsec = self._sensor_pxscale * RAD2ASEC
@@ -201,7 +204,7 @@ class SH(BaseProcessingObj):
                 self._fov_ovs = self._fov_ovs_coeff
         else:
             ratio = float(subap_real_fov_pix) / float(turbulence_fov_pix)
-            np_factor = 1 if abs(np_sub - int(np_sub)) < 1e-3 else int(np_sub)
+            np_factor = 1 if abs(np_sub - round(np_sub)) >= 1e-3 else round(np_sub)
             if self._do_not_double_fov_ovs and self._fov_ovs_coeff == 0.0:
                 self._fov_ovs_coeff = 1.0
                 self._fov_ovs = np.ceil(np_factor * ratio / 2.0) * 2.0 / float(np_factor)
@@ -214,7 +217,7 @@ class SH(BaseProcessingObj):
                     self._fov_ovs = np.ceil(np_factor * ratio * self._fov_ovs_coeff) / float(np_factor)
 
         self._sensor_pxscale = subap_real_fov_arcsec / self._subap_npx / RAD2ASEC
-        self._ovs_np_sub = int(ef_size * self._fov_ovs * lens[2] * 0.5)
+        self._ovs_np_sub = round(ef_size * self._fov_ovs * lens[2] * 0.5)
         self._fft_size = self._ovs_np_sub * scale_ovs
 
         if self.verbose:
@@ -286,7 +289,7 @@ class SH(BaseProcessingObj):
 
         # set up kernel object
         if self._laser_launch_tel is not None:
-            if len(self._laser_launch_tel.tel_pos) == 0:                        
+            if len(self._laser_launch_tel.tel_pos) == 0:
                 self._kernelobj = GaussianConvolutionKernel(dimx = self._lenslet.dimx,
                                                             dimy = self._lenslet.dimy,
                                                             pxscale = fp4_pixel_pitch * RAD2ASEC,
@@ -325,8 +328,9 @@ class SH(BaseProcessingObj):
 
         if self._edge_pixels is None and self._do_interpolation:
             # Compute once indices and coefficients
+            # This considering the input amplitude is not changing during the simulation
             self._edge_pixels, self._reference_indices, self._coefficients, self._valid_indices = calculate_extrapolation_indices_coeffs(
-                cpuArray(self.in_ef.A)
+                cpuArray(self.in_ef.A), threshold=self._mask_threshold
             )
 
             # convert to xp
@@ -335,11 +339,24 @@ class SH(BaseProcessingObj):
             self._coefficients = self.to_xp(self._coefficients)
             self._valid_indices = self.to_xp(self._valid_indices)
 
+            # Check if input amplitude is binary (all values close to 0 or 1) with tolerance
+            unique_values = self.xp.unique(self.in_ef.A)
+            tol = 1e-3
+            is_binary = self.xp.all(
+                self.xp.logical_or(
+                    self.xp.abs(unique_values - 0) < tol,
+                    self.xp.abs(unique_values - 1) < tol
+                )
+            )
+
+            self._amplitude_is_binary = is_binary
+
         # Interpolation of input array if needed
         with show_in_profiler('interpolation'):
 
             if self._do_interpolation:
-                self.phase_extrapolated[:] = self.in_ef.phaseInNm
+                self.phase_extrapolated[:] = self.in_ef.phaseInNm * \
+                            (self.in_ef.A >= self._mask_threshold).astype(int)
                 _ = apply_extrapolation(
                     self.in_ef.phaseInNm,
                     self._edge_pixels,
@@ -352,27 +369,33 @@ class SH(BaseProcessingObj):
 
                 if self._debugOutput:
                     # compare input and extrapolated phase
+                    phase_in_nm = self.in_ef.phaseInNm * (self.in_ef.A >= 1e-3).astype(int)
                     import matplotlib.pyplot as plt
                     plt.figure(figsize=(20, 5))
                     plt.subplot(1, 4, 1)
-                    plt.imshow(self.in_ef.phaseInNm, origin='lower', cmap='gray')
+                    plt.imshow(cpuArray(phase_in_nm), origin='lower', cmap='gray')
                     plt.title('Input Phase')
                     plt.colorbar()
                     plt.subplot(1, 4, 2)
-                    plt.imshow(self.phase_extrapolated, origin='lower', cmap='gray')
+                    plt.imshow(cpuArray(self.phase_extrapolated), origin='lower', cmap='gray')
                     plt.title('Extrapolated Phase')
                     plt.colorbar()
                     plt.subplot(1, 4, 3)
-                    plt.imshow(self.phase_extrapolated - self.in_ef.phaseInNm, origin='lower', cmap='gray')
+                    plt.imshow(cpuArray(self.phase_extrapolated - phase_in_nm), origin='lower', cmap='gray')
                     plt.title('Phase Difference')
                     plt.colorbar()
                     plt.subplot(1, 4, 4)
-                    plt.imshow(self.in_ef.A)
+                    plt.imshow(cpuArray(self.in_ef.A), origin='lower', cmap='gray')
                     plt.title('Input Electric Field Amplitude')
                     plt.colorbar()
                     plt.show()
 
                 self.interp.interpolate(self.in_ef.A, out=self._wf1.A)
+
+                # Apply binary threshold if input amplitude was binary
+                if self._amplitude_is_binary:
+                    self._wf1.A[:] = (self._wf1.A > 0.5).astype(self.dtype)
+
                 self.interp.interpolate(self.phase_extrapolated, out=self._wf1.phaseInNm)
             else:
                 # self._wf1 already set to in_ef
@@ -387,7 +410,7 @@ class SH(BaseProcessingObj):
             sodium_intensity = self.local_inputs['sodium_intensity']
             if sodium_altitude is None or sodium_intensity is None:
                 raise ValueError('sodium_altitude and sodium_intensity must be provided')
-            sodium_altitude = sodium_altitude.value
+            sodium_altitude = sodium_altitude.value * self._laser_launch_tel.airmass
             sodium_intensity = sodium_intensity.value
         else:
             sodium_altitude = None
@@ -484,9 +507,9 @@ class SH(BaseProcessingObj):
             plt.title('Intensity')
             plt.show()
 
-    def setup(self):        
-        super().setup()        
-        in_ef = self.local_inputs['in_ef']        
+    def setup(self):
+        super().setup()
+        in_ef = self.local_inputs['in_ef']
 
         self._set_in_ef(in_ef)
         self._calc_trigger_geometry(in_ef)
