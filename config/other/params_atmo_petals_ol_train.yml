@@ -1,0 +1,22 @@
+---
+
+main_override:
+  total_time:        600.0
+
+data_buffer:
+  class:             'DataBuffer'
+  buffer_size:       64
+  inputs:
+    input_list: ['phase_and_petals-phase_flat.out_ef', # 2D phase in nm
+                 'modes-modal_combination.out_value']     # modal coeffs
+  # these are automatically added to the processing object
+  # outputs: ['phase_and_petals_buffered', 'modes_buffered']
+
+nn_trainer:
+  class:             'Conv2dNetTrainer'
+  network_filename:  './other/petal_ol_conv2d.pth'
+  nmodes: 10
+  inputs:
+    input_2d_batch: 'data_buffer.phase_and_petals_buffered'
+    labels: 'data_buffer.modes_buffered'
+  outputs: ['loss']

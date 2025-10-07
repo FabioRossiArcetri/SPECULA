@@ -1,18 +1,15 @@
 import os
-
-from scipy.stats.tests.test_continuous_fit_censored import optimizer
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from specula.base_processing_obj import BaseProcessingObj
 from specula.connections import InputValue
-
 from specula.base_value import BaseValue
-
-import torch
-import torch.nn as nn
-import math
 import torch.nn.functional as F
+import json
+
+default_dropout = 0.01
+default_dropout_2d = 0.03
 
 class UNetRegressor(nn.Module):
     def __init__(self, input_channels=1, output_size=5, base_channels=32, input_size=(64, 64)):
@@ -54,24 +51,27 @@ class UNetRegressor(nn.Module):
         self.dec1 = EnhancedConvBlock(base_channels * 2, base_channels)
 
         # Multi-scale fusion
-        self.ms_bottleneck = MultiScaleFeatureExtractor(base_channels * 36)
+        self.ms_bottleneck = MultiScaleFeatureExtractor(base_channels * 32)
         self.ms_dec5 = MultiScaleFeatureExtractor(base_channels * 16)
         self.ms_dec4 = MultiScaleFeatureExtractor(base_channels * 8)
         self.ms_dec3 = MultiScaleFeatureExtractor(base_channels * 4)
         self.ms_dec2 = MultiScaleFeatureExtractor(base_channels * 2)
         self.ms_dec1 = MultiScaleFeatureExtractor(base_channels)
 
-        # 🔥 Dynamically infer feature dimension
+        # Dynamically infer feature dimension
         with torch.no_grad():
             dummy = torch.zeros(1, input_channels, *input_size)
             features = self._forward_features(dummy)
             feature_dim = features.shape[1]
 
-        # Fully connected regressor
+        # Improved fully connected regressor with more capacity
         self.fc = nn.Sequential(
-            nn.Linear(feature_dim, 128),
+            nn.Linear(feature_dim, 256),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.02),
+            nn.Dropout(default_dropout),
+            nn.Linear(256, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(default_dropout),
             nn.Linear(128, output_size)
         )
 
@@ -116,6 +116,7 @@ class UNetRegressor(nn.Module):
     def forward(self, x):
         features = self._forward_features(x)
         return self.fc(features)
+
 
 # ==============================
 #   Attention and Squeeze Blocks
@@ -173,7 +174,7 @@ class SEBlock(nn.Module):
 # ==============================
 
 class EnhancedConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, dropout=0.02, use_residual=True):
+    def __init__(self, in_channels, out_channels, dropout=default_dropout_2d, use_residual=True):
         super().__init__()
         self.use_residual = use_residual
 
@@ -223,51 +224,29 @@ class MultiScaleFeatureExtractor(nn.Module):
         features = []
         for pool in [self.pool1, self.pool2, self.pool3, self.pool4, self.pool5]:
             pooled = pool(x)
-            if pooled.shape[2] <= H and pooled.shape[3] <= W:  # only valid scales
+            if pooled.shape[2] <= H and pooled.shape[3] <= W:
                 features.append(pooled.view(B, -1))
         return torch.cat(features, dim=1)
 
-    
 
-class WeightedSMAPELoss(nn.Module):
-    """
-    Symmetric Weighted Mean Absolute Percentage Error (sWMAPE).
-    Loss = mean( weights_i * (2 * |y_pred - y_true|) / (|y_true| + |y_pred| + eps) )
+# ==============================
+#   Loss Functions
+# ==============================
 
-    Args:
-        weights (list or torch.Tensor): weights for each output dimension.
-        reduction (str): "mean" (default), "sum", or "none"
-        eps (float): small constant to avoid division by zero
-    """
-    def __init__(self, weights=None, reduction="mean", eps=1e-6, device=None):
+class WeightedHuberLoss(nn.Module):
+    """Robust Huber loss with per-dimension weights"""
+    def __init__(self, weights, delta=1.0, device=None):
         super().__init__()
-        self.reduction = reduction
-        self.eps = eps
-        if weights is not None:
-            self.register_buffer("weights", torch.tensor(weights, dtype=torch.float32).to(device))
-        else:
-            self.weights = None
-
+        self.register_buffer("weights", torch.tensor(weights, dtype=torch.float32).to(device))
+        self.delta = delta
+    
     def forward(self, preds, targets):
-        """
-        preds:   (batch_size, num_outputs)
-        targets: (batch_size, num_outputs)
-        """
-        # sMAPE formula
-        numerator = torch.abs(preds - targets) * 2.0
-        denominator = torch.abs(targets) + torch.abs(preds) + self.eps
-        smape = numerator / denominator  # (B, D)
-
-        # Apply weights per output dimension
-        if self.weights is not None:
-            smape = smape * self.weights
-
-        # Reduction
-        if self.reduction == "mean":
-            return smape.mean()
-        elif self.reduction == "sum":
-            return smape.sum()
-        return smape
+        diff = preds - targets
+        abs_diff = torch.abs(diff)
+        quadratic = torch.clamp(abs_diff, max=self.delta)
+        linear = abs_diff - quadratic
+        loss = 0.5 * quadratic**2 + self.delta * linear
+        return (self.weights * loss).mean()
 
 
 class WeightedMSELoss(nn.Module):
@@ -282,102 +261,105 @@ class WeightedMSELoss(nn.Module):
         return weighted_sq.mean()
 
 
-class Conv2dNet(nn.Module):
-    def __init__(self, hidden_channels=64, output_size=6):
-        super().__init__()
+# ==============================
+#   Early Stopping
+# ==============================
 
-        self.feature_extractor = nn.Sequential(
-            nn.Conv2d(1, hidden_channels, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.AvgPool2d(2),
-            nn.Conv2d(hidden_channels, hidden_channels, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.AvgPool2d(2),
-            nn.Conv2d(hidden_channels, hidden_channels * 2, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1)
-        )
+class EarlyStopping:
+    def __init__(self, patience=20, min_delta=1e-6):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_loss = None
+        
+    def __call__(self, val_loss):
+        if self.best_loss is None:
+            self.best_loss = val_loss
+        elif val_loss > self.best_loss - self.min_delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+        else:
+            self.best_loss = val_loss
+            self.counter = 0
+        return False
 
-        self.regressor = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(hidden_channels * 2, hidden_channels),
-            nn.LeakyReLU(0.02),
-            nn.Dropout(0.02),
-            nn.Linear(hidden_channels, hidden_channels),
-            nn.LeakyReLU(0.02),
-            nn.Dropout(0.02),
-            nn.Linear(hidden_channels, output_size)
-        )
 
-    def forward(self, x):
-        x = self.feature_extractor(x)
-        return self.regressor(x)
-    
+# ==============================
+#   Main Training Class
+# ==============================
 
 class Conv2dNetTrainer(BaseProcessingObj):
     def __init__(self,
                  network_filename,
-                 nmodes = 20,
+                 nmodes=20,
                  target_device_idx: int = None,
                  precision: int = None):
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
-        self.verbose = False
+        self.grad_clip_value = 0.5
+
+        self.verbose = True
         self.network_filename = network_filename
         self.nmodes = nmodes
         
-        self.device = torch.device("cuda")
-
-        #self.model = Conv2dNet(            
-        #    hidden_channels= 64,
-        #    output_size=self.nmodes).to(self.device)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
  
         self.model = UNetRegressor(
             input_channels=1,    
-            output_size=20,
-            base_channels=128, 
+            output_size=nmodes,
+            base_channels=32,  # Reduced from 128 for better generalization
             input_size=(160, 160)
         ).to(self.device)
-
-
         
-        # self.model = Conv2dResNet(
-        #   input_size=32,
-        #    input_channels=1,
-        #    base_channels=16,
-        #    num_blocks=8,
-        #    block_depth=3,
-        #    output_size=5
-        # ).to(self.device)
+        # Huber loss for robustness to outliers
+        # Initialize with equal weights, will be updated based on data statistics
+        ww = [0.05] * nmodes
+        ww[0] = 4.0
+        ww[1] = 3
+        ww[2] = 3
+        ww[3] = 0.5
+        ww[4] = 0.5
+        ww[5] = 0.5
+        #ww[6] = 0.25
+        #ww[7] = 0.25
+        #ww[8] = 0.25
+        #ww[9] = 0.25
+        #ww[10] = 0.125
+        #ww[11] = 0.125
+        #ww[12] = 0.125
+        #ww[13] = 0.125
+        #ww[14] = 0.125
+        self.loss_fn = WeightedMSELoss(
+            weights=ww,
+            device=self.device
+        )
 
+        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3, weight_decay=1e-5)
         
-        # self.loss_fn = WeightedSMAPELoss(weights=[1.0, 0.01, 0.01, 0.01, 0.01], device=self.device )  # tune per output dimension
-        # self.loss_fn = WeightedMSELoss(weights=[1.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1], device=self.device )  # tune per output dimension
-        self.loss_fn = WeightedMSELoss(weights=[1.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1,
-                                                1.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1], device=self.device )  # tune per output dimension
-
-        #self.model = Conv2dResNet(
-        #        input_size=160,
-        #         input_channels=1,
-        #         base_channels=128,
-        #         num_blocks=4,
-        #         output_size=self.nmodes).to(self.device)
-        
-        # self.loss_fn = nn.MSELoss()        
-
-        self.optimizer = optim.Adam( self.model.parameters(), lr=1e-3 )
-        
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        # Learning rate warmup scheduler
+        #warmup_steps = 50  # ~few epochs
+        #def warmup_lambda(step):
+        #    return min(1.0, 0.1 + (step + 1) / warmup_steps)
+        #self.warmup_scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=warmup_lambda)
+                
+        self.plateau_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode="min",
-            factor=0.5,
-            patience=10,
-            verbose=True
+            factor=0.9,
+            patience=40,
+            verbose=True,
+            min_lr=1e-6
         )
+
+        # Early stopping
+        self.early_stopping = EarlyStopping(patience=800, min_delta=1e-6)
+        self.enable_early_stopping = True  # Disabled by default for safety
 
         # Gradient clipping threshold
         self.grad_clip_value = 1.0
+        
         self.inputs['input_2d_batch'] = InputValue(type=BaseValue)
         self.inputs['labels'] = InputValue(type=BaseValue)
 
@@ -387,82 +369,199 @@ class Conv2dNetTrainer(BaseProcessingObj):
         self.min_loss = 1e9
         self.firstTrigger = True
         
-    def rescale(self, v):        
-        mean = self.xp.mean(v)
-        v -= mean
-        std = self.xp.std(v)
-        v /= std
-        return v, mean, std
+        # Normalization statistics (will be computed from first batch)
+        self.meanp = None
+        self.stdp = None
+        self.meanmodes = None
+        self.stdmodes = None
+        
+        # Training statistics
+        self.step_count = 0
+        self.should_stop = False
+        
+        # Statistics file for saving normalization params
+        self.stats_filename = network_filename.replace('.pth', '_stats.json')
+    
+    def update_loss_weights(self, modes):
+        """Update loss weights based on target variance"""
+        mode_stds = self.xp.std(modes, axis=0)
+        # Inverse variance weighting
+        weights = 1.0 / (mode_stds + 1e-8)
+        # Normalize so they sum to nmodes (keep average weight = 1)
+        weights = weights / weights.sum() * self.nmodes
+        
+        # Update loss function weights
+        self.loss_fn.weights = torch.tensor(weights, dtype=torch.float32, device=self.device)
+        
+        if self.verbose and self.step_count % 100 == 0:
+            print(f"[{self.name}] Updated loss weights: {weights}")
 
     def trigger(self):
+        if self.should_stop:
+            if self.verbose:
+                print(f"[{self.name}] Training stopped (should_stop=True)")
+            return
+            
         self.X = self.local_inputs['input_2d_batch']
         self.y = self.local_inputs['labels']        
 
         if self.X is None or self.y is None:
+            if self.verbose:
+                print(f"[{self.name}] Skipping: X or y is None")
             return
         if self.X.generation_time < self.current_time or self.y.generation_time < self.current_time:
+            if self.verbose:
+                print(f"[{self.name}] Skipping: stale data")
             return
 
-        ph = self.X.get_value()[:, 1]*self.X.get_value()[:, 0]
-
-        modes = self.y.get_value()[:, 1:self.nmodes+1]        
+        try:
+            ph = self.X.get_value()[:, 1] * self.X.get_value()[:, 0]
+            modes = self.y.get_value()[:, 1:self.nmodes+1]
+        except Exception as e:
+            print(f"[{self.name}] ERROR extracting data: {e}")
+            return
         
-        #if self.firstTrigger:
-        #    ph, self.meanp, self.stdp = self.rescale(ph)
-        #    modes, self.meanmodes, self.stdmodes = self.rescale(modes)
-        #    self.firstTrigger = False
+        # Initialize normalization statistics from first batch
+        try:
+            if self.firstTrigger:            
+                self.meanp = self.xp.mean(ph)
+                self.stdp = self.xp.std(ph) + 1e-8
+                self.meanmodes = self.xp.mean(modes)
+                self.stdmodes = self.xp.std(modes) + 1e-8
 
-        ## ph -= self.meanp
-        #ph /= self.stdp
-        ## modes -= self.meanmodes
-        #modes /= self.stdmodes
+                # Update loss weights based on initial statistics
+                # self.update_loss_weights(modes)
+                
+                self.firstTrigger = False
+                
+                if self.verbose:
+                    print(f"[{self.name}] Initialized normalization:")
+                    print(f"  Phase: mean={self.meanp:.4f}, std={self.stdp:.4f}")
+                    print(f"  Modes: mean={self.meanmodes}, std={self.stdmodes}")
 
-        ph = ph[:, self.xp.newaxis, :, :]  # Ensure shape (B, 1, H, H)
+            else:
+                alpha = 0.05  # update rate
+                self.meanp = (1 - alpha) * self.meanp + alpha * self.xp.mean(ph)
+                self.stdp = (1 - alpha) * self.stdp + alpha * (self.xp.std(ph) + 1e-8)
+                self.meanmodes = (1 - alpha) * self.meanmodes + alpha * self.xp.mean(modes, axis=0)
+                self.stdmodes = (1 - alpha) * self.stdmodes + alpha * (self.xp.std(modes, axis=0) + 1e-8)
 
-        inputs = ( torch.tensor(ph, dtype=torch.float32, device=self.device) )
-        targets = ( torch.tensor(modes, dtype=torch.float32, device=self.device))        
+        except Exception as e:
+            print(f"[{self.name}] ERROR during initialization: {e}")
+            return                
+
+        try:
+            # Apply normalization
+            ph = (ph - self.meanp) / self.stdp
+            modes = (modes - self.meanmodes) / self.stdmodes
+
+            # Apply data augmentation BEFORE adding channel dimension
+            # ph = self.apply_data_augmentation(ph)
+            
+            # Add channel dimension: (B, H, W) -> (B, 1, H, W)
+            ph = ph[:, self.xp.newaxis, :, :]
+
+            inputs = torch.tensor(ph, dtype=torch.float32, device=self.device)
+            targets = torch.tensor(modes, dtype=torch.float32, device=self.device)
+        except Exception as e:
+            print(f"[{self.name}] ERROR during preprocessing: {e}")
+            import traceback
+            traceback.print_exc()
+            return
         
         # === Training step ===
-        self.model.train()
-        self.optimizer.zero_grad()
-        preds = self.model(inputs)
-        self.loss = self.loss_fn(preds, targets)
+        try:
+            self.model.train()
+            for i in range(5):
+                self.optimizer.zero_grad()
+                preds = self.model(inputs)
+                self.loss = self.loss_fn(preds, targets)
                 
-        self.loss.backward()        
-        
+                # Check for NaN/Inf in loss
+                if torch.isnan(self.loss) or torch.isinf(self.loss):
+                    print(f"[{self.name}] ERROR: Loss is NaN or Inf! Skipping this batch.")
+                    print(f"  Inputs stats: min={inputs.min():.4f}, max={inputs.max():.4f}, mean={inputs.mean():.4f}")
+                    print(f"  Targets stats: min={targets.min():.4f}, max={targets.max():.4f}, mean={targets.mean():.4f}")
+                    return
+                        
+                self.loss.backward()        
+                
+                # Gradient clipping for stability
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_value)
 
-        #  # 🔧 Gradient clipping
-        #nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_value)
+                self.optimizer.step()
 
-        self.optimizer.step()
-
-        # 🔧 LR scheduler step (based on validation loss; here we only have training loss)
-        # self.scheduler.step(self.loss.item())
-        
+                # Update learning rate (warmup for first few epochs, then plateau)            
+                # self.warmup_scheduler.step()            
+                
+            self.step_count += 1
+        except Exception as e:
+            print(f"[{self.name}] ERROR during training step: {e}")
+            import traceback
+            traceback.print_exc()
+            return
         
         # === Evaluation step ===
-        self.model.eval()
-        with torch.no_grad():
-            eval_preds = self.model(inputs)
-            eval_loss = self.loss_fn(eval_preds, targets).item()            
-        if eval_loss < self.min_loss:            
-            self.min_loss = eval_loss
-            torch.save(self.model, self.network_filename)
-            #if self.verbose:
-            print(f"[{self.name}] Model saved to {self.network_filename}")
-        #if self.verbose:
-        print(f"[{self.name}] Training loss: {self.loss.item():.6f} | Eval loss: {eval_loss:.6f}")
-        
-        
+        try:
+            self.model.eval()
+            with torch.no_grad():
+                eval_preds = self.model(inputs)
+                eval_loss = self.loss_fn(eval_preds, targets).item()
+            
+            # Update plateau scheduler based on eval loss
+            self.plateau_scheduler.step(eval_loss)
+            
+            # Save best model
+            if eval_loss < self.min_loss:
+                self.min_loss = eval_loss
+                if eval_loss<0.01:
+                    torch.save(self.model, self.network_filename)
+                
+                    # Save normalization statistics
+                    stats = {
+                        'meanp': float(self.meanp),
+                        'stdp': float(self.stdp),
+                        'meanmodes': self.meanmodes.tolist() if hasattr(self.meanmodes, 'tolist') else [float(x) for x in self.meanmodes],
+                        'stdmodes': self.stdmodes.tolist() if hasattr(self.stdmodes, 'tolist') else [float(x) for x in self.stdmodes],
+                        'nmodes': self.nmodes
+                    }
+                    with open(self.stats_filename, 'w') as f:
+                        json.dump(stats, f, indent=2)
+                    
+                    if self.verbose:
+                        print(f"[{self.name}] ✓ Model saved to {self.network_filename}")
+            
+            if self.verbose:
+                current_lr = self.optimizer.param_groups[0]['lr']
+                print(f"[{self.name}] Step {self.step_count} | LR: {current_lr:.2e} | "
+                      f"Train loss: {self.loss.item():.6f} | Eval loss: {eval_loss:.6f} | "
+                      f"Best: {self.min_loss:.6f}")
+            
+            # Check early stopping (only if enabled)
+            if self.enable_early_stopping and self.early_stopping(eval_loss):
+                self.should_stop = True
+                if self.verbose:
+                    print(f"[{self.name}] Early stopping triggered after {self.step_count} steps")
+                    print(f"[{self.name}] To disable early stopping, set trainer.enable_early_stopping = False")
+
+
+            total_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_value)
+            if total_norm > 1.0 and self.verbose:
+                print(f"[{self.name}] Gradient norm: {total_norm:.2f} (clipped)")
+
+        except Exception as e:
+            print(f"[{self.name}] ERROR during evaluation: {e}")
+            import traceback
+            traceback.print_exc()
+            return
+
     def post_trigger(self):
         super().post_trigger()
-        self.outputs["loss"] = self.loss.item()
-
+        if hasattr(self, 'loss'):
+            self.outputs["loss"] = self.loss.item()
 
     def finalize(self):
-        print('self.min_loss', self.min_loss)
-        #print(f"{self.meanp}")
-        #print(f"{self.stdp}")
-        #print(f"{self.meanmodes}")
-        #print(f"{self.stdmodes}")
-
+        print(f'[{self.name}] Training complete!')
+        print(f'  Total steps: {self.step_count}')
+        print(f'  Best loss: {self.min_loss:.6f}')
+        print(f'  Normalization saved to: {self.stats_filename}')
