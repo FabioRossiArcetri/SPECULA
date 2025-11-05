@@ -5,7 +5,7 @@ main:
   root_dir:          './calib/SCAO'         # Root directory for calibration manager
   pixel_pupil:       160                   # Must match influence function computation
   pixel_pitch:       0.0513                # [m] 8.2m / 160 pixels = 0.0513 m/pixel
-  total_time:        0.100                  # [s] Total simulation running time
+  total_time:        0.5                  # [s] Total simulation running time
   time_step:         0.001                  # [s] Simulation time step
   zenithAngleInDeg:  30.000
   display_server:    False

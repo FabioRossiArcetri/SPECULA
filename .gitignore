@@ -137,9 +137,11 @@ dmypy.json
 *.nsys-rep
 *.sqlite
 
-# SPECULA calibs
-main/scao/calib/*
-main/scao/output/*
+# SPECULA calibs and simulations results
+config/calib/*
+config/output/*
+config/*/calib/*
+config/*/output/*
 
 # Nsys profiler repots
 *.nsys-rep

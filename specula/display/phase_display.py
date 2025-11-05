@@ -45,7 +45,12 @@ class PhaseDisplay(BaseDisplay):
         frame = self._process_phase_data(phase)
 
         if self.img is None:
-            self.img = self.ax.imshow(frame)
+            # a color map which is symmetric respect to 0 is much more informative for the phase
+            # for example 'seismic'
+            self.img = self.ax.imshow(frame, cmap='seismic')
+            # self.img = self.ax.imshow(frame,  vmin=-500, vmax=500, cmap='seismic')
+            # in some cases we want a fixed clim which should be set here
+            # self.img.set_clim(-500,500)
             self._add_colorbar_if_needed(self.img)
         else:
             self._update_image_data(self.img, frame)

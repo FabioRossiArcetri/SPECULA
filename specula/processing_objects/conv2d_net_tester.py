@@ -2,31 +2,66 @@ import os
 import torch
 import torch.nn as nn
 from specula.base_processing_obj import BaseProcessingObj
+from specula.lib.efficient_u_net import UNetRegressor
+
 from specula.connections import InputValue
 from specula.base_value import BaseValue
 from specula import cpuArray, np
 import json
-
 
 class Conv2dNetTester(BaseProcessingObj):
     def __init__(self,
                  network_filename,
                  nmodes=20,
                  target_device_idx: int = None,
+                 channels=32,
+                 dropout=0.01,
+                 conv_block_type=0,
+                 depth=5,
                  precision: int = None):
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
-        self.verbose = True
+        self.conv_block_type = conv_block_type
+        self.verbose = False
         self.network_filename = network_filename
         self.nmodes = nmodes
-
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.channels = channels
+        self.dropout = dropout
+        self.first = True
+        self.device = torch.device("cpu") # torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Load model
         if os.path.isfile(self.network_filename):
-            self.model = torch.load(self.network_filename, map_location=self.device)
+
+            # Load to CPU first 
+            checkpoint = torch.load(self.network_filename, map_location='cpu')
+            
+            # Create the model architecture on CPU
+            model = UNetRegressor(
+                input_channels=1,    
+                output_size=nmodes,
+                base_channels=self.channels,
+                input_size=(160, 160),
+                dropout_level=self.dropout,
+                depth=depth,
+                conv_block_type=conv_block_type
+            )
+            
+            # Load weights - handle different checkpoint formats
+            if isinstance(checkpoint, dict):
+                # It's a state dict
+                model.load_state_dict(checkpoint)
+            elif hasattr(checkpoint, 'state_dict'):
+                # It's a model instance
+                model.load_state_dict(checkpoint.state_dict())
+            else:
+                # Try direct loading
+                model = checkpoint
+            
+            self.model = model.to(self.device)
             self.model.eval()
+
             if self.verbose:
                 print(f"[{self.name}] Loaded model from {self.network_filename}")
         else:
@@ -55,10 +90,16 @@ class Conv2dNetTester(BaseProcessingObj):
         self.inputs['input_2d_batch'] = InputValue(type=BaseValue)
         self.inputs['labels'] = InputValue(type=BaseValue)
         
-        self.outputs["loss"] = None
-        self.outputs["prediction"] = None
-        self.outputs["targets"] = None
-        self.outputs["error"] = None
+
+        self.preds = BaseValue(target_device_idx=target_device_idx)
+        self.preds.value = self.xp.array((nmodes))
+
+        self.outputs["loss"] = BaseValue(target_device_idx=target_device_idx)
+        self.outputs["prediction"] = self.preds
+        self.outputs["targets"] = BaseValue(target_device_idx=target_device_idx)
+        self.outputs["error"] = BaseValue(target_device_idx=target_device_idx)
+
+        
 
         # Statistics tracking
         self.total_abs_error = None
@@ -95,7 +136,7 @@ class Conv2dNetTester(BaseProcessingObj):
         # Inference
         with torch.no_grad():
             preds_normalized = self.model(inputs)
-            
+
             # Compute loss on normalized values
             loss_normalized = self.loss_fn(preds_normalized, targets_normalized).item()
 
@@ -117,12 +158,16 @@ class Conv2dNetTester(BaseProcessingObj):
         self.count += ph.shape[0]  # Count batch size
         self.all_errors.append(error)
 
-        # Store outputs
-        self.outputs["loss"] = loss_normalized
-        self.outputs["prediction"] = preds
-        self.outputs["targets"] = modes
-        self.outputs["error"] = error
+        self.preds.value = preds
+        self.preds.generation_time = self.current_time
 
+        # Store outputs
+        #self.outputs["loss"] = loss_normalized
+        self.outputs["prediction"] = preds
+        #self.outputs["targets"] = modes
+        #self.outputs["error"] = error
+
+        
         if self.verbose:
             print(f"[{self.name}] Predictions (denormalized): {preds}")
             print(f"[{self.name}] Targets (original): {modes}")
@@ -134,6 +179,7 @@ class Conv2dNetTester(BaseProcessingObj):
     def post_trigger(self):
         super().post_trigger()
 
+
     def finalize(self):
         if self.count == 0:
             print(f"[{self.name}] No data processed!")
@@ -143,33 +189,57 @@ class Conv2dNetTester(BaseProcessingObj):
         mean_abs_error = self.total_abs_error / self.count
         mean_squared_error = self.total_squared_error / self.count
         rms_error = self.xp.sqrt(mean_squared_error)
-        print('mean_abs_error', mean_abs_error.shape)
-        print('mean_squared_error', mean_squared_error.shape)
-        print('rms_error', rms_error.shape)
 
-        # Compute per-mode statistics
+        # Concatenate all errors for statistics
         all_errors_concat = self.xp.concatenate(self.all_errors, axis=0)
         std_error = self.xp.std(all_errors_concat, axis=0)
-        
+
+        # Retrieve corresponding targets
+        all_targets_concat = self.xp.concatenate(
+            [y_in.get_value()[:, 1:self.nmodes+1] for y_in in [self.local_inputs['labels']]],
+            axis=0
+        )
+
+        # === NEW: Symmetric Mean Absolute Percentage Error (SMAPE) ===
+        eps = 1e-3
+        smape = 100.0 * self.xp.mean(
+            2.0 * self.xp.abs(all_errors_concat) /
+            (self.xp.abs(all_targets_concat) + self.xp.abs(all_errors_concat + all_targets_concat) + eps),
+            axis=0
+        )
+
+        # Also compute overall mean SMAPE across all modes
+        overall_smape = self.xp.mean(smape)
+
+        # Print statistics
         print(f"\n{'='*80}")
         print(f"[{self.name}] FINAL TEST STATISTICS")
         print(f"{'='*80}")
         print(f"Total samples processed: {self.count}")
         print(f"\nPer-mode statistics:")
-        print(f"{'Mode':<6} {'MAE':<12} {'RMSE':<12} {'StdErr':<12}")
-        print(f"{'-'*48}")
-        
+        print(f"{'Mode':<6} {'MAE':<12} {'RMSE':<12} {'SMAPE (%)':<12} {'StdErr':<12}")
+        print(f"{'-'*60}")
+
         mean_abs_error = cpuArray(mean_abs_error)
         rms_error = cpuArray(rms_error)
         std_error = cpuArray(std_error)
+        smape = cpuArray(smape)
+
         for i in range(self.nmodes):
-            print(i, 'meanabs std rms', mean_abs_error[0,i], std_error[i], rms_error[0,i])
-        
+            print(f"{i:<6d} {mean_abs_error[0,i]:<12.6f} {rms_error[0,i]:<12.6f} {smape[i]:<12.2f} {std_error[i]:<12.6f}")
+
         print(f"\nOverall statistics:")
-        print(f"  Mean Absolute Error (averaged across all modes): {self.xp.mean(mean_abs_error):.6f}")
-        print(f"  Root Mean Squared Error (averaged across all modes): {self.xp.mean(rms_error):.6f}")
+        print(f"  Mean Absolute Error (averaged): {self.xp.mean(mean_abs_error):.6f}")
+        print(f"  Root Mean Squared Error (averaged): {self.xp.mean(rms_error):.6f}")
+        print(f"  Mean SMAPE: {overall_smape:.2f}%")
         print(f"  Maximum MAE across modes: {self.xp.max(mean_abs_error):.6f} (mode {np.argmax(mean_abs_error)})")
         print(f"  Minimum MAE across modes: {self.xp.min(mean_abs_error):.6f} (mode {np.argmin(mean_abs_error)})")
         print(f"{'='*80}\n")
-        
+
+        # Store results in outputs for external retrieval
+        self.outputs["mean_absolute_error"] = mean_abs_error
+        self.outputs["root_mean_squared_error"] = rms_error
+        self.outputs["smape"] = smape
+        self.outputs["overall_smape"] = overall_smape
+
         return super().finalize()

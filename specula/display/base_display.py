@@ -99,6 +99,8 @@ class BaseDisplay(BaseProcessingObj):
         """Standard image update logic"""
         if image_obj is not None:
             image_obj.set_data(data)
+            # TODO: in some cases we want a fixed range,
+            # so the clim should not be updated
             image_obj.set_clim(data.min(), data.max())
 
     def _show_error(self, message):

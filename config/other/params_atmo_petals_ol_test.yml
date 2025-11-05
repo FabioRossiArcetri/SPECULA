@@ -9,8 +9,12 @@ data_buffer:
 
 nn_tester:
   class:             'Conv2dNetTester'
-  network_filename:  './other/models/ch64_dp005_err0021/petal_ol_conv2d.pth'
-  nmodes: 10
+  network_filename:  './other/PosterPiston/models/depth5/petal_ol_conv2d_cvtype3_m6_ch64_dp0.000.pth'
+  conv_block_type : 3
+  depth: 5
+  nmodes: 6
+  dropout: 0.0
+  channels: 64
   inputs:
     input_2d_batch: 'data_buffer.phase_and_petals_buffered'
     labels: 'data_buffer.modes_buffered'

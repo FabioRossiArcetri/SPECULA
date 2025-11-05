@@ -9,11 +9,12 @@ from specula.connections import InputValue
 from specula import cpuArray, ASEC2RAD, RAD2ASEC
 from specula.data_objects.simul_params import SimulParams
 from specula.data_objects.infinite_phase_screen import InfinitePhaseScreen
-
+import os
 
 class AtmoInfiniteEvolution(BaseProcessingObj):
     def __init__(self,
                  simul_params: SimulParams,
+                 data_dir:str='',
                  L0: list=[1.0],
                  heights: list=[0.0],
                  Cn2: list=[1.0],
@@ -23,6 +24,8 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
                  verbose: bool=False,
                  fov_in_m: float=None,
                  pupil_position:list =[0,0],
+                 psd1d_file:str='',
+                 psd1d_freq_file:str='',
                  target_device_idx: int=None,
                  precision: int=None):
 
@@ -43,6 +46,14 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
         self.airmass = 1
         self.ref_wavelengthInNm = 500
         self.extra_delta_time = extra_delta_time
+
+        self.psd1d_data = None
+        self.psd1d_freq_data = None
+        self.data_dir = data_dir
+        if psd1d_file:
+            self.psd1d_data = np.load(os.path.join(self.data_dir, psd1d_file))
+        if psd1d_freq_file:
+            self.psd1d_freq_data = np.load(os.path.join(self.data_dir, psd1d_freq_file))
 
         self.inputs['seeing'] = InputValue(type=BaseValue)
         self.inputs['wind_speed'] = InputValue(type=BaseValue)
@@ -126,6 +137,8 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
                                                        self.ref_r0,
                                                        self.L0[i],
                                                        random_seed=int(seed[i]),
+                                                       psd1d_freq_data = self.psd1d_freq_data,
+                                                       psd1d_data = self.psd1d_data,
                                                        xp=self.xp,
                                                        target_device_idx=self.target_device_idx,
                                                        precision=self.precision )
