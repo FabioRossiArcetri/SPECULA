@@ -189,7 +189,56 @@ class TestAtmoInfiniteEvolution(unittest.TestCase):
             for obj in objlist:
                obj.post_trigger()
 
-        assert atmo.delta_time == delta_time + extra_delta_time
+        assert atmo.delta_time[0] == delta_time + extra_delta_time
+
+    @cpu_and_gpu
+    def test_extra_delta_time_vector(self, target_device_idx, xp):
+
+        simulParams = SimulParams(pixel_pupil=160, pixel_pitch=0.05, time_step=1)
+
+        seeing = WaveGenerator(constant=0.65, target_device_idx=target_device_idx)
+        wind_speed = WaveGenerator(constant=[5.5, 2.3, 1.0, 1.0], target_device_idx=target_device_idx)
+        wind_direction = WaveGenerator(constant=[0, 90, 180, 90], target_device_idx=target_device_idx)
+
+        delta_time = 1.0
+        delta_t = BaseTimeObj().seconds_to_t(delta_time)
+        extra_delta_time = [0.1, 0.2, 0.3, 0.4]
+
+        atmo = AtmoInfiniteEvolution(simulParams,
+                             L0=23,  # [m] Outer scale
+                             heights=[30.0, 7000.0, 10000.0, 26500.0],  # [m] layer heights at 0 zenith angle
+                             Cn2=[0.25, 0.25, 0.25, 0.25],  # Cn2 weights (total must be eq 1)
+                             fov=120.0,
+                             extra_delta_time=extra_delta_time,
+                             target_device_idx=target_device_idx)
+
+        atmo.inputs['seeing'].set(seeing.output)
+        atmo.inputs['wind_direction'].set(wind_direction.output)
+        atmo.inputs['wind_speed'].set(wind_speed.output)
+
+        for objlist in [[seeing, wind_speed, wind_direction], [atmo]]:
+            for obj in objlist:
+                obj.setup()
+
+            for obj in objlist:
+                obj.check_ready(0)
+
+            for obj in objlist:
+                obj.trigger()
+
+            for obj in objlist:
+                obj.post_trigger()
+
+            for obj in objlist:
+                obj.check_ready(delta_t)
+
+            for obj in objlist:
+                obj.trigger()
+
+            for obj in objlist:
+                obj.post_trigger()
+
+        assert np.array_equal(atmo.delta_time, delta_time + cpuArray(extra_delta_time))
 
     @cpu_and_gpu
     def test_scale_coeff_with_different_seeing(self, target_device_idx, xp):
