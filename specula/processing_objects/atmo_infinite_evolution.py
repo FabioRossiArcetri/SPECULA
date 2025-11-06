@@ -45,7 +45,11 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
         self.seeing = 1.0
         self.airmass = 1
         self.ref_wavelengthInNm = 500
-        self.extra_delta_time = extra_delta_time
+
+        if not hasattr(extra_delta_time,"__len__"):
+            self.extra_delta_time = cpuArray(self.n_infinite_phasescreens*[extra_delta_time])
+        else:
+            self.extra_delta_time = cpuArray(extra_delta_time)
 
         self.psd1d_data = None
         self.psd1d_freq_data = None
@@ -158,7 +162,7 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
-        self.delta_time = self.t_to_seconds(self.current_time - self.last_t) + self.extra_delta_time
+        self.delta_time = cpuArray(self.n_infinite_phasescreens*[self.t_to_seconds(self.current_time - self.last_t)]) + self.extra_delta_time
         seeing = float(cpuArray(self.local_inputs['seeing'].value[0]))
 
         if seeing > 0:
