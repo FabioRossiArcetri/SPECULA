@@ -135,7 +135,7 @@ sh_lgs1: &LGS_SH
   subap_npx:         14                      # Output sampling [usually corresponding to CCD pixels]
   subap_on_diameter: 68                      # Number of subapertures in diameter
   wavelengthInNm:    589                     # [nm] Pyramid wavelength
-  fov_ovs_coeff:     1.6                     # Force phase interpolation to a multiple of 68
+  fov_ovs_coeff:     1.52                    # Force phase interpolation to a multiple of 68
   rotAnglePhInDeg:   6.2
   laser_launch_tel_ref: 'launcher'
   inputs:
@@ -238,6 +238,8 @@ detector_ngs1: &NGS_DETECTOR
   bandw:             330                      # [nm] Sensor bandwidth
   photon_noise:      True                    # activate photon noise
   readout_noise:     True                    # activate readout noise
+  excess_noise:      True                    # activate excess noise
+  excess_delta:      3.33
   readout_level:     2.7                     # readout noise in [e-/pix/frame]
   quantum_eff:       0.382                   # quantum efficiency * total transmission
   inputs:
@@ -267,7 +269,7 @@ tomo_polc_lgs:
   class:              'Modalrec'
   recmat_object:      '20240606_200110.0/recmat'
   projmat_object:     'p20250519_195705.0/projmatAll.fits'
-  intmat_object:      '20250325_000000.0/intmat.fits'
+  intmat_object:      '20250911_000003.0/intmat.fits'
   polc:   true
   input_modes_slice:  [0, 6258]
   in_commands_size:   6269

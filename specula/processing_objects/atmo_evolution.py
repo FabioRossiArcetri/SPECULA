@@ -43,7 +43,11 @@ class AtmoEvolution(BaseProcessingObj):
         self.last_t = 0
         self.cycle_screens = True
         self.delta_time = None
-        self.extra_delta_time = extra_delta_time
+
+        if not hasattr(extra_delta_time,"__len__"):
+            self.extra_delta_time = cpuArray(self.n_phasescreens*[extra_delta_time])
+        else:
+            self.extra_delta_time = cpuArray(extra_delta_time)
     
         self.inputs['seeing'] = InputValue(type=BaseValue)
         self.inputs['wind_speed'] = InputValue(type=BaseValue)
@@ -202,7 +206,7 @@ class AtmoEvolution(BaseProcessingObj):
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
-        self.delta_time = self.t_to_seconds(self.current_time - self.last_t) + self.extra_delta_time
+        self.delta_time = cpuArray(self.n_phasescreens*[self.t_to_seconds(self.current_time - self.last_t)]) + self.extra_delta_time
         seeing = float(cpuArray(self.local_inputs['seeing'].value[0]))
         if seeing > 0:
             r0 = 0.9759 * 0.5 / (seeing * 4.848) * self.airmass**(-3./5.)

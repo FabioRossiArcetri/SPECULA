@@ -267,7 +267,7 @@ Create a script ``compute_influence_functions.py`` (inspired by ``test_modal_bas
 
           # Test M2C loading
           loaded_m2c = M2C.restore(m2c_filename)
-          assert loaded_m2c.m2c.shape == kl_basis.shape
+          assert loaded_m2c.m2c.shape == m2c.shape
           print("OK: M2C loading test passed")
           
       except Exception as e:
@@ -871,8 +871,9 @@ Create a script ``analyse_data.py``:
        res = data["res"]
        comm = data["comm"]
        init = 50
-       turb = res[init:-1, :].copy()
-       turb[:, :comm.shape[1]] += comm[init+1:, :]
+       turb = res[init+1:, :].copy()
+       # command is applied with a delay of 1 frame
+       turb[:, :comm.shape[1]] += comm[init:-1, :]
        x = np.arange(turb.shape[1])+1
        
        # Plot RMS of residuals, commands and turbulence
@@ -1033,7 +1034,7 @@ and saving the result in a different output directory, using the ``overrides`` f
     for mag in magnitudes:
         overrides = ("{"
                     f"source_ngs.magnitude: {mag}, "
-                    f"data_store.store_dir: ./output/magnitude/mag{mag}"
+                    f"data_store.store_dir: ./output/magnitude/mag_{mag}"
                     "}")
 
         specula.main_simul(yml_files=[base_config], overrides=overrides)

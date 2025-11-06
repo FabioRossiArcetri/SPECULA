@@ -15,14 +15,6 @@ main:
   zenithAngleInDeg:  30.0                   # [deg] Airmass correction
   display_server:    true                   # Display server on auto-selected port
 
-data_store:
-  class:             'DataStore'
-  store_dir:         './output'             # Data result directory: 'store_dir'/TN/
-  inputs:    
-    input_list: [ 'ref-control_ref.out_comm',
-                  'psf-psf.out_sr'
-]
-
 
 seeing:
   class:             'WaveGenerator'
@@ -181,7 +173,7 @@ sh_lgs1: &LGS_SH
   subap_npx:         14                      # Output sampling [usually corresponding to CCD pixels]
   subap_on_diameter: 68                      # Number of subapertures in diameter
   wavelengthInNm:    589                     # [nm] Pyramid wavelength
-  fov_ovs_coeff:     1.6                     # Force phase interpolation to a multiple of 68
+  fov_ovs_coeff:     1.52                    # Force phase interpolation to a multiple of 68
   rotAnglePhInDeg:   6.2
   laser_launch_tel_ref: 'launcher'
   inputs:
@@ -284,6 +276,7 @@ detector_ngs1: &NGS_DETECTOR
   bandw:             330                      # [nm] Sensor bandwidth
   photon_noise:      True                    # activate photon noise
   readout_noise:     True                    # activate readout noise
+  excess_noise:      True                    # activate excess noise
   readout_level:     2.7                     # readout noise in [e-/pix/frame]
   quantum_eff:       0.382                   # quantum efficiency * total transmission
   inputs:
@@ -331,6 +324,7 @@ detector_ref1: &REF_DETECTOR
   bandw:             400                     # [nm] Sensor bandwidth
   photon_noise:      True                    # activate photon noise
   readout_noise:     True                    # activate readout noise
+  excess_noise:      True                    # activate excess noise
   readout_level:     0.2                     # readout noise in [e-/pix/frame]
   quantum_eff:       0.400                   # quantum efficiency * total transmission
   inputs:
@@ -370,10 +364,10 @@ tomo_polc_lgs:
   class:              'Modalrec'
   recmat_object:      '20240606_200110.0/recmat'
   projmat_object:     'p20250519_195705.0/projmatAll.fits'
-  intmat_object:      '20250325_000000.0/intmat.fits'
+  intmat_object:      '20250911_000003.0/intmat.fits'
   polc:   true
   input_modes_slice:  [0, 6258]
-  in_commands_size:   6269
+  in_commands_size:   6263
   inputs:
     in_slopes_list:        ['slopec_lgs1.out_slopes','slopec_lgs2.out_slopes','slopec_lgs3.out_slopes','slopec_lgs4.out_slopes','slopec_lgs5.out_slopes','slopec_lgs6.out_slopes']
     in_commands:            'modal_combination.out_vector:-1'
@@ -407,6 +401,7 @@ iir_lgs:
   class:             'IirFilter'
   simul_params_ref:  'main'
   iir_filter_data_object: 'int0.25_6258'
+  delay: 1.75
   inputs:
       delta_comm: 'subtract_ref.out_value'     
   outputs:  ['out_comm']
@@ -451,14 +446,13 @@ modal_combination:
 #  inputs:
 #    in_value1: 'modal_integrator.out_comm'
 #    in_value2: 'combine_avc.out_value'
-#s  outputs: ['out_value']
+#  outputs: ['out_value']
 
-zerocmd:
-  class:             'WaveGenerator'
-  constant:          0.0
-  vsize:             6269
-  outputs: ['output']
-
+#zerocmd:
+#  class:             'WaveGenerator'
+#  constant:          0.0
+#  vsize:             6263
+#  outputs: ['output']
 
 dm1:
   class:             'DM'
@@ -514,6 +508,7 @@ iir_ngs:
   class:             'IirFilter'
   simul_params_ref:  'main'
   iir_filter_data_object: 'int0.1_5modes'
+  delay: 1.75
   inputs:
       delta_comm: 'tomo_ngs.out_modes'     
   outputs:  ['out_comm']
@@ -541,6 +536,7 @@ iir_focus:
   simul_params_ref:  'main'
   int_gain:          [0.3]
   n_modes:           [1]
+  delay: 1.0
   inputs:
       delta_comm: 'rec_focus.out_modes'     
   outputs:  ['out_comm']
@@ -577,6 +573,7 @@ control_ref:
   delay:             2
   int_gain:          [0, 0.1, 0,  0.1, 0,  0, 0.1,  0]
   n_modes:           [3, 30,  67, 30,  65, 3, 30,  65]  # 30 modes/DM, and skip the 3 modes for plate scale
+  delay: 1.75
   inputs:
       delta_comm: 'tomo_polc_ref.out_modes'   
   outputs:  ['out_comm']
@@ -589,6 +586,7 @@ iir_lift:
   class:             'IirFilter'
   simul_params_ref:  'main'
   iir_filter_data_object: 'int0.0_5modes'   # TODO should be 6 modes
+  delay: 1.75
   inputs:
       delta_comm: 'lift.output'
   outputs:  ['out_comm']
@@ -603,6 +601,14 @@ psf:
   inputs:
       in_ef:  'prop.out_source_on_axis_ef'
   outputs:  ['out_psf', 'out_sr']
+
+
+data_store:
+  class:             'DataStore'
+  store_dir:         './output'             # Data result directory: 'store_dir'/TN/
+  inputs:    
+    input_list: [ 'ref-control_ref.out_comm',
+                  'psf-psf.out_sr']
 
 
 # ---------------

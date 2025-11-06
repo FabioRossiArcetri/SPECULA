@@ -30,6 +30,7 @@ def compute_zonal_ifunc(dim, n_act, xp=np, dtype=np.float32, circ_geom=False, an
         n_act_tot = int(xp.sum(na))
         pol_coords = xp.zeros((2, n_act_tot))
         ka = 0
+        # Refactor this!
         for ia in range(len(na)):
             n_angles = int(na[ia])
             for ja in range(n_angles):
