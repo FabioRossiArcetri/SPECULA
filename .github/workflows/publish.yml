@@ -12,11 +12,11 @@ jobs:
     runs-on: ubuntu-latest
 
     # Run only on:
-    # - tag push, OR
-    # - PR with label "Build wheels"
+    # - tag pushes
+    # - PRs with label "Build wheels"
     if: >
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags')) ||
-      contains(join(fromJson(toJson(github.event.pull_request.labels))* .name, ' '), 'Build wheels')
+      contains(toJson(github.event.pull_request.labels), 'Build wheels')
 
     steps:
       - uses: actions/checkout@v3
@@ -36,9 +36,9 @@ jobs:
       - name: List result
         run: ls -l dist
 
-      # -------------------------
-      # Publish to TestPyPI (pre-releases)
-      # -------------------------
+      # ----------------------------------------
+      # Publish to TestPyPI for pre-release tags
+      # ----------------------------------------
       - name: Publish pre-release 📦 to TestPyPI
         if: startsWith(github.ref, 'refs/tags') && contains(github.ref, '-')
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -47,9 +47,9 @@ jobs:
           user: __token__
           password: ${{ secrets.TEST_PYPI_TOKEN }}
 
-      # -------------------------
-      # Publish to PyPI (final releases)
-      # -------------------------
+      # ----------------------------------------
+      # Publish to PyPI for final releases
+      # ----------------------------------------
       - name: Publish distribution 📦 to PyPI
         if: startsWith(github.ref, 'refs/tags') && !contains(github.ref, '-')
         uses: pypa/gh-action-pypi-publish@release/v1
