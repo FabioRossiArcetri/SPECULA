@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "specula"
+description = "PYramid Simulator Software for Adaptive OpTics Arcetri"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+license-files = ["LICENSE"]
+
+authors = [
+    { name = "Fabio Rossi", email = "fabio.rossi@inaf.it" },
+    { name = "Alfio Puglisi" },
+    { name = "Guido Agapito" },
+    { name = "INAF Arcetri Adaptive Optics group" }
+]
+keywords = ["Adaptive Optics", "Astrophysics", "INAF", "Arcetri"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+]
+
+# IMPORTANT: version must now be declared explicitly or dynamically
+#dynamic = ["version", "dependencies"]
+dynamic = ["dependencies"]
+version = "1.0.0"
+
+[project.scripts]
+specula_frontend_start = "specula.scripts.web_frontend:start"
+specula_frontend_stop = "specula.scripts.web_frontend:stop"
+specula = "specula.scripts.specula_main:main"
+
+[tool.setuptools]
+packages = [
+    "specula",
+    "specula.data_objects",
+    "specula.processing_objects"
+]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+dependencies = { file = "requirements.txt" }
+
+[project.optional-dependencies]
+control = ["iircontrol"]
+
