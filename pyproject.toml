@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "wheel", "setuptools_scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,7 +9,6 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = "MIT"
 license-files = ["LICENSE"]
-
 authors = [
     { name = "Fabio Rossi", email = "fabio.rossi@inaf.it" },
     { name = "Alfio Puglisi" },
@@ -22,8 +21,6 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
 ]
-
-# IMPORTANT: version must now be declared explicitly or dynamically
 dynamic = ["version", "dependencies"]
 
 [project.scripts]
@@ -43,8 +40,9 @@ include-package-data = true
 dependencies = { file = "requirements.txt" }
 
 [project.optional-dependencies]
-control = ["iircontrol"]
+control = ["control"]
+diagrams = ["orthogram"]
+all = ["control", "orthogram"]
 
 [tool.setuptools_scm]
 write_to = "specula/_version.py"
-
