@@ -8,12 +8,12 @@ on:
 
 jobs:
   build-n-publish:
-    name: Build and publish Python 🐍 distributions 📦 to PyPI
+    name: Build and publish Python 🐍 distributions 📦
     runs-on: ubuntu-latest
 
-    # Only run if:
-    # 1. It's a tag push, OR
-    # 2. The PR has a label "Build wheels"
+    # Run only on:
+    # - tag push, OR
+    # - PR with label "Build wheels"
     if: >
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags')) ||
       contains(join(fromJson(toJson(github.event.pull_request.labels))* .name, ' '), 'Build wheels')
@@ -36,9 +36,23 @@ jobs:
       - name: List result
         run: ls -l dist
 
+      # -------------------------
+      # Publish to TestPyPI (pre-releases)
+      # -------------------------
+      - name: Publish pre-release 📦 to TestPyPI
+        if: startsWith(github.ref, 'refs/tags') && contains(github.ref, '-')
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          user: __token__
+          password: ${{ secrets.TEST_PYPI_PASSWORD }}
+
+      # -------------------------
+      # Publish to PyPI (final releases)
+      # -------------------------
       - name: Publish distribution 📦 to PyPI
-        if: startsWith(github.ref, 'refs/tags')
+        if: startsWith(github.ref, 'refs/tags') && !contains(github.ref, '-')
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
-          password: ${{ secrets.pypi_password }}
+          password: ${{ secrets.PYPI_PASSWORD }}
