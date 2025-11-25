@@ -11,6 +11,10 @@ jobs:
     name: Build and publish Python 🐍 distributions 📦
     runs-on: ubuntu-latest
 
+    permissions:
+      id-token: write  # Necessario per generare il token OIDC
+      contents: read   # Permesso standard per il checkout
+
     # Run only on:
     # - tag pushes
     # - PRs with label "Build wheels"
