@@ -24,9 +24,7 @@ classifiers = [
 ]
 
 # IMPORTANT: version must now be declared explicitly or dynamically
-#dynamic = ["version", "dependencies"]
-dynamic = ["dependencies"]
-version = "1.0.0"
+dynamic = ["version", "dependencies"]
 
 [project.scripts]
 specula_frontend_start = "specula.scripts.web_frontend:start"
@@ -46,4 +44,7 @@ dependencies = { file = "requirements.txt" }
 
 [project.optional-dependencies]
 control = ["iircontrol"]
+
+[tool.setuptools_scm]
+write_to = "specula/_version.py"
 
