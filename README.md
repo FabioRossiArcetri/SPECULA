@@ -10,8 +10,9 @@ See the documentation here: [specula.readthedocs.io](https://specula.readthedocs
 ## Directories
 
 - **docs**: contains the documentation.
-- **main**: contains functions and parameter files to calibrate and run a closed loop of an adaptive optics system (single-conjugated, multi-conjugated, natural, laser, ...).
+- **config**: contains functions and parameter files to calibrate and run a closed loop of an adaptive optics system (single-conjugated, multi-conjugated, natural, laser, ...).
 - **specula**: the main library, structured as follows:
+  - **data**: data required by utility functions.
   - **data_objects**: classes that wrap the data and provide methods to access them.
   - **display**: classes for data visualization.
   - **lib**: utility functions used by multiple objects.
@@ -34,15 +35,8 @@ See the documentation here: [specula.readthedocs.io](https://specula.readthedocs
 ### Optional libraries
 
 Some features require additional libraries:
-- **pycairo**: needed for block diagram generation with orthogram
-- **orthogram**: for automatic block diagram creation (see [orthogram](https://pypi.org/project/orthogram/))
+- **orthogram**: for automatic block diagram creation (see [orthogram](https://pypi.org/project/orthogram/), requires **pycairo**)
 - **control**: for conversion of transfer function system in SPECULA format and vice-versa and analysis of transfer function
-
-Install optional dependencies (pycairo will be installed as dependency of orthogram) with:
-```bash
-pip install orthogram
-pip install control
-```
 
 ## Contributing to SPECULA
 To contribute to SPECULA, follow these steps:
