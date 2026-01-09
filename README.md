@@ -55,3 +55,22 @@ To contribute to SPECULA, follow these steps:
 6. Create the pull request.
 
 We require tests for all new features to ensure the stability of the project.
+
+## Citation
+
+If you use SPECULA in your research, please cite:
+
+```bibtex
+@article{specula2026,
+  author = {Fabio Rossi and Alfio Puglisi and Guido Agapito},
+  title = {{Introducing a new generation adaptive optics simulation framework: from PASSATA to SPECULA}},
+  volume = {12},
+  journal = {Journal of Astronomical Telescopes, Instruments, and Systems},
+  number = {1},
+  publisher = {SPIE},
+  pages = {019001},
+  year = {2026},
+  doi = {10.1117/1.JATIS.12.1.019001},
+  URL = {https://doi.org/10.1117/1.JATIS.12.1.019001}
+}
+```
