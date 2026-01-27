@@ -9,8 +9,11 @@ class SsrFilterData(BaseDataObj):
     State Space Representation Filter Data.
 
     This class stores discrete-time state-space filter coefficients in the format:
-    x[k+1] = A*x[k]   + B*u[k]
-    y[k]   = C*x[k+1] + D*u[k]
+    x[k+1] = A*x[k] + B*u[k]
+    y[k]   = C*x[k'] + D*u[k]
+    
+    where x[k'] is either x[k] or x[k+1] depending on output_uses_new_state argument
+    of SsrFilter class.
     
     All filters are combined into single block-diagonal matrices:
     - A: block-diagonal state transition matrix (total_states x total_states)
@@ -31,12 +34,23 @@ class SsrFilterData(BaseDataObj):
                  precision: int=None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
-        # If n_modes is provided, A/B/C/D are lists that need expansion
+        # Convert inputs and determine if block-diagonal construction is needed
+        A, needs_bd_A = self._ensure_matrix_list(A)
+        B, needs_bd_B = self._ensure_matrix_list(B)
+        C, needs_bd_C = self._ensure_matrix_list(C)
+        D, needs_bd_D = self._ensure_matrix_list(D)
+
+        needs_block_diagonal = needs_bd_A or needs_bd_B or needs_bd_C or needs_bd_D
+
+        # If n_modes is provided, expand and build block-diagonal
         if n_modes is not None:
             A, B, C, D = self._expand_with_n_modes(A, B, C, D, n_modes)
-        # If A/B/C/D are lists (but n_modes not provided), build block-diagonal
-        elif isinstance(A, list):
+        # Build block-diagonal only if needed
+        elif needs_block_diagonal:
             A, B, C, D = self._build_block_diagonal(A, B, C, D)
+        else:
+            # Single matrix: unwrap from list
+            A, B, C, D = A[0], B[0], C[0], D[0]
 
         # A, B, C, D should now be single matrices
         self.A = self.to_xp(A, dtype=self.dtype)
@@ -50,6 +64,103 @@ class SsrFilterData(BaseDataObj):
 
         # Validate dimensions
         self._validate_dimensions()
+
+    def _ensure_matrix_list(self, x):
+        """Convert input to list of 2D numpy arrays.
+        
+        Handles:
+        - Scalars: 1 -> [[[1]]]
+        - 1D lists: [1, 2] -> [[[1]], [[2]]]
+        - 2D arrays: [[1]] -> [[[1]]]
+        - 2D lists: [[1,2],[3,4]] -> [[[1,2],[3,4]]]
+        - Lists of 2D: [[[1]], [[2]]] -> [[[1]], [[2]]]
+        - Lists of 0D arrays: [np.array(0.9), np.array(0.8)] -> [[[0.9]], [[0.8]]]
+
+        Returns
+        -------
+        matrices : list of ndarray
+            List of 2D matrices
+        needs_block_diagonal : bool
+            True if input was multiple filters that need block-diagonal construction
+            False if input was already a single matrix or needs no processing
+        """
+        # Check if it's an array (numpy or cupy)
+        if isinstance(x, self.xp.ndarray) or isinstance(x, np.ndarray):
+            # Convert to numpy for processing (cpuArray handles both np and cp)
+            x_np = cpuArray(x)
+
+            if x_np.ndim == 2:
+                return [x_np], False  # Already a complete matrix
+            elif x_np.ndim == 0:  # scalar
+                return [np.array([[x_np.item()]])], False
+            elif x_np.ndim == 1:
+                # 1D array of scalars -> multiple filters
+                return [np.array([[xi]]) for xi in x_np], True
+            else:
+                raise ValueError(f"Unexpected array dimension: {x_np.ndim}")
+
+        # Single scalar -> single filter
+        if isinstance(x, (int, float, np.number)):
+            return [np.array([[x]])], False
+
+        # If list
+        if isinstance(x, list):
+            # Empty list
+            if len(x) == 0:
+                raise ValueError("Empty matrix list")
+
+            # Check first element to determine structure
+            first = x[0]
+
+            # List of arrays (numpy or cupy)
+            if isinstance(first, self.xp.ndarray) or isinstance(first, np.ndarray):
+                first_np = cpuArray(first)
+
+                if first_np.ndim == 2:
+                    # List of 2D arrays -> convert all to numpy
+                    matrices = [cpuArray(xi) for xi in x]
+                    return matrices, len(matrices) > 1
+                elif first_np.ndim == 0:
+                    # List of 0D arrays (scalars) -> treat as list of scalars
+                    matrices = [np.array([[cpuArray(xi).item()]]) for xi in x]
+                    return matrices, len(matrices) > 1
+                elif first_np.ndim == 1:
+                    # List of 1D arrays -> unclear intent, raise error
+                    raise ValueError("List of 1D arrays is ambiguous. "
+                                   "Use list of 2D matrices or flatten to single 1D array.")
+                else:
+                    raise ValueError(f"Unexpected array dimension in list: {first_np.ndim}")
+
+            # List of lists -> need to determine if single 2D or list of 2D
+            if isinstance(first, list):
+                # Disallow empty inner lists
+                if len(first) == 0:
+                    raise ValueError("Empty row in matrix list")
+
+                # Check if first element is also a list (nested structure)
+                if isinstance(first[0], list):
+                    # Could be:
+                    # 1. List of 2D matrices: [[[1]], [[2]]]
+                    # 2. Single 3D structure: [[[1,2],[3,4]]]
+
+                    # Check all elements are non-empty lists of lists
+                    if all(isinstance(xi, list) and len(xi) > 0 \
+                        and isinstance(xi[0], list) for xi in x):
+                        # List of 2D matrices -> multiple filters
+                        matrices = [np.array(xi) for xi in x]
+                        return matrices, len(matrices) > 1
+                    else:
+                        raise ValueError("Inconsistent nested list structure")
+                else:
+                    # Single 2D matrix: [[1, 2], [3, 4]]
+                    return [np.array(x)], False
+
+            # List of scalars [1, 2, 3] -> [[[1]], [[2]], [[3]]]
+            if isinstance(first, (int, float, np.number)):
+                matrices = [np.array([[xi]]) for xi in x]
+                return matrices, len(matrices) > 1
+
+        raise ValueError(f"Cannot convert {type(x)} to matrix list")
 
     def _expand_with_n_modes(self, A, B, C, D, n_modes):
         """Expand lists of matrices according to n_modes and build block-diagonal."""
@@ -190,7 +301,7 @@ class SsrFilterData(BaseDataObj):
     def save(self, filename):
         """Save filter data to FITS file."""
         hdr = fits.Header()
-        hdr['VERSION'] = 2  # Version 2 with block-diagonal format
+        hdr['VERSION'] = 1
         hdr['NFILTER'] = self.nfilter
         hdr['NSTATES'] = self.total_states
 
@@ -211,36 +322,17 @@ class SsrFilterData(BaseDataObj):
         """Restore filter data from FITS file."""
         with fits.open(filename) as hdul:
             version = hdul[0].header.get('VERSION', 1)
+            if version != 1:
+                raise ValueError(f"Unsupported SSR filter data version: {version}")
 
-            if version == 2:
-                # New block-diagonal format
-                A = hdul['A'].data
-                B = hdul['B'].data
-                C = hdul['C'].data
-                D = hdul['D'].data
+            # New block-diagonal format
+            A = hdul['A'].data
+            B = hdul['B'].data
+            C = hdul['C'].data
+            D = hdul['D'].data
 
-                return SsrFilterData(A, B, C, D, target_device_idx=target_device_idx)
-            else:
-                # Old format with individual matrices - convert to block-diagonal
-                nfilter = hdul[0].header['NFILTER']
-
-                A_list = []
-                B_list = []
-                C_list = []
-                D_list = []
-
-                for i in range(nfilter):
-                    A_list.append(hdul[f'A_{i}'].data)
-                    B_list.append(hdul[f'B_{i}'].data)
-                    C_list.append(hdul[f'C_{i}'].data)
-                    D_list.append(hdul[f'D_{i}'].data)
-
-                # Build block-diagonal from old format
-                obj = SsrFilterData.__new__(SsrFilterData)
-                obj.target_device_idx = target_device_idx
-                A, B, C, D = obj._build_block_diagonal(A_list, B_list, C_list, D_list)
-
-                return SsrFilterData(A, B, C, D, target_device_idx=target_device_idx)
+            return SsrFilterData(A, B, C, D,
+                                    target_device_idx=target_device_idx)
 
     def get_fits_header(self):
         # TODO
@@ -289,7 +381,7 @@ class SsrFilterData(BaseDataObj):
             D_list.append(np.array([[gain[i]]]))
 
         # Pass lists directly - __init__ will handle block-diagonal construction
-        return SsrFilterData(A_list, B_list, C_list, D_list, 
+        return SsrFilterData(A_list, B_list, C_list, D_list,
                            target_device_idx=target_device_idx)
 
     @staticmethod
