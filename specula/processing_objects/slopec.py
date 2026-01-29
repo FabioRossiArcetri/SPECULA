@@ -16,18 +16,29 @@ class Slopec(BaseProcessingObj):
                  filt_recmat: Recmat=None,
                  filtmat=None,
                  weight_int_pixel_dt: float=0,
+                 interleave: bool=False,
                  target_device_idx: int=None,
                  precision: int=None
                 ):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         self.sn = sn
-        self.slopes = Slopes(self.nslopes(), target_device_idx=self.target_device_idx) 
-        self.flux_per_subaperture_vector = BaseValue(value=self.xp.zeros(self.nsubaps(), dtype=self.dtype),
-                                                     target_device_idx=self.target_device_idx)
+        self.slopes = Slopes(
+            self.nslopes(), interleave=interleave,
+            target_device_idx=self.target_device_idx
+        )
+        self.flux_per_subaperture_vector = BaseValue(
+            value=self.xp.zeros(self.nsubaps(), dtype=self.dtype),
+            target_device_idx=self.target_device_idx,
+            precision=precision
+        )
 
-        self.total_counts = BaseValue(value=self.xp.zeros(1, dtype=self.dtype), target_device_idx=self.target_device_idx)
-        self.subap_counts = BaseValue(value=self.xp.zeros(1, dtype=self.dtype), target_device_idx=self.target_device_idx)
+        self.total_counts = BaseValue(value=self.xp.zeros(1, dtype=self.dtype),
+                                      target_device_idx=self.target_device_idx,
+                                      precision=precision)
+        self.subap_counts = BaseValue(value=self.xp.zeros(1, dtype=self.dtype),
+                                      target_device_idx=self.target_device_idx,
+                                      precision=precision)
         self.recmat = recmat
         if filtmat is not None:
             if filt_intmat:
@@ -38,7 +49,9 @@ class Slopec(BaseProcessingObj):
             self.filt_recmat = Recmat(filtmat[1], target_device_idx=self.target_device_idx)
         else:
             if bool(filt_intmat) != bool(filt_recmat):
-                raise ValueError('Both filt_intmat and filt_recmat must be set for slopes filtering')
+                raise ValueError(
+                    'Both filt_intmat and filt_recmat must be set for slopes filtering'
+                )
             self.filt_intmat = filt_intmat
             self.filt_recmat = filt_recmat
 
@@ -72,7 +85,7 @@ class Slopec(BaseProcessingObj):
         if self.weight_int_pixel_dt <= 0:
             return
 
-        current_pixels = self.inputs['in_pixels'].get(self.target_device_idx).pixels.copy()
+        current_pixels = self.inputs['in_pixels'].get(self.target_device_idx).pixels
 
         # Initialize accumulated pixels if not exists
         if self.int_pixels is None:

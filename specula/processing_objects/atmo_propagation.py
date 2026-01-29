@@ -8,15 +8,43 @@ from specula.data_objects.layer import Layer
 from specula import cpuArray, show_in_profiler
 from specula.data_objects.simul_params import SimulParams
 from skimage.filters import window
-from symao.turbolence import ft_ft2
-from symao.turbolence import ft_ift2
 
 import numpy as np
 
 degree2rad = np.pi / 180.
 
 class AtmoPropagation(BaseProcessingObj):
-    '''Atmospheric propagation'''
+    """Atmospheric propagation
+    This processing object simulates the propagation of light through atmospheric turbulence layers.
+    It can perform both geometric and physical (Fresnel) propagation, depending on the configuration.
+
+    Note
+    ----
+    - By default, all atmospheric phase screens are referenced to a wavelength of 500 nm.
+    - Layer heights are always defined at zenith and projected according to the simulation
+      zenith angle (coming from simul_params).
+
+    Parameters
+    ----------
+    simul_params : SimulParams
+        Simulation parameters object containing global settings.
+    source_dict : dict
+        Dictionary of source objects (e.g., stars, LGS) to be propagated.
+    doFresnel : bool, optional
+        If True, physical Fresnel propagation is performed. Default is False (geometric propagation).
+    wavelengthInNm : float, optional
+        Wavelength in nanometers for Fresnel propagation. Required if doFresnel is True. Default is 500.0 nm.
+    pupil_position : array-like, optional
+        Position of the pupil in pixels. Default is None (centered).
+    mergeLayersContrib : bool, optional
+        If True, contributions from all layers are merged into a single output per source. Default is True.
+    upwards : bool, optional
+        If True, propagation is performed upwards (from ground to source). Default is False (downwards).
+    target_device_idx : int, optional
+        Target device index for computation (CPU/GPU). Default is None (uses global setting).
+    precision : int, optional
+        Precision for computation (0 for double, 1 for single). Default is None (uses global setting).
+    """
     def __init__(self,
                  simul_params: SimulParams,
                  source_dict: dict,     # TODO ={},
@@ -42,7 +70,8 @@ class AtmoPropagation(BaseProcessingObj):
             raise ValueError('Pixel pupil must be >0')
 
         if doFresnel and wavelengthInNm is None:
-            raise ValueError('get_atmo_propagation: wavelengthInNm is required when doFresnel key is set to correctly simulate physical propagation.')
+            raise ValueError('get_atmo_propagation: wavelengthInNm is required when doFresnel key'
+                             ' is set to correctly simulate physical propagation.')
 
         self.mergeLayersContrib = mergeLayersContrib
         self.upwards = upwards
@@ -62,12 +91,18 @@ class AtmoPropagation(BaseProcessingObj):
 
         if self.mergeLayersContrib:
             for name, source in self.source_dict.items():
-                ef = ElectricField(self.pixel_pupil_size, self.pixel_pupil_size, self.pixel_pitch, target_device_idx=self.target_device_idx)
+                ef = ElectricField(
+                    self.pixel_pupil_size,
+                    self.pixel_pupil_size,
+                    self.pixel_pitch,
+                    target_device_idx=self.target_device_idx
+                )
                 ef.S0 = source.phot_density()
                 self.outputs['out_'+name+'_ef'] = ef
 
-        # atmo_layer_list is optional because it can be empty during calibration of an AO system while
-        # the common_layer_list is not optional because at least a pupilstop is needed
+        # atmo_layer_list is optional because it can be empty during calibration of
+        # an AO system while the common_layer_list is not optional because at least a
+        # pupilstop is needed
         self.inputs['atmo_layer_list'] = InputList(type=Layer,optional=True)
         self.inputs['common_layer_list'] = InputList(type=Layer)
 
@@ -85,56 +120,56 @@ class AtmoPropagation(BaseProcessingObj):
         propagator = self.xp.exp(-1j * np.pi**2 * 2 * distanceInM / k * fsq)
         hanning_window = self.to_xp(window(('general_hamming', 0.8), (self.pixel_pupil_size,
                                                                       self.pixel_pupil_size)))
-        self.propagators.append(propagator*hanning_window)
+        self.propagators.append(self.xp.fft.fftshift(propagator*hanning_window))
 
     def doFresnel_setup(self):
         self.propagators = []
-        height_layers = np.array(
-            [layer.height * self.airmass for layer in self.common_layer_list + self.atmo_layer_list], dtype=self.dtype)
-        nlayers = len(height_layers)
+
+        layer_list = self.common_layer_list + self.atmo_layer_list
+        height_layers = np.array([layer.height * self.airmass for layer in layer_list], dtype=self.dtype)
+
         sorted_heights = np.sort(height_layers)
-        if not (np.allclose(height_layers, sorted_heights) or np.allclose(height_layers, sorted_heights[::-1])):
-            raise ValueError('Layers must be sorted from highest to lowest or from lowest to highest')
+        if not np.allclose(height_layers, sorted_heights):
+            raise ValueError('Layers must be sorted from lowest to highest')
 
-        if self.upwards:    # upwards propagation
-            end_height = self.source_dict[list(self.source_dict)[0]].height
-            height = 0
-        else:          # downwards propagation
-            end_height = 0
-            height = height_layers[-1]
-            height_layers = height_layers[::-1]
+        self.field_propagator(height_layers[0]) # from ground to first layer
+        for prev, curr in zip(height_layers, height_layers[1:]):
+            self.field_propagator(curr - prev)
 
-        z_total = 0
-        for j in range(nlayers):
-            if j == nlayers-1:
-                z = abs(end_height - height) - z_total
-            else:
-                z = abs(height_layers[j+1] - height_layers[j])
-            z_total += z
-            self.field_propagator(z)
+        if not self.upwards:  # reverse propagators for downwards propagation
+            self.propagators = self.propagators[::-1]
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
 
-        for layer in (self.atmo_layer_list + self.common_layer_list):
+        layer_list = self.common_layer_list + self.atmo_layer_list
+
+        for layer in layer_list:
             if self.magnification_list[layer] is not None and self.magnification_list[layer] != 1:
                 # update layer phase filling the missing values to avoid artifacts during interpolation
                 mask_valid = layer.A != 0
-                local_mean = local_mean_rebin(layer.phaseInNm, mask_valid, self.xp, block_size=self._block_size[layer])
+                local_mean = local_mean_rebin(
+                    layer.phaseInNm,
+                    mask_valid,
+                    self.xp,
+                    block_size=self._block_size[layer]
+                )
                 layer.phaseInNm[~mask_valid] = local_mean[~mask_valid]
 
-    def physical_propagation(self, phaseInNm, prop_idx):
-        phase = phaseInNm * (2 * self.xp.pi) / self.wavelengthInNm
-        ef = self.xp.exp(1j*phase, dtype=self.complex_dtype)
-        ft_ef1 = ft_ft2(ef, 1)
-        ft_ef2 = self.propagators[prop_idx]*ft_ef1
-        ef2 = ft_ift2(ft_ef2, 1)
-        return self.xp.angle(ef2) * self.wavelengthInNm / (2 * self.xp.pi)
+    def physical_propagation(self, ef, propagator):
+        ft_ef1 = self.xp.fft.fft2(ef)
+        ft_ef2 = propagator*ft_ef1
+        ef2 = self.xp.fft.ifft2(ft_ef2)
+        return ef2
 
     @show_in_profiler('atmo_propagation.trigger_code')
     def trigger_code(self):
         if not self.propagators and self.doFresnel:
             self.doFresnel_setup()
+
+        layer_list = self.common_layer_list + self.atmo_layer_list
+        if not self.upwards:  # reverse layers for downwards propagation
+            layer_list = layer_list[::-1]
 
         for source_name, source in self.source_dict.items():
 
@@ -144,10 +179,6 @@ class AtmoPropagation(BaseProcessingObj):
             else:
                 output_ef_list = self.outputs['out_'+source_name+'_ef']
 
-            layer_list = self.common_layer_list + self.atmo_layer_list
-            if not self.upwards:
-                layer_list = layer_list[::-1]
-
             for li, layer in enumerate(layer_list):
 
                 if not self.mergeLayersContrib:
@@ -156,21 +187,19 @@ class AtmoPropagation(BaseProcessingObj):
 
                 interpolator = self.interpolators[source][layer]
                 if interpolator is None:
-                    topleft = [(layer.size[0] - self.pixel_pupil_size) // 2, (layer.size[1] - self.pixel_pupil_size) // 2]
-                    x2 = topleft[0] + output_ef.size[0]
-                    y2 = topleft[1] + output_ef.size[1]
-
-                    if self.doFresnel:
-                        layer.field[1, topleft[0]: x2, topleft[1]: y2] = (
-                            self.physical_propagation(layer.field[1, topleft[0]: x2, topleft[1]: y2], li))
+                    topleft = [(layer.size[0] - self.pixel_pupil_size) // 2, \
+                               (layer.size[1] - self.pixel_pupil_size) // 2]
                     output_ef.product(layer, subrect=topleft)
                 else:
                     tmp_phase = interpolator.interpolate(layer.phaseInNm)
-                    if self.doFresnel:
-                        tmp_phase = self.physical_propagation(tmp_phase, li)
+
                     output_ef.A *= interpolator.interpolate(layer.A)
                     output_ef.phaseInNm += tmp_phase
 
+                if self.doFresnel:
+                    tmp_ef = self.physical_propagation(output_ef.ef_at_lambda(self.wavelengthInNm), self.propagators[li])
+                    output_ef.phaseInNm[:] = self.xp.angle(tmp_ef) * self.wavelengthInNm / (2 * self.xp.pi)
+                    output_ef.A[:] = abs(tmp_ef)
 
 
     def post_trigger(self):
@@ -186,8 +215,7 @@ class AtmoPropagation(BaseProcessingObj):
             self.interpolators[source] = {}
 
             layer_list = self.common_layer_list + self.atmo_layer_list
-            if not self.upwards:
-                layer_list = layer_list[::-1]
+
             for layer in layer_list:
                 diff_height = (source.height - layer.height) * self.airmass
                 if (layer.height == 0 or (np.isinf(source.height) and source.r == 0)) and \
@@ -200,7 +228,10 @@ class AtmoPropagation(BaseProcessingObj):
                 elif diff_height > 0:
                     li = self.layer_interpolator(source, layer)
                     if li is None:
-                        raise ValueError('FATAL ERROR, the source is not inside the selected FoV for atmosphere layers generation.')
+                        raise ValueError(f'FATAL ERROR, the source [{source.polar_coordinates[0]},'
+                                         f'{source.polar_coordinates[1]}] is not inside'
+                                         f' the selected FoV for atmosphere layers generation.'
+                                         f' Layer height: {layer.height} m, size: {layer.size}.')
                     else:
                         self.interpolators[source][layer] = li
                 else:
