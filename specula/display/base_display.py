@@ -1,4 +1,3 @@
-from specula import display
 from specula.base_processing_obj import BaseProcessingObj
 import matplotlib.pyplot as plt
 
