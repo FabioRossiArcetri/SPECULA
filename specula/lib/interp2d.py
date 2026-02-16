@@ -2,7 +2,6 @@ import numpy as np
 from specula import cp, to_xp
 
 class Interp2D():
-    
     if cp:
         interp2_kernel = r'''
             extern "C" __global__
@@ -113,7 +112,7 @@ class Interp2D():
             yyr = (xx-xc)*sin_ + (yy-yc)*cos_
             xx = xxr + xc
             yy = yyr + yc
-            
+
         if rowShiftInPixels != 0 or colShiftInPixels != 0:
             yy += rowShiftInPixels
             xx += colShiftInPixels
