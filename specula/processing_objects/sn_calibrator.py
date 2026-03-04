@@ -14,6 +14,12 @@ class SnCalibrator(BaseProcessingObj):
                  target_device_idx: int = None,
                  precision: int = None
                 ):
+        """
+        Slope null calibrator processing object.
+        Analyzes a set of slope measurements to compute an average slope null, 
+        which is then saved as a Slopes object.
+        """
+        
         super().__init__(target_device_idx=target_device_idx, precision=precision)
         self._data_dir = data_dir
         self.overwrite = overwrite
