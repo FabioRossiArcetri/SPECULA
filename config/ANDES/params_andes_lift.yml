@@ -14,10 +14,10 @@ main:
   zenithAngleInDeg:  30.0                   # [deg] Zenith angle
   display_server:    false
 
-# server:
-#   class:             'DisplayServer'
-#   host:              '0.0.0.0'              # Listen on all interfaces
-#   port:              3000                   # Use zero for auto-selection
+server:
+  class:             'DisplayServer'
+  host:              '0.0.0.0'              # Listen on all interfaces
+  port:              3000                   # Use zero for auto-selection
 
 seeing:
   class:             'WaveGenerator'
@@ -117,7 +117,6 @@ prop:
 #  class: 'Layer'
 #  tag: 'defocus_LIFT'
 
-
 ef_combinator:
   class: 'ElectricFieldCombinator'
   inputs:
@@ -127,7 +126,7 @@ ef_combinator:
   outputs: ['out_ef']
 
 
-sh_pfs:
+sh_pfs1:
   class:             'SH'
   subap_wanted_fov:  0.8                     # Requested field-of-view [arcsec]
   sensor_pxscale:    0.004                   # Pixel scale in arcsec/pix
@@ -139,7 +138,7 @@ sh_pfs:
   outputs:  ['out_i']
 
 
-detector:
+detector1:
   class:             'CCD'
   simul_params_ref:  'main'
   size:              [200, 200]              # Detector size in pixels
@@ -159,7 +158,43 @@ detector:
   background_noise:  false                   # activate sky background noise
   darkcurrent_noise: false                   # activate dark current noise
   inputs:
-    in_i: 'sh_pfs.out_i'
+    in_i: 'sh_pfs1.out_i'
+  outputs: ['out_pixels']
+
+
+sh_pfs2:
+  class:             'SH'
+  subap_wanted_fov:  0.8                     # Requested field-of-view [arcsec]
+  sensor_pxscale:    0.004                   # Pixel scale in arcsec/pix
+  subap_npx:         200                     # Output sampling [usually corresponding to CCD pixels]
+  subap_on_diameter: 1                       # Number of subapertures in diameter
+  wavelengthInNm:    1255                    # [nm] Pyramid wavelength
+  inputs:
+    in_ef: 'ef_combinator.out_ef'
+  outputs:  ['out_i']
+
+
+detector2:
+  class:             'CCD'
+  simul_params_ref:  'main'
+  size:              [200, 200]              # Detector size in pixels
+  dt:                0.002                   # [s] Detector integration time
+  bandw:             20                     # [nm] Sensor bandwidth
+  binning:           1                       # detector binning
+  photon_noise:      true                    # activate photon noise
+  readout_noise:     true                    # activate readout noise
+  # readout_level:     0.5                     # readout noise in [e-/pix/frame]
+  readout_level:     0.0                     # readout noise in [e-/pix/frame]
+  quantum_eff:       1.0                     # total throughput
+  photon_seed:       2                       # photon noise seed
+  readout_seed:      2                       # RON seed
+  excess_seed:       2                       # excess noise seed
+  # excess_noise:      true                    # activate Excess noise (EMCCDs)
+  excess_noise:      false                   # activate Excess noise (EMCCDs)
+  background_noise:  false                   # activate sky background noise
+  darkcurrent_noise: false                   # activate dark current noise
+  inputs:
+    in_i: 'sh_pfs2.out_i'
   outputs: ['out_pixels']
 
 
@@ -176,7 +211,7 @@ liftestimator1:
   fft_res: 2
   ifunc_object: 'ANDES_400pix_all_modes'
   inputs:
-    in_pixels: 'detector.out_pixels'
+    in_pixels: 'detector1.out_pixels'
   outputs: ['out_modes', 'out_modes_0', 'out_modes_1', 'out_modes_2', 'out_modes_3', 'out_modes_4']
 
 
@@ -193,7 +228,7 @@ liftestimator2:
    fft_res: 3
    ifunc_object: 'ANDES_400pix_all_modes'
    inputs:
-     in_pixels: 'detector.out_pixels'
+     in_pixels: 'detector2.out_pixels'
    outputs: ['out_modes', 'out_modes_0', 'out_modes_1', 'out_modes_2', 'out_modes_3', 'out_modes_4']
 
 
@@ -246,6 +281,8 @@ psf:
     in_ef: 'prop.out_wfs_source_ef'
   outputs: ['out_psf', 'out_sr']
 
+
+#  TODO: add coronograph here!
 
 # data_store:
 #   class:             'DataStore'

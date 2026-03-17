@@ -12,8 +12,6 @@ from specula.data_objects.ifunc import IFunc
 from specula.data_objects.pixels import Pixels
 
 
-Center = namedtuple('Center', 'x y')
-
 WFS_Settings = namedtuple('WFS_Settings',
                          'sampling_ratio fft_sampling fft_padding fft_size actual_fov')
 WFS_Settings.__doc__ = '''
@@ -24,8 +22,9 @@ internal array geometries.
 '''
 
 class Lift(BaseProcessingObj):
+
     """
-    SPECULA ProcessingObject implementing the LIFT algorithm    
+    LIFT processing object. Implementation of the LIFT algorithm.
     """
 
     def __init__(self,
