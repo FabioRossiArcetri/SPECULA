@@ -1,5 +1,5 @@
 import specula
-specula.init(-1, precision=1)
+specula.init(0)
 
 import unittest
 
@@ -11,14 +11,15 @@ from specula.lib.compute_petal_ifunc import compute_petal_ifunc
 from specula.data_objects.ifunc import IFunc
 from specula.processing_objects.lift import Lift
 from specula.data_objects.simul_params import SimulParams
+from test.specula_testlib import cpu_and_gpu
 
 
-def build_lift(n_pistons=0, n_zern=3, fft_res=2):
+def build_lift(n_pistons=0, n_zern=3, fft_res=2, target_device_idx=-1):
     """Build a Lift instance with [n_pistons piston(s) + Zernike modes] IFunc."""
     # Generate Zernike modes: tip, tilt, defocus, ...  (no piston from compute_zern_ifunc)
     zern_ifunc = IFunc(
         type_str='zernike', nmodes=n_zern, npixels=16,
-        precision=1, target_device_idx=-1,
+        precision=1, target_device_idx=target_device_idx,
     )
     if n_pistons == 0:
         ifunc = zern_ifunc
@@ -28,7 +29,7 @@ def build_lift(n_pistons=0, n_zern=3, fft_res=2):
         n_valid = zern_modes.shape[1]
         piston = np.ones((n_pistons, n_valid), dtype=np.float32) / np.sqrt(n_valid)
         combined = np.vstack([piston, zern_modes]).astype(np.float32)
-        ifunc = IFunc(combined, mask=mask_2d, precision=1, target_device_idx=-1)
+        ifunc = IFunc(combined, mask=mask_2d, precision=1, target_device_idx=target_device_idx)
     simul_params = SimulParams(pixel_pupil=16, pixel_pitch=1.0)
 
     return Lift(
@@ -42,21 +43,23 @@ def build_lift(n_pistons=0, n_zern=3, fft_res=2):
         ifunc=ifunc,
         ref_zern_amp=np.zeros(n_zern, dtype=np.float32),
         fft_res=fft_res,
-        target_device_idx=-1,
+        target_device_idx=target_device_idx,
         precision=1,
     )
 
 
 class TestLift(unittest.TestCase):
 
-    def test_has_correct_outputs(self):
-        lift = build_lift()
+    @cpu_and_gpu
+    def test_has_correct_outputs(self, target_device_idx, xp):
+        lift = build_lift(target_device_idx=target_device_idx)
         self.assertEqual(set(lift.outputs.keys()), {'out_pistons', 'out_zern'})
         self.assertEqual(lift.outputs['out_pistons'].value.shape, (lift.nPistons,))
         self.assertEqual(lift.outputs['out_zern'].value.shape, (lift.nZern,))
 
-    def test_radians_per_pixel_matches_geometry_fft_res(self):
-        lift = build_lift(fft_res=3)
+    @cpu_and_gpu
+    def test_radians_per_pixel_matches_geometry_fft_res(self, target_device_idx, xp):
+        lift = build_lift(fft_res=3, target_device_idx=target_device_idx)
         settings = Lift.calc_geometry(
             phase_sampling=16,
             pixel_pitch=1.0,
@@ -68,19 +71,21 @@ class TestLift(unittest.TestCase):
         expected = np.pi / (4.0 * settings.fft_res)
         self.assertAlmostEqual(lift.radians_per_pixel, expected)
 
-    def test_dtype_applied_to_internal_arrays(self):
-        lift = build_lift()
+    @cpu_and_gpu
+    def test_dtype_applied_to_internal_arrays(self, target_device_idx, xp):
+        lift = build_lift(target_device_idx=target_device_idx)
         self.assertEqual(lift.airef.dtype, lift.dtype)
         self.assertEqual(lift.out_pistons.value.dtype, lift.dtype)
         self.assertEqual(lift.out_zern.value.dtype, lift.dtype)
         self.assertEqual(lift.mask.dtype, lift.dtype)
         self.assertEqual(lift.modesCube.dtype, lift.dtype)
 
-    def test_ref_zern_amp_populates_reference_coefficients_from_tip_order(self):
+    @cpu_and_gpu
+    def test_ref_zern_amp_populates_reference_coefficients_from_tip_order(self, target_device_idx, xp):
         ref_zern_amp = np.array([0.1, -0.2, 0.3, 0.4], dtype=np.float32)
         zern_ifunc = IFunc(
             type_str='zernike', nmodes=4, npixels=16,
-            precision=1, target_device_idx=-1,
+            precision=1, target_device_idx=target_device_idx,
         )
         mask_2d = cpuArray(zern_ifunc.mask_inf_func)
         zern_modes = cpuArray(zern_ifunc.influence_function)
@@ -90,7 +95,7 @@ class TestLift(unittest.TestCase):
             np.vstack([piston, zern_modes]).astype(np.float32),
             mask=mask_2d,
             precision=1,
-            target_device_idx=-1,
+            target_device_idx=target_device_idx,
         )
         simul_params = SimulParams(pixel_pupil=16, pixel_pitch=1.0)
 
@@ -105,7 +110,7 @@ class TestLift(unittest.TestCase):
             ifunc=ifunc,
             ref_zern_amp=ref_zern_amp,
             fft_res=2,
-            target_device_idx=-1,
+            target_device_idx=target_device_idx,
             precision=1,
         )
 
@@ -115,10 +120,11 @@ class TestLift(unittest.TestCase):
         expected[1:] = ref_zern_amp
         np.testing.assert_allclose(airef, expected)
 
-    def test_ref_zern_amp_requires_exact_nzern_length(self):
+    @cpu_and_gpu
+    def test_ref_zern_amp_requires_exact_nzern_length(self, target_device_idx, xp):
         ifunc = IFunc(
             type_str='zernike', nmodes=3, npixels=16,
-            precision=1, target_device_idx=-1,
+            precision=1, target_device_idx=target_device_idx,
         )
         simul_params = SimulParams(pixel_pupil=16, pixel_pitch=1.0)
 
@@ -134,19 +140,21 @@ class TestLift(unittest.TestCase):
                 ifunc=ifunc,
                 ref_zern_amp=[0.0, 0.2],
                 fft_res=2,
-                target_device_idx=-1,
+                target_device_idx=target_device_idx,
                 precision=1,
             )
 
-    def test_set_ref_tt_uses_image_coordinates(self):
-        lift = build_lift()
+    @cpu_and_gpu
+    def test_set_ref_tt_uses_image_coordinates(self, target_device_idx, xp):
+        lift = build_lift(target_device_idx=target_device_idx)
         lift.radians_per_pixel = 0.2
         lift.setRefTT(center_x=7.0, center_y=5.0, image_size=10.0)
         self.assertAlmostEqual(lift.ref_tip, 0.0)
         self.assertAlmostEqual(lift.ref_tilt, 0.4)
 
-    def test_trigger_updates_separate_outputs(self):
-        lift = build_lift()
+    @cpu_and_gpu
+    def test_trigger_updates_separate_outputs(self, target_device_idx, xp):
+        lift = build_lift(target_device_idx=target_device_idx)
         fake_psf = np.ones((lift.gridSize, lift.gridSize), dtype=np.float32)
         coeffs = np.arange(lift.nmodes, dtype=np.float32)
         lift.in_pixels = type('_', (), {'get_value': lambda self: fake_psf})()
@@ -162,15 +170,17 @@ class TestLift(unittest.TestCase):
         self.assertEqual(lift.outputs['out_pistons'].generation_time, 123)
         self.assertEqual(lift.outputs['out_zern'].generation_time, 123)
 
-    def test_compute_cog_available_and_consistent(self):
-        lift = build_lift()
+    @cpu_and_gpu
+    def test_compute_cog_available_and_consistent(self, target_device_idx, xp):
+        lift = build_lift(target_device_idx=target_device_idx)
         frame = lift.xp.zeros((16, 16), dtype=lift.dtype)
         frame[3, 5] = 10.0
         yc, xc = lift.computeCoG(frame)
         self.assertAlmostEqual(float(yc), 3.0)
         self.assertAlmostEqual(float(xc), 5.0)
 
-    def test_tip_tilt_coherence_raises_when_modes_are_not_slopes(self):
+    @cpu_and_gpu
+    def test_tip_tilt_coherence_raises_when_modes_are_not_slopes(self, target_device_idx, xp):
         """
         _check_tip_tilt_coherence must raise ValueError when the modes at
         positions nPistons and nPistons+1 are not linear slopes.
@@ -181,7 +191,7 @@ class TestLift(unittest.TestCase):
         """
         ifunc = IFunc(
             type_str='zernike', nmodes=4, npixels=16,
-            precision=1, target_device_idx=-1,
+            precision=1, target_device_idx=target_device_idx,
         )
         simul_params = SimulParams(pixel_pupil=16, pixel_pitch=1.0)
         with self.assertRaises(ValueError):
@@ -196,11 +206,12 @@ class TestLift(unittest.TestCase):
                 ifunc=ifunc,
                 ref_zern_amp=[0.0, 0.0, 0.1],
                 fft_res=2,
-                target_device_idx=-1,
+                target_device_idx=target_device_idx,
                 precision=1,
             )
 
-    def test_phase_estimation_recovers_defocus(self):
+    @cpu_and_gpu
+    def test_phase_estimation_recovers_defocus(self, target_device_idx, xp):
         """
         Build a noiseless PSF with calc_psf from a known phase (reference
         defocus + a small unknown defocus), feed it to LIFT, and check that
@@ -223,7 +234,7 @@ class TestLift(unittest.TestCase):
         # Zernike IFunc: rows = [tip, tilt, defocus]
         ifunc_obj = IFunc(
             type_str='zernike', nmodes=n_zern, npixels=npixels,
-            precision=1, target_device_idx=-1,
+            precision=1, target_device_idx=target_device_idx,
         )
         influence = cpuArray(ifunc_obj.influence_function)  # (4, n_valid)
         mask_2d   = cpuArray(ifunc_obj.mask_inf_func)       # (32, 32)
@@ -260,7 +271,7 @@ class TestLift(unittest.TestCase):
             ref_zern_amp=ref_zern_amp,
             n_iter=30,
             fft_res=1,
-            target_device_idx=-1,
+            target_device_idx=target_device_idx,
             precision=1,
         )
 
@@ -274,7 +285,8 @@ class TestLift(unittest.TestCase):
                     f"expected {unknown_nm:.1f} nm",
         )
 
-    def test_phase_estimation_recovers_single_petal_piston_with_zernike_basis(self):
+    @cpu_and_gpu
+    def test_phase_estimation_recovers_single_petal_piston_with_zernike_basis(self, target_device_idx, xp):
         """
         Build a mixed modal basis with one real petal-piston mode followed by
         tip, tilt, and defocus. Generate a noiseless PSF with a known piston on
@@ -299,7 +311,7 @@ class TestLift(unittest.TestCase):
         single_piston = petal_modes[:1]
         zern_ifunc = IFunc(
             type_str='zernike', nmodes=n_zern, npixels=npixels,
-            precision=1, target_device_idx=-1,
+            precision=1, target_device_idx=target_device_idx,
         )
         zern_modes = cpuArray(zern_ifunc.influence_function)
         combined = np.vstack([single_piston, zern_modes]).astype(np.float32)
@@ -307,7 +319,7 @@ class TestLift(unittest.TestCase):
             combined,
             mask=mask_2d.astype(np.float32),
             precision=1,
-            target_device_idx=-1,
+            target_device_idx=target_device_idx,
         )
 
         coeffs_in = np.zeros(nmodes, dtype=np.float32)
@@ -337,7 +349,7 @@ class TestLift(unittest.TestCase):
             ref_zern_amp=ref_zern_amp,
             n_iter=30,
             fft_res=1,
-            target_device_idx=-1,
+            target_device_idx=target_device_idx,
             precision=1,
         )
 

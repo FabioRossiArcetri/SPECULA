@@ -110,11 +110,13 @@ class Lift(BaseProcessingObj):
 
         self.out_pistons = BaseValue(
             value=self.xp.zeros(self.nPistons, dtype=self.dtype),
-            target_device_idx=target_device_idx
+            target_device_idx=target_device_idx,
+            precision=precision,
         )
         self.out_zern = BaseValue(
             value=self.xp.zeros(self.nZern, dtype=self.dtype),
-            target_device_idx=target_device_idx
+            target_device_idx=target_device_idx,
+            precision=precision,
         )
         self.outputs['out_pistons'] = self.out_pistons
         self.outputs['out_zern'] = self.out_zern
