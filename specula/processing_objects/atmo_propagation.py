@@ -5,6 +5,7 @@ from specula.lib.interp2d import Interp2D
 from specula.data_objects.electric_field import ElectricField
 from specula.connections import InputList
 from specula.data_objects.layer import Layer
+from specula.lib.air_refraction import MatharAirRefraction
 from specula import cpuArray, show_in_profiler
 from specula.data_objects.simul_params import SimulParams
 import warnings
@@ -25,6 +26,9 @@ class AtmoPropagation(BaseProcessingObj):
                  source_dict: dict,     # TODO ={},
                  doFresnel: bool=False,
                  wavelengthInNm: float=500.0,
+                 telescope_altitude_m: float=None,
+                 enable_chromatic_effect: bool=False,
+                 chromatic_reference_wavelengthInNm: float=None,
                  pupil_position=None,
                  mergeLayersContrib: bool=True,
                  upwards: bool=False,
@@ -51,6 +55,17 @@ class AtmoPropagation(BaseProcessingObj):
         wavelengthInNm : float, optional
             Wavelength in nanometers for Fresnel propagation. Required if doFresnel is True.
             Default is 500.0 nm.
+        telescope_altitude_m : float, optional
+            Telescope altitude above sea level in meters used by chromatic
+            anisoplanatism calculations (default: None).
+        enable_chromatic_effect : bool, optional
+            If True, compute and apply chromatic anisoplanatism shifts for atmospheric layers
+            (default: False).
+            From Devaney et al. "Chromatic Anisoplanatism in Adaptive Optics" SPIE, 2024 
+        chromatic_reference_wavelengthInNm : float, optional
+            Reference wavelength in nanometers used for chromatic
+            anisoplanatism calculations, typically the WFS wavelength.
+            Required when ``enable_chromatic_effect`` is True.
         pupil_position : array-like, optional
             Position of the pupil in pixels. Default is None (centered).
         mergeLayersContrib : bool, optional
@@ -105,10 +120,23 @@ class AtmoPropagation(BaseProcessingObj):
 
         self.doFresnel = doFresnel
         self.wavelengthInNm = wavelengthInNm
+        self.telescope_altitude_m = telescope_altitude_m
+        self.enable_chromatic_effect = enable_chromatic_effect
+        self.chromatic_reference_wavelengthInNm = chromatic_reference_wavelengthInNm
+        self._air_refraction_model = None
         self.propagators = None
         self._block_size = {}
         self.padding = padding_factor
         self.band_limit_factor = band_limit_factor
+
+        if self.enable_chromatic_effect:
+            if self.chromatic_reference_wavelengthInNm is None:
+                raise ValueError('chromatic_reference_wavelengthInNm is required when'
+                                 ' enable_chromatic_effect is True.')
+            if self.telescope_altitude_m is None:
+                raise ValueError('telescope_altitude_m is required when'
+                                 ' enable_chromatic_effect is True.')
+            self._air_refraction_model = MatharAirRefraction()
 
         if self.mergeLayersContrib:
             for name, source in self.source_dict.items():
@@ -267,13 +295,91 @@ class AtmoPropagation(BaseProcessingObj):
         for source_name in self.source_dict.keys():
             self.outputs['out_'+source_name+'_ef'].generation_time = self.current_time
 
+    @staticmethod
+    def _pressure_nasa(h_asl):
+        if h_asl < 11000.0:
+            T_h = 288.08 - 0.00649 * h_asl
+            return 1012.9 * (T_h / 288.08)**5.256
+        elif h_asl < 25000.0:
+            return 226.5 * np.exp(1.73 - 0.000157 * h_asl)
+        else:
+            T_h = 141.94 + 0.00299 * h_asl
+            return 24.88 * (T_h / 216.6)**-11.388
+
+    def compute_chromatic_shifts(self, source, atmo_layer_list):
+        """
+        Pre-compute the chromatic lateral displacement for each *atmospheric* layer.
+
+        Uses the MatharAirRefraction (Ciddor+Mathar) model to calculate precise 
+        refractivity across Visible and Mid-IR bands. Then applies the NASA standard 
+        atmospheric pressure profile to compute the exact lateral shift using the 
+        Devaney 2024 plane-parallel equations (Eq. 1 and Eq. 6).
+
+        The result is stored in :attr:`chromatic_shifts_m` as a **dict keyed by
+        Layer object**, containing the signed lateral displacement in metres.
+        Common layers (pupil stop, DM, etc.) are not included and will
+        implicitly receive a zero shift in the propagation code.
+
+        This method must be called before the interpolators are built.
+
+        Parameters
+        ----------
+        atmo_layer_list : list of Layer
+            Atmospheric turbulence layers only (not common layers such as
+            pupil stops or DMs).
+        zenith_angle_deg : float
+            Observation zenith angle in degrees.
+
+        Notes
+        -----
+        If enable_chromatic_effect is False or the two wavelengths are identical,
+        all shifts are zero.
+        """
+        source.chromatic_shifts_m = {}
+
+        if not self.enable_chromatic_effect:
+            return
+        if self._air_refraction_model is None:
+            self._air_refraction_model = MatharAirRefraction()
+        if source.wavelengthInNm == self.chromatic_reference_wavelengthInNm:
+            return
+
+        # 1. Compute delta refractivity using Standard Conditions (15 C, 101325 Pa, 0% RH)
+        n_minus_1_ref = self._air_refraction_model.get_refractive_index(
+            self.chromatic_reference_wavelengthInNm * 1e-9)
+        n_minus_1_src = self._air_refraction_model.get_refractive_index(source.wavelengthInNm * 1e-9)
+        delta_N = n_minus_1_ref - n_minus_1_src
+
+        # 2. Parameters for Devaney 2024 Eq. 1
+        zeta_rad = np.radians(self.simul_params.zenithAngleInDeg)
+        sec_z = 1.0 / np.cos(zeta_rad)
+        tan_z = np.tan(zeta_rad)
+
+        g = 9.8 # m/s^2
+        rho_s = 1.225 # kg/m^3
+
+        # Pressure at telescope altitude (P0 in mbar)
+        P_0_mbar = self._pressure_nasa(self.telescope_altitude_m)
+        # Lateral separation of two rays at the telescope aperture (Devaney Eq 1)
+        # Note: Convert mbar to Pascal (1 mbar = 100 Pa)
+        delta_b0 = delta_N * sec_z * tan_z * ((P_0_mbar * 100.0) / (g * rho_s))
+
+        for layer in atmo_layer_list:
+            # Assuming layer.height is the distance above the telescope
+            h_asl = self.telescope_altitude_m + float(layer.height)
+            P_h_mbar = self._pressure_nasa(h_asl)
+
+            # Lateral separation at altitude h (Devaney Eq 6)
+            source.chromatic_shifts_m[layer] = delta_b0 * (1.0 - (P_h_mbar / P_0_mbar))
+
     def setup_interpolators(self):
 
         self.interpolators = {}
+        layer_list = self.common_layer_list + self.atmo_layer_list
         for source in self.source_dict.values():
             self.interpolators[source] = {}
 
-            layer_list = self.common_layer_list + self.atmo_layer_list
+            self.compute_chromatic_shifts(source, self.atmo_layer_list)
 
             for layer in layer_list:
                 diff_height = (source.height - layer.height) * self.airmass
@@ -313,6 +419,14 @@ class AtmoPropagation(BaseProcessingObj):
         else:
             pixel_position_s = source.r * layer.height * self.airmass / layer.pixel_pitch
             pixel_position = pixel_position_s * cos_sin_phi
+
+        # Apply pre-computed chromatic lateral displacement.
+        # Dispersion always occurs along the elevation axis (typically the Y-axis).
+        # We assume the zenith-pointing direction maps to [0, 1] in pixel coordinates.
+        chromatic_shift_px = source.chromatic_shifts_m.get(layer, 0.0) / layer.pixel_pitch
+        if chromatic_shift_px != 0.0:
+            elevation_vector = np.array([0.0, 1.0])
+            pixel_position = pixel_position + chromatic_shift_px * elevation_vector
 
         if np.isinf(source.height):
             pixel_pupmeta = self.pixel_pupil_size
