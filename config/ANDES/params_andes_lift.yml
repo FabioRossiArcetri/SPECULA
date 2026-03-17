@@ -166,7 +166,7 @@ detector:
 liftestimator1:
   class:             'Lift'
   simul_params_ref:  'main'  
-  defocus_amp: 1.8
+  ref_zern_amp: [0,0,1.8]
   nPistons: 5
   nZern: 5
   wavelengthInNm: 1150
@@ -177,13 +177,13 @@ liftestimator1:
   ifunc_object: 'ANDES_400pix_all_modes'
   inputs:
     in_pixels: 'detector.out_pixels'
-  outputs: ['out_modes', 'out_modes_0', 'out_modes_1', 'out_modes_2', 'out_modes_3', 'out_modes_4']
+  outputs: ['out_pistons', 'out_zern']
 
 
 liftestimator2:
    class:             'Lift'
    simul_params_ref:  'main'  
-   defocus_amp: 1.8
+   ref_zern_amp: [0,0,1.8]
    nPistons: 5
    nZern: 5
    wavelengthInNm: 1255
@@ -194,17 +194,17 @@ liftestimator2:
    ifunc_object: 'ANDES_400pix_all_modes'
    inputs:
      in_pixels: 'detector.out_pixels'
-   outputs: ['out_modes', 'out_modes_0', 'out_modes_1', 'out_modes_2', 'out_modes_3', 'out_modes_4']
+   outputs: ['out_pistons', 'out_zern']
 
 
 integrator:
    class:        'Integrator'
    simul_params_ref:  'main'
    delay:             2                      # Total temporal delay in time steps
-   int_gain:          [0.15, 0]
-   n_modes:           [5,5]
+   int_gain:          [0.15]
+   n_modes:           [5]
    inputs:
-       delta_comm: 'liftestimator1.out_modes'
+       delta_comm: 'liftestimator1.out_pistons'
    outputs:  ['out_comm']
 
 
@@ -221,7 +221,7 @@ dm:
   simul_params_ref:  'main'
   ifunc_object:      'ANDES_400pix_all_modes'
   sign:              -1
-  nmodes:            10                    # number of modes
+  nmodes:            5                    # number of modes
   height:            0                       # DM height [m]
   inputs:
     in_command: 'integrator.out_comm'
@@ -260,5 +260,5 @@ psf:
 piston_disp0:
    class:            'PlotDisplay'
    inputs:
-     value_list:       ['liftestimator1.out_modes_0', 'liftestimator1.out_modes_1', 'liftestimator1.out_modes_2', 'liftestimator1.out_modes_3', 'liftestimator1.out_modes_4']
+     value_list:       ['liftestimator1.out_pistons', 'liftestimator1.out_zern']
    title:            'pistons'

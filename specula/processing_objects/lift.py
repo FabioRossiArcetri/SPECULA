@@ -30,20 +30,56 @@ class Lift(BaseProcessingObj):
 
     def __init__(self,
                  simul_params: SimulParams,
-                 defocus_amp: float,
                  nPistons: int,
-                 nZern: int, 
+                 nZern: int,
                  wavelengthInNm: float,
                  pix_scale: float,
                  npix_side: int,
                  cropped_size: int,
-                 ifunc: IFunc=None,
+                 ifunc: IFunc,
+                 ref_zern_amp,
                  n_iter: int=20,
                  fft_res: int=2,
-                 quiet: bool=True,
                  fix: bool=False,
                  target_device_idx: int = None,
                  precision: int = None):
+        """
+
+        Parameters
+        ----------
+        simul_params : SimulParams
+            Simulation parameters object reference.
+        nPistons : int
+            Number of piston modes in the modal base (see ifunc argument).
+        nZern : int
+            Number of Zernike modes in the modal base (see ifunc argument).
+        wavelengthInNm : float
+            Wavelength in nanometers.
+        pix_scale : float
+            Pixel scale.
+        npix_side : int
+            Number of pixels per side.
+        cropped_size : int
+            Cropped size.
+        ifunc : IFunc, optional
+            Influence function data object.
+            It must be coherent with nPistons and nZern modes, the first two zernike modes
+            (if nZern>0) must be tip and tilt.
+        ref_zern_amp : sequence
+            Reference amplitudes for the Zernike block of the modal base, ordered exactly
+            as in ifunc, i.e. starting from tip, tilt, defocus, and so on. Units are phase
+            radians. It must have length nZern.
+        n_iter : int, optional
+            Number of iterations. Defaults to 20.
+        fft_res : int, optional
+            FFT resolution. Defaults to 2.
+        fix : bool, optional
+            Fix flag. Defaults to False.
+        target_device_idx : int, optional
+            Target device index. Defaults to None.
+        precision : int, optional
+            Precision. Defaults to None.
+        """
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
@@ -52,15 +88,13 @@ class Lift(BaseProcessingObj):
         self.nPistons = int(nPistons)
         self.nZern = int(nZern)
         self.nmodes = self.nZern + self.nPistons
-        self.airef = self.xp.zeros(self.nmodes, dtype=self.dtype)
-        self.airef[self.nPistons + 2] = self.dtype(defocus_amp)
+        self.airef = self._build_reference_coeffs(ref_zern_amp)
         self.n_iter = int(n_iter)
         self.wavelengthInNm = wavelengthInNm
         self.pix_scale = pix_scale
         self.npix_side = npix_side
         self.cropped_size = cropped_size
         self.fft_res = fft_res
-        self.quiet = quiet
         self.fix = bool(fix)
 
         # Derived parameters
@@ -74,13 +108,16 @@ class Lift(BaseProcessingObj):
 
         self.inputs['in_pixels'] = InputValue(type=Pixels)
 
-        self.out_modes = BaseValue(
-            value=self.xp.zeros(self.nmodes, dtype=self.dtype),
+        self.out_pistons = BaseValue(
+            value=self.xp.zeros(self.nPistons, dtype=self.dtype),
             target_device_idx=target_device_idx
         )
-        self.out_modes.value = self.xp.zeros(self.nmodes, dtype=self.dtype)
-
-        self.outputs['out_modes'] = self.out_modes
+        self.out_zern = BaseValue(
+            value=self.xp.zeros(self.nZern, dtype=self.dtype),
+            target_device_idx=target_device_idx
+        )
+        self.outputs['out_pistons'] = self.out_pistons
+        self.outputs['out_zern'] = self.out_zern
 
         # self.outputs['phase_estimate'] = None
 
@@ -93,6 +130,19 @@ class Lift(BaseProcessingObj):
         self.set_modalbase(self.ifunc.influence_function,
                            mask,
                            diameter=self.simul_params.pixel_pupil * self.simul_params.pixel_pitch)
+
+
+    def _build_reference_coeffs(self, ref_zern_amp):
+        airef = self.xp.zeros(self.nmodes, dtype=self.dtype)
+        ref_zern_amp = self.to_xp(ref_zern_amp, dtype=self.dtype)
+        if ref_zern_amp.ndim != 1:
+            raise ValueError('ref_zern_amp must be a 1D sequence ordered from tip onward.')
+        if ref_zern_amp.size != self.nZern:
+            raise ValueError(
+                f'ref_zern_amp has length {ref_zern_amp.size}, but nZern={self.nZern}.'
+            )
+        airef[self.nPistons:self.nPistons + self.nZern] = ref_zern_amp
+        return airef
 
 
     def ft_ft2(self, x):
@@ -145,7 +195,7 @@ class Lift(BaseProcessingObj):
 
     @staticmethod
     def calc_geometry(phase_sampling, pixel_pitch, wavelengthInNm,
-                      pix_scale, npix_side, fft_res=2.0, quiet=False):
+                      pix_scale, npix_side, fft_res=2.0):
         """Calculate WFS geometry"""
         rad2arcsec = 206264.806247
         wanted_fov = pix_scale * npix_side
@@ -171,8 +221,7 @@ class Lift(BaseProcessingObj):
             self.wavelengthInNm,
             pix_scale=self.pix_scale,
             npix_side=self.npix_side,
-            fft_res=self.fft_res,
-            quiet=self.quiet
+            fft_res=self.fft_res
         )
 
         self.fftSize = settings.fft_sampling + settings.fft_padding
@@ -202,11 +251,37 @@ class Lift(BaseProcessingObj):
         mask2d = resize_interp.interpolate(mask2d.astype(cpu_dtype, copy=False))
         self.mask = self.xp.array(mask2d, dtype=self.dtype)
         self._img_norm = self.dtype(1.0) / self.xp.sqrt(self.mask.sum(dtype=self.dtype))
+        self._check_tip_tilt_coherence(mask2d)
         self.phase_ref = self.phaseFromCoeffs(self.airef)
 
         if self.verbose:
             logging.info(f"[{self.name}] Modal base set, gridSize={self.gridSize}, fftSize={self.fftSize}")
 
+
+    def _check_tip_tilt_coherence(self, mask_cpu):
+        """Verify that the modes at nPistons and nPistons+1 are linear x/y slopes (tip/tilt)."""
+        if self.nmodes <= self.nPistons + 1:
+            return
+        n = self.gridSize
+        y_ramp, x_ramp = np.indices((n, n), dtype=float)
+        valid = mask_cpu > 0.5
+        x_flat = x_ramp[valid]
+        y_flat = y_ramp[valid]
+        for label, mode_idx in (('tip', self.nPistons), ('tilt', self.nPistons + 1)):
+            mode_flat = cpuArray(self.modes[mode_idx])[valid].astype(float)
+            if mode_flat.std() == 0:
+                raise ValueError(
+                    f"Mode {mode_idx} (expected {label}) is flat — "
+                    f"check nPistons={self.nPistons} / nZern={self.nZern} match ifunc."
+                )
+            r_x = float(np.corrcoef(mode_flat, x_flat)[0, 1])
+            r_y = float(np.corrcoef(mode_flat, y_flat)[0, 1])
+            if max(abs(r_x), abs(r_y)) < 0.9:
+                raise ValueError(
+                    f"Mode {mode_idx} (expected {label}) is not a linear slope "
+                    f"(max|r|={max(abs(r_x), abs(r_y)):.3f}) — "
+                    f"check nPistons={self.nPistons} / nZern={self.nZern} match ifunc."
+                )
 
     def phaseFromCoeffs(self, coeffs):
         """Phase reconstruction from modal coefficients"""
@@ -419,8 +494,11 @@ class Lift(BaseProcessingObj):
         psf = self.in_pixels.get_value()
         currentPhaseEstimate, coeffs, niters = self.phaseEstimation(psf) 
 
-        self.outputs['out_modes'].value = self.to_xp(coeffs)
-        self.outputs['out_modes'].generation_time = self.current_time
+        coeffs_xp = self.to_xp(coeffs)
+        self.outputs['out_pistons'].value = coeffs_xp[:self.nPistons]
+        self.outputs['out_pistons'].generation_time = self.current_time
+        self.outputs['out_zern'].value = coeffs_xp[self.nPistons:]
+        self.outputs['out_zern'].generation_time = self.current_time
 
         # self.outputs["phase_estimate"] = currentPhaseEstimate
         if self.verbose:
