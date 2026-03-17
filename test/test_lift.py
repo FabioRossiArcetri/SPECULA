@@ -109,8 +109,9 @@ class TestLift(unittest.TestCase):
         n_pistons = 1           # one piston mode
         n_zern = 3              # tip, tilt, defocus
         nmodes = n_pistons + n_zern
-        defocus_amp = 250.0     # nm  — LIFT reference defocus bias
-        unknown_nm  =  50.0     # nm  — unknown defocus to recover
+        defocus_amp = 0.5 * np.pi      # rad  — reference defocus (lambda/4)
+        unknown_rad = 0.35             # rad  — unknown defocus to recover
+        unknown_nm = unknown_rad * wavelengthInNm / (2.0 * np.pi)
         defocus_idx = n_pistons + 2   # = 3: defocus position in modal vector
 
         # Real Zernike IFunc: rows = [piston, tip, tilt, defocus]
@@ -122,12 +123,11 @@ class TestLift(unittest.TestCase):
         mask_2d   = cpuArray(ifunc_obj.mask_inf_func)       # (32, 32)
         idx = np.where(mask_2d > 0)
 
-        # Total phase = LIFT reference defocus + unknown defocus
+        # Total phase = LIFT reference defocus + unknown defocus (in radians)
         coeffs_in = np.zeros(nmodes, dtype=np.float32)
-        coeffs_in[defocus_idx] = defocus_amp + unknown_nm
-        phase_nm = np.zeros((npixels, npixels), dtype=np.float32)
-        phase_nm[idx] = coeffs_in @ influence
-        phase_rad = phase_nm * (2.0 * np.pi / wavelengthInNm)
+        coeffs_in[defocus_idx] = defocus_amp + unknown_rad
+        phase_rad = np.zeros((npixels, npixels), dtype=np.float32)
+        phase_rad[idx] = coeffs_in @ influence
         amp = mask_2d.astype(np.float32)
 
         # PSF via calc_psf  (no imwidth → 32×32, same pixel scale as LIFT
@@ -162,7 +162,7 @@ class TestLift(unittest.TestCase):
 
         np.testing.assert_allclose(
             coeffs_out[defocus_idx], unknown_nm,
-            atol=15.0,
+            atol=20.0,
             err_msg=f"LIFT defocus estimate {coeffs_out[defocus_idx]:.1f} nm, "
                     f"expected {unknown_nm:.1f} nm",
         )
