@@ -1,6 +1,7 @@
 import os
 from specula.base_processing_obj import BaseProcessingObj
 from specula.data_objects.intensity import Intensity
+from specula.data_objects.pixels import Pixels
 from specula.connections import InputValue
 from specula.data_objects.pupdata import PupData
 from specula import cpuArray
@@ -8,14 +9,16 @@ from specula import cpuArray
 
 class PyrPupdataCalibrator(BaseProcessingObj):
     """
-    Pyramid PupData Calibrator processing object.
+    Pyramid PupData Calibrator processing object. Calibrator for pyramid pupils.
+
     Analyzes a calibration image of the 4 pupils to extract their centers and radii,
     generates pixel indices for each pupil, and saves the resulting PupData object.
     Optional features include automatic central obstruction detection and debug plotting.
     """
 
     def __init__(self,
-                 data_dir: str,
+                 data_dir: str,      # Set by main Simul object
+                 dt: float = None,
                  thr1: float = 0.1,
                  thr2: float = 0.25,
                  obs_thr: float = 0.8,
@@ -25,9 +28,18 @@ class PyrPupdataCalibrator(BaseProcessingObj):
                  min_obstruction_ratio: float = 0.05,
                  display_debug: bool = False,
                  overwrite: bool = False,
+                 save_on_exit: bool = True,
                  target_device_idx: int = None,
                  precision: int = None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
+
+
+        if dt is not None:   
+            if dt <= 0:
+                raise ValueError(f'dt (integration time) is {dt} and must be greater than zero')
+            self.dt = self.seconds_to_t(dt)
+        else:
+            self.dt = None
 
         self.thr1 = thr1
         self.thr2 = thr2
@@ -36,17 +48,49 @@ class PyrPupdataCalibrator(BaseProcessingObj):
         self.auto_detect_obstruction = auto_detect_obstruction
         self.min_obstruction_ratio = min_obstruction_ratio
         self.display_debug = display_debug
-        self._data_dir = data_dir
-        self._filename = output_tag or "pupdata"
+        self.data_dir = data_dir
+        self.filename = output_tag
         self.central_obstruction_ratio = 0.0
-        self._overwrite = overwrite
+        self.overwrite = overwrite
+        self.save_on_exit = save_on_exit
+        self.integrated_pixels = None
 
-        self.inputs['in_i'] = InputValue(type=Intensity)
-        self.pupdata = None
+        # Outputs
+        self.pupdata = PupData(
+            target_device_idx=self.target_device_idx,
+            precision=self.precision
+        )
+        self.outputs['out_pupdata'] = self.pupdata
+
+        # Inputs
+        self.inputs['in_i'] = InputValue(type=Intensity, optional=True)  
+        self.inputs['in_pixels'] = InputValue(type=Pixels, optional=True)
+
+    def setup(self):
+        super().setup()
+        if self.local_inputs['in_i'] is None and self.local_inputs['in_pixels'] is None:
+            raise ValueError("At least one input must be provided for calibration. ")
 
     def trigger_code(self):
         """Main calibration function"""
-        image = self.local_inputs['in_i'].i
+
+        if self.local_inputs['in_i'] is not None:
+            value = self.local_inputs['in_i'].i
+        elif self.local_inputs['in_pixels'] is not None:
+            value = self.local_inputs['in_pixels'].pixels
+
+        # Integrate pixels or intensity over time
+        if self.integrated_pixels is None:
+            self.integrated_pixels = value * 0
+
+        self.integrated_pixels += value
+
+        # if dt is set, only trigger on multiples of dt, otherwise trigger on every frame
+        if self.dt is not None:
+            if self.current_time % self.dt != 0:
+                return
+
+        image = self.integrated_pixels
 
         # Analyze pupils
         centers, radii = self._analyze_pupils(image)
@@ -64,14 +108,16 @@ class PyrPupdataCalibrator(BaseProcessingObj):
 
         # Create PupData (reorder to match IDL)
         pup_order = [1, 0, 2, 3]
-        self.pupdata = PupData(
-            ind_pup=ind_pup[:, pup_order],
-            radius=radii[pup_order],
-            cx=centers[pup_order, 0],
-            cy=centers[pup_order, 1],
-            framesize=image.shape,
-            target_device_idx=self.target_device_idx
-        )
+        self.pupdata.ind_pup = ind_pup[:, pup_order]
+        self.pupdata.radius = radii[pup_order]
+        self.pupdata.cx = centers[pup_order, 0]
+        self.pupdata.cy = centers[pup_order, 1]
+        self.pupdata.framesize = image.shape
+        self.pupdata.slopes_from_intensity = self.slopes_from_intensity
+        self.pupdata.generation_time = self.current_time
+
+        # Reset integrated intensity
+        self.integrated_pixels *= 0.0
 
     def _analyze_pupils(self, image):
         """Find 4 pupil centers and radii"""
@@ -337,19 +383,27 @@ class PyrPupdataCalibrator(BaseProcessingObj):
         except ImportError:
             print("Matplotlib not available for debug plotting")
 
-    def finalize(self):
+    def _save(self):
         """Save pupil data"""
+        if self.filename is None:
+            raise ValueError("Cannot save pupil data: no filename has been set")
+
         if self.pupdata is None:
             raise ValueError("No pupil data to save")
 
-        filename = self._filename
+        filename = self.filename
         if not filename.endswith('.fits'):
             filename += '.fits'
-        file_path = os.path.join(self._data_dir, filename)
+        file_path = os.path.join(self.data_dir, filename)
 
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        self.pupdata.save(file_path, overwrite=self._overwrite)
+        self.pupdata.save(file_path, overwrite=self.overwrite)
 
         if self.verbose:
             print(f'Saved pupil data: {file_path}')
             print(f'Obstruction ratio: {self.central_obstruction_ratio:.3f}')
+
+    def finalize(self):
+        if self.save_on_exit:
+            self._save()
+
