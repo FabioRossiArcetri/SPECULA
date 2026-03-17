@@ -10,51 +10,9 @@ from specula.base_processing_obj import BaseProcessingObj
 from specula.data_objects.simul_params import SimulParams
 
 class DM(BaseProcessingObj):
-    """Deformable Mirror processing object
+    """
+    Deformable Mirror processing object.
     It receives a command vector as input and produces a Layer object representing the DM wavefront.
-    
-    Notes:
-    - The output layer object contains a wavefront not a surface. Wavefront = 2 x surface (reflection).
-    - The DM wavefront deformation is represented as a phase screen in nanometers.
-    - Sign parameter is -1 by default to account for reflection in wave propagation.
-
-    Parameters
-    ----------
-    simul_params : SimulParams
-        Simulation parameters object containing pupil size, pixel pitch, etc.
-    height : float
-        Height of the DM layer in meters (this is distance from the pupil).
-    ifunc : IFunc, optional
-        Influence function object defining the DM actuator influence functions.
-    m2c : M2C, optional
-        Mode-to-command matrix object for converting mode commands to actuator commands.
-    type_str : str, optional
-        Type of influence function to use if `ifunc` is not provided.
-    nmodes : int, optional
-        Number of modes to consider if `ifunc` is not provided.
-    nzern : int, optional
-        Maximum Zernike radial order if `ifunc` is not provided.
-        This is used from mixed Zernike KL bases (not implemented yet).
-    start_mode : int, optional
-        Starting mode index for the DM modes.
-    input_offset : int, optional
-        Offset in the input command vector to start reading from, by default 0.
-    idx_modes : list or array, optional
-        Specific mode indices to use for the DM. If provided, `start_mode` and `nmodes` are ignored.
-    npixels : int, optional
-        Number of pixels for the DM layer. If None, defaults to pupil size.
-    obsratio : float, optional
-        Obscuration ratio for the influence function if `ifunc` is not provided.
-    diaratio : float, optional
-        Diagonal ratio for the influence function if `ifunc` is not provided.
-    pupilstop : Pupilstop, optional
-        Pupilstop object defining the DM aperture.
-    sign : int, optional
-        Sign for the DM surface deformation, by default -1 (to account for reflection).
-    target_device_idx : int, optional
-        Target device index for computation (CPU/GPU). Default is None (uses global setting).
-    precision : int, optional
-        Precision for computation (0 for double, 1 for single). Default is None (uses global setting).
     """
     def __init__(self,
                  simul_params: SimulParams,
@@ -65,7 +23,6 @@ class DM(BaseProcessingObj):
                  nmodes: int=None,
                  nzern: int=None,
                  start_mode: int=None,
-                 input_offset: int=0,
                  idx_modes = None,
                  npixels: int=None,
                  obsratio: float=None,
@@ -75,6 +32,50 @@ class DM(BaseProcessingObj):
                  target_device_idx: int=None,
                  precision: int=None
                  ):
+        """
+        Note
+        ----
+        - The output layer object contains a wavefront not a surface. Wavefront = 2 x surface (reflection).
+        - The DM wavefront deformation is represented as a phase screen in nanometers.
+        - Sign parameter is -1 by default to account for reflection in wave propagation.
+
+        Parameters
+        ----------
+        simul_params : SimulParams
+            Simulation parameters object containing pupil size, pixel pitch, etc.
+        height : float
+            Height of the DM layer in meters (this is distance from the pupil).
+        ifunc : IFunc, optional
+            Influence function object defining the DM actuator influence functions.
+        m2c : M2C, optional
+            Mode-to-command matrix object for converting mode commands to actuator commands.
+        type_str : str, optional
+            Type of influence function to use if `ifunc` is not provided.
+        nmodes : int, optional
+            Number of modes to consider if `ifunc` is not provided.
+        nzern : int, optional
+            Maximum Zernike radial order if `ifunc` is not provided.
+            This is used from mixed Zernike KL bases (not implemented yet).
+        start_mode : int, optional
+            Starting mode index for the DM modes.
+        idx_modes : list or array, optional
+            Specific mode indices to use for the DM. If provided, `start_mode` and `nmodes` are ignored.
+        npixels : int, optional
+            Number of pixels for the DM layer. If None, defaults to pupil size.
+        obsratio : float, optional
+            Obscuration ratio for the influence function if `ifunc` is not provided.
+        diaratio : float, optional
+            Diagonal ratio for the influence function if `ifunc` is not provided.
+        pupilstop : Pupilstop, optional
+            Pupilstop object defining the DM aperture.
+        sign : int, optional
+            Sign for the DM surface deformation, by default -1 (to account for reflection).
+        target_device_idx : int, optional
+            Target device index for computation (CPU/GPU). Default is None (uses global setting).
+        precision : int, optional
+            Precision for computation (0 for double, 1 for single). Default is None
+            (uses global setting).
+        """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         self.simul_params = simul_params
@@ -142,7 +143,6 @@ class DM(BaseProcessingObj):
         self.layer = Layer(s[0], s[1], self.pixel_pitch, height, target_device_idx=target_device_idx, precision=precision)
         self.layer.A = self._ifunc.mask_inf_func
 
-        self.input_offset = input_offset
         self.nmodes = nmodes - start_mode   # Input command vector is not supposed to include the modes before "start_mode"
 
         # Default sign is -1 to take into account the reflection in the propagation
@@ -154,7 +154,7 @@ class DM(BaseProcessingObj):
         input_commands = self.local_inputs['in_command'].value
 
         if self.nmodes is not None:
-            input_commands = input_commands[self.input_offset: self.input_offset + self.nmodes]
+            input_commands = input_commands[:self.nmodes]
 
         if self.m2c is not None:
             self.m2c_commands[:len(input_commands)] = input_commands
@@ -174,6 +174,11 @@ class DM(BaseProcessingObj):
     @property
     def ifunc(self):
         return self._ifunc.influence_function
+
+    @property
+    def ifunc_obj(self):
+        """Return the IFunc object (not just the array)"""
+        return self._ifunc
 
     @ifunc.setter
     def ifunc(self, value):

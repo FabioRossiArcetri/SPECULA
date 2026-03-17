@@ -7,16 +7,17 @@ from specula.data_objects.simul_params import SimulParams
 class Integrator(IirFilter):
     def __init__(self,
                  simul_params: SimulParams,
-                 int_gain: float,
+                 int_gain: list,
                  ff: list=None,
-                 n_modes: int=None,
+                 n_modes: list=None, # list[int]
                  delay: float=0,
                  integration: bool=True,
                  target_device_idx: int=None,
                  precision: int=None
                 ):
         """
-        Integrator class for processing signals using an IIR filter.
+        Integrator processing object. Specialized IIR filter with integration.
+
         This class is a specialized version of the IirFilter class, designed to handle
         integration operations with specific gain and forgetting factor settings.
         """

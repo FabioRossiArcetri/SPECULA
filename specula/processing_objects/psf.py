@@ -1,5 +1,6 @@
 
 from specula.lib.calc_psf import calc_psf, calc_psf_geometry
+from specula.lib.radial_profile import computeRadialProfile
 
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
@@ -12,8 +13,10 @@ import numpy as np
 
 
 class PSF(BaseProcessingObj):
-    """ Processing object that computes the Point Spread Function (PSF) from an input ElectricField.
-    Computes PSF, Strehl ratio (SR), integrated PSF and SR, and PSF standard deviation over time.
+    """ 
+    Point Spread Function (PSF) processing object. 
+    Computes PSF, Strehl ratio (SR), integrated PSF and SR, 
+    and PSF standard deviation over time from an input ElectricField.    
 
     Parameters
     ----------
@@ -41,7 +44,8 @@ class PSF(BaseProcessingObj):
                  pixel_size_mas: float=None,
                  start_time: float=0.0,
                  target_device_idx: int = None,
-                 precision: int = None
+                 precision: int = None,
+                 verbose:bool = True,
                 ):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
@@ -57,6 +61,7 @@ class PSF(BaseProcessingObj):
                                             nd,
                                             pixel_size_mas)
 
+        self.verbose = verbose
         self.start_time = start_time
 
         self.sr = BaseValue(target_device_idx=self.target_device_idx,
@@ -118,7 +123,8 @@ class PSF(BaseProcessingObj):
         self.sr.value = self.psf.value[self.out_size[0] // 2, \
                                        self.out_size[1] // 2] / self.ref.i[self.out_size[0] // 2, \
                                        self.out_size[1] // 2]
-        print('SR at ' + self.wave_str + ':', self.sr.value, flush=True)
+        if self.verbose:
+            print('SR at ' + self.wave_str + ':', self.sr.value, flush=True)
 
     def post_trigger(self):
         super().post_trigger()
@@ -140,3 +146,28 @@ class PSF(BaseProcessingObj):
         self.int_psf.generation_time = self.current_time
         self.int_sr.generation_time = self.current_time
         self.std_psf.generation_time = self.current_time
+
+        
+    def get_psf_profile(self, psf_std:bool=False, show:bool=False):
+        if psf_std is True:
+            psf = self.std_psf.value
+        else:
+            psf = self.int_psf.value
+        norm_psf = psf/self.xp.max(psf)
+        profile,pix_dist = computeRadialProfile(norm_psf, xp=self.xp, dtype=self.dtype)
+        radial_dist = pix_dist/self.nd
+        if show:
+            try:
+                import matplotlib.pyplot as plt
+                from specula import cpuArray
+                plt.figure()
+                plt.plot(cpuArray(radial_dist),cpuArray(profile))
+                plt.grid()
+                plt.yscale('log')
+                plt.xlabel(r'$\lambda/D$')
+                plt.ylabel('PSF contrast')
+                plt.show()
+            except:
+                print('Failed to import matplotlib for display')
+        return profile, radial_dist
+        

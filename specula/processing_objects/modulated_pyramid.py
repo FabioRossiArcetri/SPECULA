@@ -1,18 +1,18 @@
 from specula import fuse
 from specula.lib.extrapolation_2d import EFInterpolator
-from specula.lib.interp2d import Interp2D 
+from specula.lib.interp2d import Interp2D
 
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
 from specula.connections import InputValue
 from specula.data_objects.electric_field import ElectricField
-from specula.lib.make_xy import make_xy
 from specula.data_objects.intensity import Intensity
+from specula.data_objects.simul_params import SimulParams
+from specula.lib.make_xy import make_xy
 from specula.lib.make_mask import make_mask
 from specula.lib.toccd import toccd
-from specula.data_objects.simul_params import SimulParams
 from specula.lib.calc_geometry import calc_geometry
-
+from specula.lib.utils import make_subpixel_shift_phase
 
 @fuse(kernel_name='pyr1_fused')
 def pyr1_fused(u_fp, ffv, fpsf, masked_exp, xp):
@@ -30,7 +30,7 @@ def pyr1_abs2(v, norm, ffv, xp):
 
 class ModulatedPyramid(BaseProcessingObj):
     """
-    Pyramid wavefront sensor with tip-tilt modulation.
+    Pyramid wavefront sensor processing object. Includes tip-tilt modulation.
     
     This class implements a modulated pyramid WFS that works with point sources or
     can be used as a base class for extended source implementations. The modulation
@@ -87,6 +87,10 @@ class ModulatedPyramid(BaseProcessingObj):
         X shift of input phase in pixels (default: 0.0)
     yShiftPhInPixel : float, optional
         Y shift of input phase in pixels (default: 0.0)
+    magnification : float, optional
+        Magnification factor applied to input phase (default: 1.0)
+    force_extrapolation : bool
+        Force extrapolation of input electric field (required by SprintPyr)
     target_device_idx : int, optional
         GPU device index (default: None, uses default device, -1 for CPU)
     precision : int, optional
@@ -144,6 +148,8 @@ class ModulatedPyramid(BaseProcessingObj):
                  rotAnglePhInDeg: float = 0.0,
                  xShiftPhInPixel: float = 0.0,
                  yShiftPhInPixel: float = 0.0,
+                 magnification: float = 1.0,
+                 force_extrapolation: bool = False,
                  target_device_idx: int = None,
                  precision: int = None
                 ):
@@ -197,6 +203,8 @@ class ModulatedPyramid(BaseProcessingObj):
         self.rotAnglePhInDeg = rotAnglePhInDeg
         self.xShiftPhInPixel = xShiftPhInPixel
         self.yShiftPhInPixel = yShiftPhInPixel
+        self.magnification = magnification
+        self.force_extrapolation = force_extrapolation
         self.pup_shifts = pup_shifts
 
         # interpolation settings
@@ -256,6 +264,9 @@ class ModulatedPyramid(BaseProcessingObj):
                                  precision=precision)
         self.transmission = BaseValue(value=self.xp.zeros(1, dtype=self.dtype),
                                       target_device_idx=self.target_device_idx,
+                                      precision=precision)        
+        self.flux_frac_inside_ccd = BaseValue(value=self.xp.ones(1, dtype=self.dtype),
+                                      target_device_idx=self.target_device_idx,
                                       precision=precision)
 
         self.inputs['in_ef'] = InputValue(type=ElectricField)
@@ -263,14 +274,20 @@ class ModulatedPyramid(BaseProcessingObj):
         self.outputs['out_psf_tot'] = self.psf_tot
         self.outputs['out_psf_bfm'] = self.psf_bfm
         self.outputs['out_transmission'] = self.transmission
+        self.outputs['out_flux_frac_inside_detector'] = self.flux_frac_inside_ccd
 
+        # Generate the geometric phase map of the pyramid faces
         self.pyr_tlt = self.get_pyr_tlt(fft_sampling, fft_padding)
+        # Sub-pixel shift phase to align the pyramid tip with the FFT grid center
         self.tlt_f = self.get_tlt_f(fft_sampling, fft_padding)
+        # Orthogonal tilt maps used to generate the tip-tilt modulation path
         self.tilt_x, self.tilt_y = self.get_modulation_tilts(fft_sampling)
+        # Focal plane mask (field stop) to limit the WFS field of view
         self.fp_mask = self.get_fp_mask(fft_totsize, self.fp_masking, obsratio=fp_obsratio)
 
-        iu = 1j  # complex unit
+        iu = self.xp.array(1j, dtype=self.complex_dtype)  # complex unit
         myexp = self.xp.exp(-2 * self.xp.pi * iu * self.pyr_tlt, dtype=self.complex_dtype)
+        # FFT shifted complex phase delay of the pyramid prism and field stop
         self.shifted_masked_exp = self.xp.fft.fftshift(myexp * self.fp_mask)
 
         self.pup_pyr_tot = self.xp.zeros((self.fft_totsize, self.fft_totsize), dtype=self.dtype)
@@ -321,7 +338,7 @@ class ModulatedPyramid(BaseProcessingObj):
                              f" not enough to hold the pupil geometry."
                              f" Minimum allowed side is {min_ccd_side}")
 
-        internal_ccd_side = self.xp.around(fft_res * pup_diam / 2) * 2
+        internal_ccd_side = int(self.xp.around(fft_res * pup_diam / 2) * 2)
 
         # Theoretical fft resolution, and minimum fft resolution to hold the pupil geometry
         fft_res = internal_ccd_side / float(pup_diam)
@@ -411,12 +428,21 @@ class ModulatedPyramid(BaseProcessingObj):
         return pyr_tlt / self.tilt_scale
 
     def get_tlt_f(self, p, c):
-        iu = 1j  # complex unit
+        """Generate tilt factor for pyramid de-rotation"""        
         p = int(p)
-        xx, yy = make_xy(2 * p, p, quarter=True, zero_sampled=True, xp=self.xp)
-        tlt_g = xx + yy
+        # The shift amount is 0.5 pixels in the normalized space of size 2*(p+c)
+        shift_amount = (2 * p) / (2 * (p + c))
 
-        tlt_f = self.xp.exp(-2 * self.xp.pi * iu * tlt_g / (2 * (p + c)), dtype=self.complex_dtype)
+        tlt_f = make_subpixel_shift_phase(
+            shape=2 * p,
+            shift_x=shift_amount,
+            shift_y=shift_amount,
+            xp=self.xp,
+            dtype=self.complex_dtype,
+            quarter=True,
+            zero_sampled=True
+        )
+
         return tlt_f
 
     def get_fp_mask(self, totsize, mask_ratio, obsratio=0):
@@ -526,25 +552,42 @@ class ModulatedPyramid(BaseProcessingObj):
         # Select the appropriate ttexp slice (no rotation needed!)
         ttexp_current = self.ttexp[rotation_idx]
 
+        # Input electric field with a sub-pixel shift
         u_tlt_const = self.ef * self.tlt_f
+        # Create the stack of modulated electric fields applying tip-tilt (modulation)
         tmp = u_tlt_const[self.xp.newaxis, :, :] * ttexp_current
         self.u_tlt[:, 0:self.ttexp_shape[1], 0:self.ttexp_shape[2]] = tmp
+
         self.pyr_image *=0
         self.fpsf *=0
 
         for i in range(0, self.mod_steps):
+            # Fourier Transform to propagate to the Focal Plane
             u_fp = self.xp.fft.fft2(self.u_tlt[i], axes=(-2, -1))
+
+            # Apply the 'fft shifted phase delay' of the pyramid and field stop
+            # Also accumulates the focal plane PSF
             u_fp_pyr = pyr1_fused(u_fp, self.ffv[i], self.fpsf, self.shifted_masked_exp, xp=self.xp)
 
+            # Inverse Fourier Transform to return to the Pupil Plane
             # 'forward' normalization is faster and we normalize correctly later in pyr1_abs2()
             pyr_ef = self.xp.fft.ifft2(u_fp_pyr, axes=(-2, -1), norm='forward')
+
+            # Calculate intensity and apply weighted accumulation for flux correction
             self.pyr_image += pyr1_abs2(pyr_ef, self.ifft_norm , self.ffv[i], xp=self.xp)
 
+        # Extract PSF before and after the focal plane mask
         self.psf_bfm.value[:] = self.xp.fft.fftshift(self.fpsf)
         self.psf_tot.value[:] = self.psf_bfm.value * self.fp_mask
+
+        # Re-center the four pupils within the final array
         self.pup_pyr_tot[:] = self.xp.roll(self.pyr_image, self.roll_array, self.roll_axis )
+
+        # Normalize by the integration time/total modulation weight
         self.psf_tot.value *= self.factor
         self.psf_bfm.value *= self.factor
+
+        # Calculate the total optical transmission of the system
         self.transmission.value[:] = self.xp.sum(self.psf_tot.value) / self.xp.sum(self.psf_bfm.value)
 
     def post_trigger(self):
@@ -574,9 +617,11 @@ class ModulatedPyramid(BaseProcessingObj):
         elif self.final_ccd_side < self.toccd_side:
             delta = (self.toccd_side - self.final_ccd_side) // 2
             self.out_i.i[:] = ccd_internal[delta:delta + self.final_ccd_side, delta:delta + self.final_ccd_side]
+            self.flux_frac_inside_ccd.value[:] = self.xp.sum(self.out_i.i[:])/self.xp.sum(ccd_internal)
         else:
             self.out_i.i[:] = ccd_internal
-
+        
+        self.flux_frac_inside_ccd.generation_time = self.current_time
         self.out_i.generation_time = self.current_time
         self.psf_tot.generation_time = self.current_time
         self.psf_bfm.generation_time = self.current_time
@@ -601,9 +646,12 @@ class ModulatedPyramid(BaseProcessingObj):
             rotAnglePhInDeg=self.rotAnglePhInDeg,
             xShiftPhInPixel=self.xShiftPhInPixel,
             yShiftPhInPixel=self.yShiftPhInPixel,
+            magnification=self.magnification,
             mask_threshold=self._mask_threshold,
+            force_extrapolation=self.force_extrapolation,
+            use_out_ef_cache=True,
             target_device_idx=self.target_device_idx,
-            precision=self.precision,
+            precision=self.precision
         )
 
         # Create separate interpolator for pup_shifts if needed

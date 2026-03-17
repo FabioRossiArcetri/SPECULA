@@ -20,6 +20,10 @@ def pyr1_abs2(v, norm, ffv, xp):
 
 
 class ModulatedDoubleRoof(ModulatedPyramid):
+    """
+    Pyramid wavefront sensor with double roof processing object.
+    Includes tip-tilt modulation and double roof.
+    """
     def __init__(self,
                  simul_params: SimulParams,
                  wavelengthInNm: float, # TODO =750,
@@ -77,7 +81,7 @@ class ModulatedDoubleRoof(ModulatedPyramid):
         self.pup_dist = pup_dist
 
         # After initialization, create the second roof's exponential
-        iu = 1j  # complex unit
+        iu = self.xp.array(1j, dtype=self.complex_dtype)  # complex unit
         roof1_exp = self.xp.exp(-2 * self.xp.pi * iu * self.roof1_tlt, dtype=self.complex_dtype)
         roof2_exp = self.xp.exp(-2 * self.xp.pi * iu * self.roof2_tlt, dtype=self.complex_dtype)
 
