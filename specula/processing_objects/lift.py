@@ -417,7 +417,7 @@ class Lift(BaseProcessingObj):
             return
 
         psf = self.in_pixels.get_value()
-        currentPhaseEstimate, coeffs, niters = self.phaseEstimation(psf)        
+        currentPhaseEstimate, coeffs, niters = self.phaseEstimation(psf) 
 
         self.outputs['out_modes'].value = self.to_xp(coeffs)
         self.outputs['out_modes'].generation_time = self.current_time
