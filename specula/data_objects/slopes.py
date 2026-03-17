@@ -6,10 +6,11 @@ from specula.base_value import BaseValue
 
 
 class Slopes(BaseDataObj):
-    '''
-    Slopes data object. Holds a slopes vector, which can be interleaved (XYXYXY...) or not (XXX...YYY...).
+    """
+    Slopes data object.
+    Holds a slopes vector, which can be interleaved (XYXYXY...) or not (XXX...YYY...).
     X and Y slopes can be accessed independently, and a 2d map is available.
-    '''
+    """
     def __init__(self,
                  length: int=None,
                  slopes=None,
@@ -32,7 +33,7 @@ class Slopes(BaseDataObj):
             self.indices_y = self.indices_x + 1
         else:
             self.indices_x = self.xp.arange(0, self.size // 2)
-            self.indices_y = self.indices_x + self.size // 2
+            self.indices_y = self.xp.arange(self.size//2, self.size) # ensure that no element is discarded if self.size is odd
 
     def get_value(self):
         '''

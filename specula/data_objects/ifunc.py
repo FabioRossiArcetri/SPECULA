@@ -15,9 +15,11 @@ def compute_mixed_ifunc(*args, **kwargs):
 
 
 class IFunc(BaseDataObj):
-    '''
-    Influence functions are stored as [modes, pixels]
-    '''
+    """
+    Influence functions data object.
+    This class holds the influence function matrix and the corresponding mask.
+    Influence functions data are stored as [modes, pixels].
+    """
     def __init__(self,
                  ifunc=None,
                  type_str: str=None,
@@ -72,10 +74,11 @@ class IFunc(BaseDataObj):
             elif type_lower == 'zonal':
                 if n_act is None:
                     raise ValueError('nact parameter is mandatory with type "zonal"')
-                ifunc, mask = compute_zonal_ifunc(npixels, n_act, circ_geom=circ_geom, angle_offset=angle_offset, do_mech_coupling=do_mech_coupling,
-                                                  coupling_coeffs=coupling_coeffs, do_slaving=do_slaving, slaving_thr=slaving_thr,
-                                                  obsratio=obsratio, diaratio=diaratio, mask=mask, xp=self.xp, dtype=self.dtype,
-                                                  return_coordinates=False)
+                ifunc, mask, _, _ = compute_zonal_ifunc(npixels, n_act, circ_geom=circ_geom,
+                                                  angle_offset=angle_offset, do_mech_coupling=do_mech_coupling,
+                                                  coupling_coeffs=coupling_coeffs, do_slaving=do_slaving,
+                                                  slaving_thr=slaving_thr, obsratio=obsratio, diaratio=diaratio,
+                                                  mask=mask, xp=self.xp, dtype=self.dtype)
             else:
                 raise ValueError(f'Invalid ifunc type {type_str}')
 

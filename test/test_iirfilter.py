@@ -1,4 +1,3 @@
-
 import specula
 specula.init(0)  # Default target device
 
@@ -27,7 +26,8 @@ class TestIirFilterData(unittest.TestCase):
         den = xp.array([[-1.0, 1.0], [-0.9, 1.0]])
         n_modes = [3, 2]
 
-        filt = IirFilterData(ordnum, ordden, num, den, n_modes=n_modes, target_device_idx=target_device_idx)
+        filt = IirFilterData(ordnum, ordden, num, den, n_modes=n_modes,
+                             target_device_idx=target_device_idx)
 
         # There should be 5 filters: 3 with the first coeffs, 2 with the second
         self.assertEqual(filt.num.shape, (5, 2))
@@ -41,7 +41,8 @@ class TestIirFilterData(unittest.TestCase):
     def test_numerator_from_gain_and_ff(self, target_device_idx, xp):
         gain = 0.2
         nmodes = 10
-        f = IirFilterData.from_gain_and_ff([gain] * nmodes, target_device_idx=target_device_idx)
+        f = IirFilterData.from_gain_and_ff([gain] * nmodes,
+                                           target_device_idx=target_device_idx)
 
         # Original assertions
         assert all(cpuArray(f.num[:, 0]) == 0)
@@ -61,7 +62,8 @@ class TestIirFilterData(unittest.TestCase):
     def test_denominator_from_gain_and_ff_num(self, target_device_idx, xp):
         gain = 0.2
         nmodes = 10
-        f = IirFilterData.from_gain_and_ff([gain] * nmodes, target_device_idx=target_device_idx)
+        f = IirFilterData.from_gain_and_ff([gain] * nmodes,
+                                           target_device_idx=target_device_idx)
 
         assert all(cpuArray(f.den[:, 0]) == -1)
         assert all(cpuArray(f.den[:, 1]) == 1)
@@ -70,7 +72,8 @@ class TestIirFilterData(unittest.TestCase):
     def test_num_and_den_shape_from_gain_and_ff_num(self, target_device_idx, xp):
         gain = 0.2
         nmodes = 10
-        f = IirFilterData.from_gain_and_ff([gain] * nmodes, target_device_idx=target_device_idx)
+        f = IirFilterData.from_gain_and_ff([gain] * nmodes,
+                                           target_device_idx=target_device_idx)
 
         assert f.num.shape == (nmodes, 2)
         assert f.den.shape == (nmodes, 2)
@@ -83,14 +86,16 @@ class TestIirFilterData(unittest.TestCase):
         # Create a simple low-pass filter
         fc = 50  # Hz
         fs = 1000  # Hz
-        original_filter = IirFilterData.lpf_from_fc(fc, fs, n_ord=2, target_device_idx=target_device_idx)
+        original_filter = IirFilterData.lpf_from_fc(fc, fs, n_ord=2,
+                                                    target_device_idx=target_device_idx)
 
         # Convert to control transfer function
         dt = 1.0 / fs
         tf = original_filter.to_control_tf(mode=0, dt=dt)
 
         # Convert back to IirFilterData
-        reconstructed_filter = IirFilterData.from_control_tf(tf, target_device_idx=target_device_idx)
+        reconstructed_filter = IirFilterData.from_control_tf(tf,
+                                                             target_device_idx=target_device_idx)
 
         # Compare coefficients (allowing for small numerical differences)
         original_num = cpuArray(original_filter.num[0, :])
@@ -115,7 +120,8 @@ class TestIirFilterData(unittest.TestCase):
         # Create multiple filters with different cutoff frequencies
         fc_list = [10, 50, 100]  # Hz
         fs = 1000  # Hz
-        original_filter = IirFilterData.lpf_from_fc(fc_list, fs, n_ord=2, target_device_idx=target_device_idx)
+        original_filter = IirFilterData.lpf_from_fc(fc_list, fs, n_ord=2,
+                                                    target_device_idx=target_device_idx)
 
         # Convert to list of control transfer functions
         dt = 1.0 / fs
@@ -125,7 +131,8 @@ class TestIirFilterData(unittest.TestCase):
         self.assertEqual(len(tf_list), len(fc_list))
 
         # Convert back to IirFilterData
-        reconstructed_filter = IirFilterData.from_control_tf(tf_list, target_device_idx=target_device_idx)
+        reconstructed_filter = IirFilterData.from_control_tf(tf_list,
+                                                             target_device_idx=target_device_idx)
 
         # Compare each filter
         for mode in range(len(fc_list)):
@@ -348,6 +355,32 @@ class TestIirFilterData(unittest.TestCase):
         np.testing.assert_allclose(actual_den, expected_den, rtol=1e-7)
 
     @cpu_and_gpu
+    def test_set_gain_zero_preserves_numerator_structure(self, target_device_idx, xp):
+        """Setting gain to zero must be reversible without losing numerator shape."""
+
+        ordnum = [3]
+        ordden = [2]
+        num = xp.array([[0.2, 0.4, 0.8]], dtype=xp.float32)
+        den = xp.array([[-0.9, 1.0, 0.0]], dtype=xp.float32)
+
+        filter_data = IirFilterData(ordnum, ordden, num, den,
+                                    target_device_idx=target_device_idx)
+
+        original_num = cpuArray(filter_data.num.copy())
+
+        filter_data.set_gain([0.0])
+        zero_num = cpuArray(filter_data.num)
+        np.testing.assert_allclose(zero_num, np.zeros_like(original_num), rtol=1e-12, atol=1e-12)
+
+        filter_data.set_gain([0.8])
+        recovered_num = cpuArray(filter_data.num)
+        np.testing.assert_allclose(recovered_num, original_num, rtol=1e-7, atol=1e-9)
+
+        filter_data.set_gain([1.6])
+        scaled_num = cpuArray(filter_data.num)
+        np.testing.assert_allclose(scaled_num, original_num * 2.0, rtol=1e-7, atol=1e-9)
+
+    @cpu_and_gpu
     def test_poles_zeros_gains_roundtrip_simple(self, target_device_idx, xp):
         """Test roundtrip conversion with a simpler approach"""
 
@@ -402,7 +435,8 @@ class TestIirFilterData(unittest.TestCase):
         # Stable: pole inside unit circle
         gains = [0.3]
         ff = [1.0]
-        stable_filter = IirFilterData.from_gain_and_ff(gains, ff, target_device_idx=target_device_idx)
+        stable_filter = IirFilterData.from_gain_and_ff(gains, ff,
+                                                       target_device_idx=target_device_idx)
         # Plant TF
         delay = 3
         dm = xp.array([0.0, 1.0], dtype=xp.float32)
@@ -433,7 +467,8 @@ class TestIirFilterData(unittest.TestCase):
         """Test maximum stable gain for integrator with known delay values"""
 
         # Create integrator filter (gain=1, ff=1 gives perfect integrator)
-        integrator = IirFilterData.from_gain_and_ff([1.0], [1.0], target_device_idx=target_device_idx)
+        integrator = IirFilterData.from_gain_and_ff([1.0], [1.0],
+                                                    target_device_idx=target_device_idx)
 
         # Test delay = 2 frames -> max gain should be ~1.0
         max_gain_delay2 = integrator.max_stable_gain(mode=0, delay=2, n_gain=50000)
@@ -588,7 +623,8 @@ class TestIirFilterData(unittest.TestCase):
     def test_resonance_frequency_gain_scaling(self, target_device_idx, xp):
         """Test that resonance frequency changes with gain factor"""
 
-        integrator = IirFilterData.from_gain_and_ff([1.0], [1.0], target_device_idx=target_device_idx)
+        integrator = IirFilterData.from_gain_and_ff([1.0], [1.0],
+                                                    target_device_idx=target_device_idx)
         delay = 3
         fs = 1000.0
 

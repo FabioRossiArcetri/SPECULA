@@ -7,43 +7,18 @@ from specula.connections import InputList
 from specula.data_objects.layer import Layer
 from specula import cpuArray, show_in_profiler
 from specula.data_objects.simul_params import SimulParams
-from skimage.filters import window
+import warnings
 
 import numpy as np
 
 degree2rad = np.pi / 180.
 
 class AtmoPropagation(BaseProcessingObj):
-    """Atmospheric propagation
-    This processing object simulates the propagation of light through atmospheric turbulence layers.
-    It can perform both geometric and physical (Fresnel) propagation, depending on the configuration.
-
-    Note
-    ----
-    - By default, all atmospheric phase screens are referenced to a wavelength of 500 nm.
-    - Layer heights are always defined at zenith and projected according to the simulation
-      zenith angle (coming from simul_params).
-
-    Parameters
-    ----------
-    simul_params : SimulParams
-        Simulation parameters object containing global settings.
-    source_dict : dict
-        Dictionary of source objects (e.g., stars, LGS) to be propagated.
-    doFresnel : bool, optional
-        If True, physical Fresnel propagation is performed. Default is False (geometric propagation).
-    wavelengthInNm : float, optional
-        Wavelength in nanometers for Fresnel propagation. Required if doFresnel is True. Default is 500.0 nm.
-    pupil_position : array-like, optional
-        Position of the pupil in pixels. Default is None (centered).
-    mergeLayersContrib : bool, optional
-        If True, contributions from all layers are merged into a single output per source. Default is True.
-    upwards : bool, optional
-        If True, propagation is performed upwards (from ground to source). Default is False (downwards).
-    target_device_idx : int, optional
-        Target device index for computation (CPU/GPU). Default is None (uses global setting).
-    precision : int, optional
-        Precision for computation (0 for double, 1 for single). Default is None (uses global setting).
+    """
+    Atmospheric propagation processing object.
+    This processing object simulates the propagation of light through atmospheric turbulence
+    layers. It can perform both geometric and physical (Fresnel) propagation, depending on the
+    configuration.
     """
     def __init__(self,
                  simul_params: SimulParams,
@@ -53,9 +28,49 @@ class AtmoPropagation(BaseProcessingObj):
                  pupil_position=None,
                  mergeLayersContrib: bool=True,
                  upwards: bool=False,
+                 padding_factor: int=1,
+                 band_limit_factor: float=1.0,
                  target_device_idx=None,
                  precision=None):
+        """
+        Note
+        ----
+        - By default, all atmospheric phase screens are referenced to a wavelength of 500 nm.
+        - Layer heights are always defined at zenith and projected according to the simulation
+        zenith angle (coming from simul_params).
 
+        Parameters
+        ----------
+        simul_params : SimulParams
+            Simulation parameters object containing global settings.
+        source_dict : dict
+            Dictionary of source objects (e.g., stars, LGS) to be propagated.
+        doFresnel : bool, optional
+            If True, physical Fresnel propagation is performed. Default is False
+            (geometric propagation).
+        wavelengthInNm : float, optional
+            Wavelength in nanometers for Fresnel propagation. Required if doFresnel is True.
+            Default is 500.0 nm.
+        pupil_position : array-like, optional
+            Position of the pupil in pixels. Default is None (centered).
+        mergeLayersContrib : bool, optional
+            If True, contributions from all layers are merged into a single output per source.
+            Default is True.
+        upwards : bool, optional
+            If True, propagation is performed upwards (from ground to source). Default is False
+            (downwards).
+        padding_factor : int, optional
+            Factor for zero padding in Fresnel propagation to avoid numerical issues with FFTs.
+        band_limit_factor: float, optional
+            Factor in (0,1) for bandlimit filter in angular spectrum propagation.
+            If set to 1.0 no bandlimit filter is applied, if set to 0 the full bandlimit filter
+            is applied.
+        target_device_idx : int, optional
+            Target device index for computation (CPU/GPU). Default is None (uses global setting).
+        precision : int, optional
+            Precision for computation (0 for double, 1 for single). Default is None
+            (uses global setting).
+        """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         self.simul_params = simul_params
@@ -72,6 +87,10 @@ class AtmoPropagation(BaseProcessingObj):
         if doFresnel and wavelengthInNm is None:
             raise ValueError('get_atmo_propagation: wavelengthInNm is required when doFresnel key'
                              ' is set to correctly simulate physical propagation.')
+        if padding_factor < 1.0:
+            raise ValueError('get_atmo_propagation: padding_factor must be greater than 1.')
+        if not (0.0 <= band_limit_factor <= 1.0):
+            raise ValueError('get_atmo_propagation: band_limit_factor must be between 0.0 and 1.0, but is set to ' + str(band_limit_factor) + '.')
 
         self.mergeLayersContrib = mergeLayersContrib
         self.upwards = upwards
@@ -88,6 +107,8 @@ class AtmoPropagation(BaseProcessingObj):
         self.wavelengthInNm = wavelengthInNm
         self.propagators = None
         self._block_size = {}
+        self.padding = padding_factor
+        self.band_limit_factor = band_limit_factor
 
         if self.mergeLayersContrib:
             for name, source in self.source_dict.items():
@@ -108,36 +129,74 @@ class AtmoPropagation(BaseProcessingObj):
 
         self.airmass = 1. / np.cos(np.radians(self.simul_params.zenithAngleInDeg), dtype=self.dtype)
 
+    # Band-limited angular spectrum method for numerical simulation of free-space propagation in far and near fields
+    # K. Matsushima, T. Shimobaba
     def field_propagator(self, distanceInM):
-        k = 2 * np.pi / (self.wavelengthInNm * 1e-9)
+        # padded size
+        L_pad = self.ef_size_padded * self.pixel_pitch
 
-        df = 1 / (self.pixel_pupil_size * self.pixel_pitch)
-        fx, fy = self.xp.meshgrid(
-            df * self.xp.arange(-self.pixel_pupil_size / 2, self.pixel_pupil_size / 2),
-            df * self.xp.arange(-self.pixel_pupil_size / 2, self.pixel_pupil_size / 2))
-        fsq = fx ** 2 + fy ** 2
+        df = 1 / L_pad
+        fx, fy = self.xp.meshgrid(df * self.xp.arange(-self.ef_size_padded // 2, self.ef_size_padded // 2),
+                                  df * self.xp.arange(-self.ef_size_padded // 2, self.ef_size_padded // 2))
+        fsq = fx**2 + fy**2
 
-        propagator = self.xp.exp(-1j * np.pi**2 * 2 * distanceInM / k * fsq)
-        hanning_window = self.to_xp(window(('general_hamming', 0.8), (self.pixel_pupil_size,
-                                                                      self.pixel_pupil_size)))
-        self.propagators.append(self.xp.fft.fftshift(propagator*hanning_window))
+        # maximal spatial frequency that can propagate in x- and y-direction
+        f_limit = L_pad / (self.wavelengthInNm * 1e-9 * np.sqrt(L_pad ** 2 + 4 * distanceInM ** 2))
+
+        # reduce propagation distance if max. spatial frequency is too low - otherwise aliasing occurs
+        if f_limit < (self.ef_size_padded / 2 * df * self.band_limit_factor):
+            warnings.warn(
+                'Propagation distance too large for current band_limit_max in angular spectrum propagation. '
+                'Consider increasing zero padding or decreasing band_limit_max.',
+                RuntimeWarning)
+            f_limit = self.ef_size_padded / 2 * df * self.band_limit_factor
+            distance_old = distanceInM
+            distanceInM = np.sqrt((L_pad / f_limit) ** 2 / (self.wavelengthInNm * 1e-9) ** 2 - L_pad ** 2) / 2
+            warnings.warn('Distance for wavelength ' + str(self.wavelengthInNm) + 'nm reduced from ' + str(
+                distance_old) + 'm to ' + str(distanceInM) + 'm.', RuntimeWarning)
+
+        # calculate kernel
+        H_AS = self.xp.exp(-1j * np.pi * distanceInM * self.wavelengthInNm * 1e-9 * fsq)
+
+        # Apply bandlimit filter
+        if self.band_limit_factor < 1.0:
+            W = ((fx / f_limit) ** 2 + (fy * self.wavelengthInNm * 1e-9) ** 2 <= 1) * (
+                    (fy / f_limit) ** 2 + (fx * self.wavelengthInNm * 1e-9) ** 2 <= 1)
+            H_AS *= W
+
+        return H_AS
 
     def doFresnel_setup(self):
-        self.propagators = []
+        self.ef_size_padded = self.pixel_pupil * self.padding
 
         layer_list = self.common_layer_list + self.atmo_layer_list
         height_layers = np.array([layer.height * self.airmass for layer in layer_list], dtype=self.dtype)
+
+        source_height = self.source_dict[list(self.source_dict)[0]].height * self.airmass
+        if np.isinf(source_height):
+            raise ValueError('Fresnel propagation to infinity not supported.')
 
         sorted_heights = np.sort(height_layers)
         if not np.allclose(height_layers, sorted_heights):
             raise ValueError('Layers must be sorted from lowest to highest')
 
-        self.field_propagator(height_layers[0]) # from ground to first layer
-        for prev, curr in zip(height_layers, height_layers[1:]):
-            self.field_propagator(curr - prev)
+        # set up fresnel propagator if height difference is not 0
+        height_diffs = np.diff(height_layers, append=source_height)
+        self.propagators = [self.field_propagator(diff) if diff != 0 else None for diff in height_diffs]
 
-        if not self.upwards:  # reverse propagators for downwards propagation
+        # adapt for downwards propagation
+        if not self.upwards:
             self.propagators = self.propagators[::-1]
+            # no propagation from the source downwards
+            self.propagators.pop(0)
+            self.propagators.append(None)
+
+        # pre-allocate arrays for propagation
+        self.ef_padded = self.xp.zeros([self.ef_size_padded, self.ef_size_padded], dtype=self.complex_dtype)
+        self.ft_ef1 = self.xp.zeros([self.ef_size_padded, self.ef_size_padded], dtype=self.complex_dtype)
+        self.ef_fresnel_padded = self.xp.zeros([self.ef_size_padded, self.ef_size_padded],
+                                               dtype=self.complex_dtype)
+        self.output_ef_fresnel = self.xp.zeros([self.pixel_pupil, self.pixel_pupil], dtype=self.complex_dtype)
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
@@ -156,17 +215,20 @@ class AtmoPropagation(BaseProcessingObj):
                 )
                 layer.phaseInNm[~mask_valid] = local_mean[~mask_valid]
 
-    def physical_propagation(self, ef, propagator):
-        ft_ef1 = self.xp.fft.fft2(ef)
-        ft_ef2 = propagator*ft_ef1
-        ef2 = self.xp.fft.ifft2(ft_ef2)
-        return ef2
+    def physical_propagation(self, ef_in, propagator):
+        # zero padding
+        s = (self.ef_size_padded - self.pixel_pupil + 1) // 2
+        self.ef_padded[s:s + self.pixel_pupil, s:s + self.pixel_pupil] = ef_in
+
+        self.ft_ef1[:] = self.xp.fft.fftshift(self.xp.fft.fft2(self.ef_padded, norm="ortho"))
+        self.ef_fresnel_padded[:] = self.xp.fft.ifft2(self.xp.fft.ifftshift(self.ft_ef1 * propagator), norm="ortho")
+
+        # unpadding
+        self.output_ef_fresnel[:] = self.ef_fresnel_padded[s:s + self.pixel_pupil, s:s + self.pixel_pupil]
+
 
     @show_in_profiler('atmo_propagation.trigger_code')
     def trigger_code(self):
-        if not self.propagators and self.doFresnel:
-            self.doFresnel_setup()
-
         layer_list = self.common_layer_list + self.atmo_layer_list
         if not self.upwards:  # reverse layers for downwards propagation
             layer_list = layer_list[::-1]
@@ -191,16 +253,13 @@ class AtmoPropagation(BaseProcessingObj):
                                (layer.size[1] - self.pixel_pupil_size) // 2]
                     output_ef.product(layer, subrect=topleft)
                 else:
-                    tmp_phase = interpolator.interpolate(layer.phaseInNm)
-
                     output_ef.A *= interpolator.interpolate(layer.A)
-                    output_ef.phaseInNm += tmp_phase
+                    output_ef.phaseInNm += interpolator.interpolate(layer.phaseInNm)
 
-                if self.doFresnel:
-                    tmp_ef = self.physical_propagation(output_ef.ef_at_lambda(self.wavelengthInNm), self.propagators[li])
-                    output_ef.phaseInNm[:] = self.xp.angle(tmp_ef) * self.wavelengthInNm / (2 * self.xp.pi)
-                    output_ef.A[:] = abs(tmp_ef)
-
+                if self.doFresnel and self.propagators[li] is not None:
+                    self.physical_propagation(output_ef.ef_at_lambda(self.wavelengthInNm), self.propagators[li])
+                    output_ef.phaseInNm[:] = self.xp.angle(self.output_ef_fresnel) * self.wavelengthInNm / (2 * self.xp.pi)
+                    output_ef.A[:] = abs(self.output_ef_fresnel)
 
     def post_trigger(self):
         super().post_trigger()
@@ -315,4 +374,6 @@ class AtmoPropagation(BaseProcessingObj):
                     break
 
         self.setup_interpolators()
+        if self.doFresnel:
+            self.doFresnel_setup()
         self.build_stream()
