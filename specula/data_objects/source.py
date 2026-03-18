@@ -7,6 +7,7 @@ from specula import ASEC2RAD
 
 degree2rad = np.pi / 180.
 
+
 class Source(BaseDataObj):
     """
     Source data object.
@@ -51,14 +52,15 @@ class Source(BaseDataObj):
             Precision for computation (default: None).
         """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
-        
+
         self.orig_polar_coordinates = np.array(polar_coordinates).copy()
 
-        polar_coordinates = np.array(polar_coordinates, dtype=self.dtype) + np.array(error_coord, dtype=self.dtype)
+        polar_coordinates = np.array(polar_coordinates, dtype=self.dtype) \
+                          + np.array(error_coord, dtype=self.dtype)
         if any(error_coord):
             print(f'there is a desired error ({error_coord[0]},{error_coord[1]}) on source coordinates.')
             print(f'final coordinates are: {polar_coordinates[0]},{polar_coordinates[1]}')
-        
+
         self.polar_coordinates = polar_coordinates
         self.height = height
         self.magnitude = magnitude
@@ -67,6 +69,7 @@ class Source(BaseDataObj):
         self.band = band
         self.verbose = verbose
         self.error_coord = error_coord
+        self.chromatic_shifts_m = {}
 
     def get_fits_header(self):
         hdr = fits.Header()
