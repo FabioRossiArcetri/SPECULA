@@ -139,11 +139,12 @@ class Lift(BaseProcessingObj):
         ref_zern_amp = self.to_xp(ref_zern_amp, dtype=self.dtype)
         if ref_zern_amp.ndim != 1:
             raise ValueError('ref_zern_amp must be a 1D sequence ordered from tip onward.')
-        if ref_zern_amp.size != self.nZern:
+        if ref_zern_amp.size > self.nZern:
             raise ValueError(
-                f'ref_zern_amp has length {ref_zern_amp.size}, but nZern={self.nZern}.'
+                f'ref_zern_amp has length {ref_zern_amp.size},'
+                f' but is longer than nZern={self.nZern}.'
             )
-        airef[self.nPistons:self.nPistons + self.nZern] = ref_zern_amp
+        airef[self.nPistons:self.nPistons + ref_zern_amp.size] = ref_zern_amp
         return airef
 
 

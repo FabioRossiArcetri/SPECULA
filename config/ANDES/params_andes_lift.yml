@@ -6,7 +6,7 @@
 
 main:
   class:             'SimulParams'
-  root_dir:          '/home/frossi/PASSATA_scripts/data/data'
+  root_dir:          '/raid2/gcarla/git/ANDES/andes/PASSATA_scripts/data/'
   pixel_pupil:       400
   pixel_pitch:       0.0975                 # 39./400. [m] Pitch of the pupil phase array
   total_time:        5.000                  # [s] Total simulation running time
@@ -257,8 +257,21 @@ psf:
 #                  'comm-control.out_comm',
 #                  'srRes-psf.out_sr']
 
-piston_disp0:
-   class:            'PlotDisplay'
+piston_disp:
+   class:            'PlotVectorDisplay'
    inputs:
-     value_list:       ['liftestimator1.out_pistons', 'liftestimator1.out_zern']
+     vector:       ['liftestimator1.out_pistons']
    title:            'pistons'
+
+
+zern_disp:
+   class:            'PlotVectorDisplay'
+   inputs:
+     vector:       ['liftestimator1.out_zern']
+   title:            'zernikes'
+
+pist_comm_disp:
+   class:            'PlotVectorDisplay'
+   inputs:
+     vector:       ['integrator.out_comm']
+   title:            'pistons command'
