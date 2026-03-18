@@ -81,7 +81,7 @@ class TestLift(unittest.TestCase):
         self.assertEqual(lift.modesCube.dtype, lift.dtype)
 
     @cpu_and_gpu
-    def test_ref_zern_amp_populates_reference_coefficients_from_tip_order(self, target_device_idx, xp):
+    def test_ref_zern_amp_populates_refe_coeff_from_tip_order(self, target_device_idx, xp):
         ref_zern_amp = np.array([0.1, -0.2, 0.3, 0.4], dtype=np.float32)
         zern_ifunc = IFunc(
             type_str='zernike', nmodes=4, npixels=16,
@@ -121,7 +121,7 @@ class TestLift(unittest.TestCase):
         np.testing.assert_allclose(airef, expected)
 
     @cpu_and_gpu
-    def test_ref_zern_amp_requires_exact_nzern_length(self, target_device_idx, xp):
+    def test_ref_zern_amp_longer_than_nzern_length(self, target_device_idx, xp):
         ifunc = IFunc(
             type_str='zernike', nmodes=3, npixels=16,
             precision=1, target_device_idx=target_device_idx,
@@ -138,7 +138,7 @@ class TestLift(unittest.TestCase):
                 npix_side=16,
                 cropped_size=4,
                 ifunc=ifunc,
-                ref_zern_amp=[0.0, 0.2],
+                ref_zern_amp=[0.0, 0.2, 0.0, 0.1],  # length 4, but nZern=3
                 fft_res=2,
                 target_device_idx=target_device_idx,
                 precision=1,
