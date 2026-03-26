@@ -56,23 +56,23 @@ class TestShSimulation(unittest.TestCase):
         data_dirs = glob.glob(os.path.join(self.datadir, '2*'))
         for data_dir in data_dirs:
             if os.path.isdir(data_dir) and os.path.exists(f"{data_dir}/res_sr.fits"):
-                shutil.rmtree(data_dir)
+                shutil.rmtree(data_dir, ignore_errors=True)
 
             # Also remove FieldAnalyser output directories
             base_name = os.path.basename(data_dir)
             for suffix in ['_PSF', '_MA', '_CUBE']:
                 field_dir = os.path.join(self.datadir, base_name + suffix)
                 if os.path.isdir(field_dir):
-                    shutil.rmtree(field_dir)
+                    shutil.rmtree(field_dir, ignore_errors=True)
 
         for dirname in ['decimated_tn', 'decimated_pickle_tn', 'legacy_tn', 'legacy_pickle_tn']:
             path = os.path.join(self.datadir, dirname)
             if os.path.isdir(path):
-                shutil.rmtree(path)
+                shutil.rmtree(path, ignore_errors=True)
 
         for path in glob.glob(os.path.join(self.datadir, 'modal_unit_*')):
             if os.path.isdir(path):
-                shutil.rmtree(path)
+                shutil.rmtree(path, ignore_errors=True)
 
         # Clean up copied calibration files
         if os.path.exists(self.subap_path):
@@ -505,11 +505,11 @@ class TestModalParamsHandling(unittest.TestCase):
         self.assertNotIn('nmodes', fname)
 
     def test_modal_filename_with_ifunc_inv_ref(self):
-        """ifunc_inv_ref appears in filename."""
+        """ifunc_inv_ref uses the same filename tag as ifunc_ref."""
         analyzer = self._make_analyzer('filename_ifunc_inv_ref')
         source = {'polar_coordinates': [0.0, 0.0]}
         fname = analyzer._get_modal_filename(source, {'ifunc_inv_ref': 'my_ifunc_inv'})
-        self.assertIn('_ifinvrefmy_ifunc_inv', fname)
+        self.assertIn('_ifrefmy_ifunc_inv', fname)
 
     def test_modal_filename_legacy_nmodes(self):
         """Legacy nmodes+type_str appear in filename as before."""
@@ -572,10 +572,10 @@ class TestModalParamsHandling(unittest.TestCase):
     # compute_modal_analysis  default-setting logic
     # ------------------------------------------------------------------
 
-    def test_defaults_set_without_ifunc(self):
-        """Without ifunc_ref/ifunc_inv_ref, type_str, nmodes, npixels defaults are added."""
+    def test_no_defaults_without_ifunc(self):
+        """Without explicit ifunc keys, compute_modal_analysis does not inject defaults."""
         from unittest.mock import patch
-        analyzer = self._make_analyzer('defaults_no_ifunc')
+        analyzer = self._make_analyzer('no_defaults_no_ifunc')
         modal_params = {}
         with patch.object(analyzer, '_build_replay_params_modal',
                           side_effect=RuntimeError('stop')):
@@ -583,9 +583,7 @@ class TestModalParamsHandling(unittest.TestCase):
                 analyzer.compute_modal_analysis(modal_params=modal_params, force_recompute=True)
             except RuntimeError:
                 pass
-        self.assertEqual(modal_params['type_str'], 'zernike')
-        self.assertEqual(modal_params['nmodes'], 100)
-        self.assertEqual(modal_params['npixels'], 8)  # from params.yml pixel_pupil
+        self.assertEqual(modal_params, {})
 
     def test_no_defaults_with_ifunc_ref(self):
         """With ifunc_ref, type_str/nmodes/npixels defaults are NOT added."""
@@ -616,10 +614,10 @@ class TestModalParamsHandling(unittest.TestCase):
         self.assertNotIn('type_str', modal_params)
         self.assertNotIn('nmodes', modal_params)
 
-    def test_ifunc_string_alias_normalized_to_ifunc_ref(self):
-        """Legacy 'ifunc' string value is silently normalized to 'ifunc_ref'."""
+    def test_no_defaults_with_ifunc_string(self):
+        """With string-valued ifunc, defaults are not added and the key is preserved."""
         from unittest.mock import patch
-        analyzer = self._make_analyzer('ifunc_alias')
+        analyzer = self._make_analyzer('no_defaults_ifunc_string')
         modal_params = {'ifunc': 'my_ifunc'}
         with patch.object(analyzer, '_build_replay_params_modal',
                           side_effect=RuntimeError('stop')):
@@ -627,7 +625,11 @@ class TestModalParamsHandling(unittest.TestCase):
                 analyzer.compute_modal_analysis(modal_params=modal_params, force_recompute=True)
             except RuntimeError:
                 pass
-        self.assertEqual(modal_params.get('ifunc_ref'), 'my_ifunc')
+        self.assertEqual(modal_params.get('ifunc'), 'my_ifunc')
+        self.assertNotIn('ifunc_ref', modal_params)
+        self.assertNotIn('type_str', modal_params)
+        self.assertNotIn('nmodes', modal_params)
+        self.assertNotIn('npixels', modal_params)
 
     def test_no_defaults_with_ifunc_direct(self):
         """With ifunc (non-string, direct object), defaults are NOT added."""
@@ -664,11 +666,11 @@ class TestModalParamsHandling(unittest.TestCase):
         self.assertIn('_ifunccustom', fname)
 
     def test_modal_filename_with_ifunc_inv_string(self):
-        """Direct ifunc_inv string value appears in filename."""
+        """Direct ifunc_inv string uses the same filename tag as ifunc."""
         analyzer = self._make_analyzer('filename_ifinv_str')
         source = {'polar_coordinates': [0.0, 0.0]}
         fname = analyzer._get_modal_filename(source, {'ifunc_inv': 'my_inv'})
-        self.assertIn('_ifinvmy_inv', fname)
+        self.assertIn('_ifuncmy_inv', fname)
 
     # ------------------------------------------------------------------
     # _build_replay_params_modal — direct ifunc forwarded in config
@@ -688,13 +690,224 @@ class TestModalParamsHandling(unittest.TestCase):
         self.assertNotIn('type_str', ma)
 
     # ------------------------------------------------------------------
-    # _MODAL_ANALYSIS_PARAMS introspection sanity check
+    # _build_replay_params_modal — passthrough behavior
     # ------------------------------------------------------------------
 
-    def test_modal_analysis_params_contains_expected_keys(self):
-        """_MODAL_ANALYSIS_PARAMS must include all known ModalAnalysis __init__ args."""
-        from specula.field_analyser import _MODAL_ANALYSIS_PARAMS
-        for key in ('ifunc', 'ifunc_inv', 'type_str', 'npixels', 'nmodes',
-                    'obsratio', 'diaratio', 'dorms', 'wavelengthInNm',
-                    'ifunc_ref', 'ifunc_inv_ref', 'pupilstop_ref'):
-            self.assertIn(key, _MODAL_ANALYSIS_PARAMS, msg=f"'{key}' missing from _MODAL_ANALYSIS_PARAMS")
+    def test_build_replay_modal_passes_unknown_key_through(self):
+        """modal_params are passed as-is to ModalAnalysis configuration."""
+        from unittest.mock import patch
+        analyzer = self._make_analyzer('build_unknown_modal_key')
+        with patch.object(analyzer, '_build_replay_params_from_datastore',
+                          return_value=self._fake_replay_base()), \
+             patch.object(analyzer, '_add_field_sources_to_params'):
+            result = analyzer._build_replay_params_modal({'custom_key': 123})
+
+        ma = result['modal_analysis_0']
+        self.assertEqual(ma['custom_key'], 123)
+
+
+class TestReplayPrecisionHandling(unittest.TestCase):
+    def setUp(self):
+        self.datadir = os.path.join(os.path.dirname(__file__), 'data')
+        self._created_tn_dirs = []
+
+    def tearDown(self):
+        for tn_dir in self._created_tn_dirs:
+            if os.path.isdir(tn_dir):
+                shutil.rmtree(tn_dir)
+
+    def _make_analyzer(self, tn_name):
+        tn_dir = os.path.join(self.datadir, f'precision_unit_{tn_name}')
+        os.makedirs(tn_dir, exist_ok=True)
+        self._created_tn_dirs.append(tn_dir)
+        params = {
+            'main': {'class': 'SimulParams', 'pixel_pupil': 8, 'pixel_pitch': 1.0},
+            'prop': {'class': 'AtmoPropagation'}
+        }
+        with open(os.path.join(tn_dir, 'params.yml'), 'w', encoding='utf-8') as handle:
+            yaml.dump(params, handle)
+
+        analyzer = FieldAnalyser(
+            data_dir=self.datadir,
+            tracking_number=f'precision_unit_{tn_name}',
+            polar_coordinates=np.array([[0.0, 0.0]]),
+            verbose=False,
+        )
+        return analyzer, tn_dir
+
+    def test_get_saved_replay_precision_reads_global_precision(self):
+        analyzer, tn_dir = self._make_analyzer('read_global_precision')
+        replay_cfg = {
+            'data_source': {
+                'class': 'DataSource',
+                'global_precision': 1,
+            }
+        }
+        with open(os.path.join(tn_dir, 'replay_params.yml'), 'w', encoding='utf-8') as handle:
+            yaml.dump(replay_cfg, handle)
+
+        self.assertEqual(analyzer._get_saved_replay_precision(), 1)
+
+    def test_get_saved_replay_precision_returns_none_when_missing(self):
+        analyzer, _ = self._make_analyzer('missing_global_precision')
+        self.assertIsNone(analyzer._get_saved_replay_precision())
+
+    def test_ensure_replay_precision_calls_specula_init_on_mismatch(self):
+        from unittest.mock import patch
+        analyzer, _ = self._make_analyzer('ensure_precision_mismatch')
+        with patch('specula.field_analyser.specula.init') as mock_init, \
+             patch('specula.field_analyser.specula.global_precision', 0), \
+             patch('specula.field_analyser.specula.default_target_device_idx', -1), \
+             patch('specula.field_analyser.specula.process_rank', None), \
+             patch('specula.field_analyser.specula.process_comm', None), \
+             patch('specula.field_analyser.specula.MPI_DBG', False):
+            analyzer._ensure_replay_precision(1)
+
+        mock_init.assert_called_once_with(
+            device_idx=-1,
+            precision=1,
+            rank=None,
+            comm=None,
+            mpi_dbg=False,
+        )
+
+    def test_ensure_replay_precision_skips_if_already_matching(self):
+        from unittest.mock import patch
+        analyzer, _ = self._make_analyzer('ensure_precision_match')
+        with patch('specula.field_analyser.specula.init') as mock_init, \
+             patch('specula.field_analyser.specula.global_precision', 1):
+            analyzer._ensure_replay_precision(1)
+
+        mock_init.assert_not_called()
+
+
+class TestFieldAnalyserWeakSpots(unittest.TestCase):
+    def setUp(self):
+        self.datadir = os.path.join(os.path.dirname(__file__), 'data')
+        self._created_tn_dirs = []
+
+    def tearDown(self):
+        for tn_dir in self._created_tn_dirs:
+            if os.path.isdir(tn_dir):
+                shutil.rmtree(tn_dir, ignore_errors=True)
+
+    def _make_analyzer(self, tn_name, polar_coordinates=None, display=False, params=None):
+        if polar_coordinates is None:
+            polar_coordinates = np.array([[0.0, 0.0]])
+        tn_dir = os.path.join(self.datadir, f'weak_unit_{tn_name}')
+        os.makedirs(tn_dir, exist_ok=True)
+        self._created_tn_dirs.append(tn_dir)
+
+        if params is None:
+            params = {
+                'main': {'class': 'SimulParams', 'pixel_pupil': 8, 'pixel_pitch': 1.0},
+                'prop': {'class': 'AtmoPropagation'}
+            }
+
+        with open(os.path.join(tn_dir, 'params.yml'), 'w', encoding='utf-8') as handle:
+            yaml.dump(params, handle)
+
+        return FieldAnalyser(
+            data_dir=self.datadir,
+            tracking_number=f'weak_unit_{tn_name}',
+            polar_coordinates=polar_coordinates,
+            display=display,
+            verbose=False,
+        )
+
+    def test_setup_sources_accepts_2xN_coordinate_format(self):
+        analyzer = self._make_analyzer(
+            'coords_2xn',
+            polar_coordinates=np.array([[0.0, 15.0], [0.0, 90.0]])
+        )
+        self.assertEqual(len(analyzer.sources), 2)
+        self.assertEqual(analyzer.sources[0]['polar_coordinates'], [0.0, 0.0])
+        self.assertEqual(analyzer.sources[1]['polar_coordinates'], [15.0, 90.0])
+
+    def test_add_displays_to_params_injects_phase_and_dm_displays(self):
+        analyzer = self._make_analyzer('display_on', display=True)
+        replay_params = {
+            'prop': {'class': 'AtmoPropagation'},
+            'dm0': {'class': 'DM'},
+            'not_dm': {'class': 'ShSlopec'},
+        }
+        analyzer._add_displays_to_params(replay_params)
+
+        self.assertIn('ph_disp', replay_params)
+        self.assertIn('dm0_disp', replay_params)
+        self.assertEqual(replay_params['ph_disp']['inputs']['phase'], 'prop.out_field_source_0_ef')
+        self.assertEqual(replay_params['dm0_disp']['inputs']['phase'], 'dm0.out_layer')
+        self.assertNotIn('not_dm_disp', replay_params)
+
+    def test_add_displays_to_params_noop_when_disabled(self):
+        analyzer = self._make_analyzer('display_off', display=False)
+        replay_params = {'prop': {'class': 'AtmoPropagation'}, 'dm0': {'class': 'DM'}}
+        analyzer._add_displays_to_params(replay_params)
+
+        self.assertNotIn('ph_disp', replay_params)
+        self.assertNotIn('dm0_disp', replay_params)
+
+    def test_get_saved_replay_precision_invalid_value_returns_none(self):
+        analyzer = self._make_analyzer('invalid_precision')
+        tn_dir = analyzer.tn_dir
+        replay_cfg = {
+            'data_source': {
+                'class': 'DataSource',
+                'global_precision': 2,
+            }
+        }
+        with open(os.path.join(tn_dir, 'replay_params.yml'), 'w', encoding='utf-8') as handle:
+            yaml.dump(replay_cfg, handle)
+
+        self.assertIsNone(analyzer._get_saved_replay_precision())
+
+    def test_ensure_replay_precision_skips_when_target_device_unset(self):
+        from unittest.mock import patch
+        analyzer = self._make_analyzer('precision_target_none')
+
+        with patch('specula.field_analyser.specula.init') as mock_init, \
+             patch('specula.field_analyser.specula.global_precision', 0), \
+             patch('specula.field_analyser.specula.default_target_device_idx', None):
+            analyzer._ensure_replay_precision(1)
+
+        mock_init.assert_not_called()
+
+    def test_extract_modal_params_without_dm_uses_defaults_and_pixel_pupil(self):
+        analyzer = self._make_analyzer(
+            'extract_no_dm',
+            params={
+                'main': {'class': 'SimulParams', 'pixel_pupil': 16, 'pixel_pitch': 1.0},
+                'prop': {'class': 'AtmoPropagation'}
+            }
+        )
+
+        modal_params = analyzer._extract_modal_params_from_dm()
+        self.assertEqual(modal_params['type_str'], 'zernike')
+        self.assertEqual(modal_params['nmodes'], 100)
+        self.assertEqual(modal_params['npixels'], 16)
+
+    def test_extract_modal_params_merges_ifunc_ref_parameters(self):
+        analyzer = self._make_analyzer(
+            'extract_ifunc_ref_merge',
+            params={
+                'main': {'class': 'SimulParams', 'pixel_pupil': 12, 'pixel_pitch': 1.0},
+                'prop': {'class': 'AtmoPropagation'},
+                'dm': {
+                    'class': 'DM',
+                    'height': 0,
+                    'ifunc_ref': 'my_ifunc',
+                },
+                'my_ifunc': {
+                    'class': 'IFunc',
+                    'nmodes': 42,
+                    'type_str': 'zernike',
+                    'obsratio': 0.2,
+                }
+            }
+        )
+
+        modal_params = analyzer._extract_modal_params_from_dm()
+        self.assertEqual(modal_params['ifunc_ref'], 'my_ifunc')
+        self.assertEqual(modal_params['nmodes'], 42)
+        self.assertEqual(modal_params['type_str'], 'zernike')
+        self.assertEqual(modal_params['obsratio'], 0.2)
