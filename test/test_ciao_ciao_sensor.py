@@ -5,6 +5,7 @@ from specula.loop_control import LoopControl
 specula.init(0)
 
 from specula import cpuArray, np, RAD2ASEC
+from specula.loop_control import LoopControl
 from specula.data_objects.electric_field import ElectricField
 from specula.data_objects.pixels import Pixels
 from specula.data_objects.pupilstop import Pupilstop
