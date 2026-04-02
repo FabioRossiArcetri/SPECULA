@@ -89,6 +89,46 @@ class TestElectricField(unittest.TestCase):
         assert np.allclose(out_ef.phaseInNm, ef1.phaseInNm + ef2.phaseInNm)
         assert np.allclose(out_ef.S0, ef1.S0 + ef2.S0)
 
+        # Create a third electric field to verify the list handles > 2 items
+        ef3 = ElectricField(pixel_pupil, pixel_pupil, pixel_pitch, S0=3, target_device_idx=target_device_idx)
+        A3 = xp.ones((pixel_pupil, pixel_pupil))
+        A3[1, 1] = 0.5
+        ef3.A = A3
+        ef3.phaseInNm = 2 * xp.ones((pixel_pupil, pixel_pupil))
+        ef3.generation_time = t
+
+        # Initialize a new combinator for the list test
+        ef_combinator_list = ElectricFieldCombinator(
+            target_device_idx=target_device_idx
+        )
+
+        # Pass the list of 3 electric fields into the new InputList
+        ef_combinator_list.inputs['in_ef_list'].set([ef1, ef2, ef3])
+
+        ef_combinator_list.check_ready(t)
+        ef_combinator_list.setup()
+        ef_combinator_list.trigger()
+        ef_combinator_list.post_trigger()
+
+        out_ef_list = ef_combinator_list.outputs['out_ef']
+
+        # Assert that all 3 fields were properly combined
+        assert np.allclose(out_ef_list.A, ef1.A * ef2.A * ef3.A)
+        assert np.allclose(out_ef_list.phaseInNm, ef1.phaseInNm + ef2.phaseInNm + ef3.phaseInNm)
+        assert np.allclose(out_ef_list.S0, ef1.S0 + ef2.S0 + ef3.S0)
+
+        #test error if both list and legacy inputs are provided
+        ef_combinator_all = ElectricFieldCombinator(
+            target_device_idx=target_device_idx
+        )
+        ef_combinator_all.inputs['in_ef1'].set(ef1)
+        ef_combinator_all.inputs['in_ef2'].set(ef2)
+        ef_combinator_all.inputs['in_ef_list'].set([ef1, ef2, ef3])
+
+        ef_combinator_all.check_ready(t)
+        with self.assertRaises(ValueError):
+            ef_combinator_all.setup()
+
     @cpu_and_gpu
     def test_ef_reflection(self, target_device_idx, xp):
         pixel_pitch = 0.1
