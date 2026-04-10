@@ -1,6 +1,6 @@
 from specula.lib.make_xy import make_xy
 from specula.lib.utils import local_mean_rebin
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.lib.interp2d import Interp2D
 from specula.data_objects.electric_field import ElectricField
 from specula.connections import InputList
@@ -225,6 +225,15 @@ class AtmoPropagation(BaseProcessingObj):
         self.ef_fresnel_padded = self.xp.zeros([self.ef_size_padded, self.ef_size_padded],
                                                dtype=self.complex_dtype)
         self.output_ef_fresnel = self.xp.zeros([self.pixel_pupil, self.pixel_pupil], dtype=self.complex_dtype)
+
+    @classmethod
+    def input_names(cls):
+        return {'atmo_layer_list': InputDesc(Layer, 'List of atmospheric turbulence layers (optional)'),
+                'common_layer_list': InputDesc(Layer, 'List of common turbulence layers shared across sources')}
+
+    @classmethod
+    def output_names(cls):
+        return {}
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
