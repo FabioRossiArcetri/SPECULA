@@ -8,7 +8,7 @@ import pickle
 import yaml
 
 from specula import cpuArray
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.lib import utils
 
 
@@ -83,6 +83,14 @@ class DataStore(BaseProcessingObj):
         }
         self.input_sample_counters = defaultdict(int)
         self.init_storage()
+
+    @classmethod
+    def input_names(cls):
+        return {}
+
+    @classmethod
+    def output_names(cls):
+        return {}
 
     @staticmethod
     def _validate_downsample_factor(value, name):
