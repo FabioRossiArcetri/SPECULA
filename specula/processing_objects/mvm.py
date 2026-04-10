@@ -1,4 +1,4 @@
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.base_value import BaseValue
 from specula.connections import InputValue
 from specula.data_objects.recmat import Recmat
@@ -34,6 +34,14 @@ class MVM(BaseProcessingObj):
         # Pre-allocate output
         nmodes_out = self.recmat.nmodes
         self.output.value = self.xp.zeros(nmodes_out, dtype=self.dtype)
+
+    @classmethod
+    def input_names(cls):
+        return {'in_vector': InputDesc(BaseValue, 'Input vector to be multiplied by the reconstruction matrix')}
+
+    @classmethod
+    def output_names(cls):
+        return {'out_vector': OutputDesc(BaseValue, 'Output vector after matrix-vector multiplication')}
 
     def setup(self):
         super().setup()
