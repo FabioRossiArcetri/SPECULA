@@ -2,14 +2,14 @@
 import numpy as np
 
 from specula import fuse
-from specula.lib.make_mask import make_mask
-from specula.lib.make_xy import make_xy
-from specula.lib.utils import unravel_index_2d
 from specula.base_processing_obj import InputDesc, OutputDesc
 from specula.base_value import BaseValue
 from specula.data_objects.pixels import Pixels
 from specula.data_objects.slopes import Slopes
 from specula.data_objects.subap_data import SubapData
+from specula.lib.make_mask import make_mask
+from specula.lib.make_xy import make_xy
+from specula.lib.utils import unravel_index_2d
 
 from specula.processing_objects.slopec import Slopec
 
