@@ -510,3 +510,8 @@ class AtmoPropagation(BaseProcessingObj):
         if self.doFresnel:
             self.doFresnel_setup()
         self.build_stream()
+
+    def check_output_names(self):
+        # AtmoPropagation outputs are created dynamically from stored data files;
+        # skip the static output_names validation.
+        pass

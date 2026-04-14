@@ -259,3 +259,8 @@ class DataStore(BaseProcessingObj):
             else:
                 os.makedirs(self.tn_dir_orig,exist_ok=True)
             self.save()
+
+    def check_input_names(self):
+        # DataStore inputs are added dynamically via input_list;
+        # skip the static input_names validation.
+        pass

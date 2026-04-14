@@ -111,6 +111,7 @@ class PsfCoronagraph(PSF):
             'out_int_coronagraph_psf_profile': OutputDesc(BaseValue, 'Radial profile of the integrated coronagraph PSF'),
             'out_std_coronagraph_psf_profile': OutputDesc(BaseValue, 'Radial profile of the std dev coronagraph PSF'),
         })
+        return result
 
     def setup(self):
         super().setup()
