@@ -92,11 +92,6 @@ class DataStore(BaseProcessingObj):
     def output_names(cls):
         return {}
 
-    def check_input_names(self):
-        # DataStore inputs are added dynamically via input_list;
-        # skip the static input_names validation.
-        pass
-
     @staticmethod
     def _validate_downsample_factor(value, name):
         value = int(value)
