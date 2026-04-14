@@ -147,6 +147,11 @@ class AtmoRandomPhase(BaseProcessingObj):
         return {'out_layer': OutputDesc(Layer, 'Output phase screen layer (default, when no source_dict is provided)'),
                 'out_ef': OutputDesc(ElectricField, 'Output electric field (default, when no source_dict is provided)')}
 
+    def check_output_names(self):
+        # AtmoRandomPhase outputs are created dynamically from inputs;
+        # skip the static output_names validation.
+        pass
+
     def initScreens(self):
         # Seed
         if type(self.seed) is not np.ndarray:

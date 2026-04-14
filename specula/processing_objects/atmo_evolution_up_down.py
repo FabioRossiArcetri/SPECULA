@@ -127,10 +127,8 @@ class AtmoEvolutionUpDown(AtmoEvolution):
         self.last_position_up = np.zeros(self.n_phasescreens, dtype=self.dtype)
 
     @classmethod
-    def output_names(cls):
-        # overrides father class outputs definition to include both layer lists
-        # result = super().output_names()
-        result = {}
+    def output_names(cls):        
+        result = super().output_names()        
         result.update({
             'layer_list_down': OutputDesc(list, 'List of atmospheric phase screen layers for downward propagation'),
             'layer_list_up': OutputDesc(list, 'List of atmospheric phase screen layers for upward propagation')
