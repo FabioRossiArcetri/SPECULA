@@ -125,16 +125,16 @@ class AtmoEvolutionUpDown(AtmoEvolution):
         self.last_position_up = np.zeros(self.n_phasescreens, dtype=self.dtype)
 
     @classmethod
-    def input_names(cls):
-        return {'seeing': InputDesc(BaseValue, 'Atmospheric seeing value'),
-                'wind_speed': InputDesc(BaseValue, 'Wind speed for each atmospheric layer'),
-                'wind_direction': InputDesc(BaseValue, 'Wind direction for each atmospheric layer')}
-
-    @classmethod
     def output_names(cls):
-        return {'layer_list_down': OutputDesc(list, 'List of atmospheric phase screen layers for downward propagation'),
-                'layer_list_up': OutputDesc(list, 'List of atmospheric phase screen layers for upward propagation')}
-
+        # overrides father class outputs definition to include both layer lists
+        # result = super().output_names()
+        result = {}
+        result.update({
+            'layer_list_down': OutputDesc(list, 'List of atmospheric phase screen layers for downward propagation'),
+            'layer_list_up': OutputDesc(list, 'List of atmospheric phase screen layers for upward propagation')
+        })
+        return result
+    
     def trigger_code(self):
         """Update both downward and upward layer lists with different time offsets."""
 
