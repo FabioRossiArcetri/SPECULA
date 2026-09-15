@@ -37,7 +37,8 @@ BATCH = 8
 
 def build_trainer(tmp_dir, network_name='testnet.pth', nmodes=NMODES, channels=CHANNELS,
                    depth=DEPTH, epoch_len=1, patience=600, val_split=0.25,
-                   load_from_file=False, conv_block_type=0, target_device_idx=-1):
+                   load_from_file=False, conv_block_type=0, input_channels=1,
+                   target_device_idx=-1):
     network_filename = os.path.join(tmp_dir, network_name)
     return Conv2dNetTrainer(
         network_filename=network_filename,
@@ -49,6 +50,7 @@ def build_trainer(tmp_dir, network_name='testnet.pth', nmodes=NMODES, channels=C
         val_split=val_split,
         load_from_file=load_from_file,
         conv_block_type=conv_block_type,
+        input_channels=input_channels,
         target_device_idx=target_device_idx,
     )
 
@@ -340,6 +342,18 @@ class TestConv2dNetTrainerTrigger(unittest.TestCase):
             trainer.should_stop = True
             trainer.trigger()
             self.assertEqual(trainer.step_count, 0)
+
+    def test_input_channels_two_uses_raw_multichannel_input(self):
+        # With input_channels=2, the buffered (B, 2, H, W) value must be fed
+        # to the network as-is (two input channels), not collapsed into a
+        # single-channel product as with the default input_channels=1.
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, epoch_len=1, input_channels=2)
+            self.assertEqual(trainer.model.encoders[0].block[0].in_channels, 2)
+
+            feed_batch(trainer)
+            trainer.trigger()
+            self.assertEqual(trainer.step_count, 1)
 
     def test_trigger_runs_one_training_step(self):
         with tempfile.TemporaryDirectory() as d:

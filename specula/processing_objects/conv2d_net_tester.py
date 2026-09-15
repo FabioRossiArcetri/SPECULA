@@ -20,6 +20,7 @@ class Conv2dNetTester(BaseProcessingObj):
                  depth=5,
                  label_offset=1,
                  baseline_offset=0,
+                 input_channels=1,
                  precision: int = None):
         """
         label_offset : int, optional
@@ -32,6 +33,9 @@ class Conv2dNetTester(BaseProcessingObj):
             as a residual and the baseline is added back to it before
             comparing against the full true labels -- the inference-time
             counterpart of Conv2dNetTrainer's residual-learning mode.
+        input_channels : int, optional
+            Must match the value used to train the loaded network (see
+            Conv2dNetTrainer).
         """
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
@@ -44,9 +48,10 @@ class Conv2dNetTester(BaseProcessingObj):
         self.dropout = dropout
         self.label_offset = label_offset
         self.baseline_offset = baseline_offset
+        self.input_channels = input_channels
         self.first = True
         self.device = torch.device("cpu") # torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
+
         # Load model
         if os.path.isfile(self.network_filename):
 
@@ -55,10 +60,10 @@ class Conv2dNetTester(BaseProcessingObj):
             # training runs (state_dict or a full model object), never
             # loaded from an untrusted or shared source.
             checkpoint = torch.load(self.network_filename, map_location='cpu', weights_only=False)
-            
+
             # Create the model architecture on CPU
             model = UNetRegressor(
-                input_channels=1,    
+                input_channels=self.input_channels,
                 output_size=nmodes,
                 base_channels=self.channels,
                 input_size=(160, 160),
@@ -136,7 +141,10 @@ class Conv2dNetTester(BaseProcessingObj):
             return
 
         # Extract phase and modes
-        ph = x_in.get_value()[:, 1] * x_in.get_value()[:, 0]
+        if self.input_channels == 1:
+            ph = x_in.get_value()[:, 1] * x_in.get_value()[:, 0]
+        else:
+            ph = x_in.get_value()
         modes = y_in.get_value()[:, self.label_offset:self.label_offset + self.nmodes]
 
         baseline_in = self.local_inputs['baseline']
@@ -158,7 +166,8 @@ class Conv2dNetTester(BaseProcessingObj):
         ph = (ph - self.meanp) / self.stdp
         modes_normalized = (network_target - self.meanmodes) / self.stdmodes
 
-        ph = ph[:, self.xp.newaxis, :, :]  # shape (B, 1, H, W)
+        if self.input_channels == 1:
+            ph = ph[:, self.xp.newaxis, :, :]  # shape (B, 1, H, W)
 
         # Convert to torch tensors
         inputs = torch.tensor(ph, dtype=torch.float32, device=self.device)

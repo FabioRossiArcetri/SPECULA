@@ -88,6 +88,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
                  val_split=0.2,
                  label_offset=1,
                  baseline_offset=0,
+                 input_channels=1,
                  target_device_idx=None,
                  precision=None):
         """
@@ -103,6 +104,14 @@ class Conv2dNetTrainer(BaseProcessingObj):
             baseline[baseline_offset:baseline_offset+nmodes]`` instead of
             the raw labels, so it only has to learn what the baseline
             reconstructor does not already capture.
+        input_channels : int, optional
+            Number of channels in the buffered 'input_2d_batch' value.
+            Default 1 preserves the historical convention, where the
+            buffered value has exactly 2 channels (e.g. amplitude and
+            phase) and the network input is their per-pixel product,
+            ``input[:, 1] * input[:, 0]``. Any other value (e.g. 2, for a
+            pair of 2D slope maps from Slopes.get2d()) is instead used
+            directly and unmodified as the network's input channels.
         """
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
@@ -115,6 +124,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
         self.val_split = val_split
         self.label_offset = label_offset
         self.baseline_offset = baseline_offset
+        self.input_channels = input_channels
         self.verbose = True
 
 
@@ -156,7 +166,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
                 # loaded from an untrusted or shared source.
                 checkpoint = torch.load(self.network_filename, map_location='cpu', weights_only=False)
                 model = UNetRegressor(
-                    input_channels=1,
+                    input_channels=self.input_channels,
                     output_size=nmodes,
                     base_channels=self.channels,
                     input_size=(160, 160),
@@ -204,7 +214,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
 
         if not load_from_file:
             self.model = UNetRegressor(
-                input_channels=1,
+                input_channels=self.input_channels,
                 output_size=nmodes,
                 base_channels=self.channels,
                 input_size=(160, 160),
@@ -313,7 +323,10 @@ class Conv2dNetTrainer(BaseProcessingObj):
             return
 
         try:
-            ph = self.X.get_value()[:, 1] * self.X.get_value()[:, 0]
+            if self.input_channels == 1:
+                ph = self.X.get_value()[:, 1] * self.X.get_value()[:, 0]
+            else:
+                ph = self.X.get_value()
             modes = self.y.get_value()[:, self.label_offset:self.label_offset + self.nmodes]
 
             baseline_in = self.local_inputs['baseline']
@@ -344,7 +357,8 @@ class Conv2dNetTrainer(BaseProcessingObj):
 
             ph = (ph - self.meanp) / self.stdp
             modes = (modes - self.meanmodes) / self.stdmodes
-            ph = ph[:, self.xp.newaxis, :, :]
+            if self.input_channels == 1:
+                ph = ph[:, self.xp.newaxis, :, :]
 
             batch_size = ph.shape[0]
             n_val = max(1, int(batch_size * self.val_split))

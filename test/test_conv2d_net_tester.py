@@ -30,9 +30,10 @@ H = W = 32
 BATCH = 4
 
 
-def save_checkpoint(net_path, stats_path, nmodes=NMODES, channels=CHANNELS, depth=DEPTH):
+def save_checkpoint(net_path, stats_path, nmodes=NMODES, channels=CHANNELS, depth=DEPTH,
+                     input_channels=1):
     model = UNetRegressor(
-        input_channels=1, output_size=nmodes, base_channels=channels,
+        input_channels=input_channels, output_size=nmodes, base_channels=channels,
         input_size=(160, 160), dropout_level=0.0, conv_block_type=0, depth=depth,
     )
     torch.save(model.state_dict(), net_path)
@@ -47,15 +48,17 @@ def save_checkpoint(net_path, stats_path, nmodes=NMODES, channels=CHANNELS, dept
 
 
 def build_tester(tmp_dir, network_name='net.pth', nmodes=NMODES, channels=CHANNELS,
-                  depth=DEPTH, target_device_idx=-1):
+                  depth=DEPTH, input_channels=1, target_device_idx=-1):
     net_path = os.path.join(tmp_dir, network_name)
     stats_path = net_path.replace('.pth', '_stats.json')
-    save_checkpoint(net_path, stats_path, nmodes=nmodes, channels=channels, depth=depth)
+    save_checkpoint(net_path, stats_path, nmodes=nmodes, channels=channels, depth=depth,
+                    input_channels=input_channels)
     tester = Conv2dNetTester(
         network_filename=net_path,
         nmodes=nmodes,
         channels=channels,
         depth=depth,
+        input_channels=input_channels,
         target_device_idx=target_device_idx,
     )
     return tester, net_path, stats_path
@@ -149,6 +152,15 @@ class TestConv2dNetTesterConstruction(unittest.TestCase):
 
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestConv2dNetTesterTrigger(unittest.TestCase):
+
+    def test_input_channels_two_uses_raw_multichannel_input(self):
+        with tempfile.TemporaryDirectory() as d:
+            tester, _, _ = build_tester(d, input_channels=2)
+            self.assertEqual(tester.model.encoders[0].block[0].in_channels, 2)
+
+            feed_batch(tester)
+            tester.trigger()
+            self.assertEqual(tester.outputs['prediction'].shape, (BATCH, NMODES))
 
     def test_trigger_computes_predictions_and_updates_stats(self):
         with tempfile.TemporaryDirectory() as d:
