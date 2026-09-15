@@ -1,10 +1,16 @@
 import unittest
 
-import torch
+# torch is an optional dependency (see pyproject.toml's "nn" extra): skip
+# every test in this module rather than failing collection when it's absent.
+try:
+    import torch
+    from specula.lib.efficient_u_net import get_num_groups, UNetRegressor
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
 
-from specula.lib.efficient_u_net import get_num_groups, UNetRegressor
 
-
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestGetNumGroups(unittest.TestCase):
 
     def test_prefers_max_groups_when_divisible(self):
@@ -24,6 +30,7 @@ class TestGetNumGroups(unittest.TestCase):
         self.assertEqual(get_num_groups(1), 1)
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestUNetRegressorForward(unittest.TestCase):
     """Exercise the network actually used by Conv2dNetTrainer/Tester:
     every conv_block_type must build and produce the requested output shape."""

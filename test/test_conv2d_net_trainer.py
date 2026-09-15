@@ -9,16 +9,23 @@ import specula
 specula.init(0)  # Default target device
 
 import numpy as np
-import torch
 
 from specula.base_value import BaseValue
-from specula.lib.efficient_u_net import UNetRegressor
-from specula.processing_objects.conv2d_net_trainer import (
-    Conv2dNetTrainer,
-    EarlyStopping,
-    WeightedHuberLoss,
-    WeightedMSELoss,
-)
+
+# torch is an optional dependency (see pyproject.toml's "nn" extra): skip
+# every test in this module rather than failing collection when it's absent.
+try:
+    import torch
+    from specula.lib.efficient_u_net import UNetRegressor
+    from specula.processing_objects.conv2d_net_trainer import (
+        Conv2dNetTrainer,
+        EarlyStopping,
+        WeightedHuberLoss,
+        WeightedMSELoss,
+    )
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
 
 
 NMODES = 20
@@ -57,6 +64,7 @@ def feed_batch(trainer, batch=BATCH, nmodes=NMODES, h=H, w=W, seed=0):
     trainer.check_ready(1)
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestNetworkFilenameHandling(unittest.TestCase):
 
     def test_default_suffix_is_appended(self):
@@ -80,6 +88,7 @@ class TestNetworkFilenameHandling(unittest.TestCase):
             self.assertEqual(trainer.network_filename, os.path.join(d, name))
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestConv2dNetTrainerLoading(unittest.TestCase):
 
     def _save_checkpoint(self, path, stats_path, nmodes=NMODES, channels=CHANNELS, depth=DEPTH):
@@ -172,6 +181,7 @@ class TestConv2dNetTrainerLoading(unittest.TestCase):
             self.assertIsNone(trainer.stdmodes)
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestLossWeightInitialization(unittest.TestCase):
     """The initial per-mode weight vector (piston weighted highest, the next
     few low-order modes weighted low, everything else at the default) must
@@ -209,6 +219,7 @@ class TestLossWeightInitialization(unittest.TestCase):
             np.testing.assert_allclose(weights, [2.0])
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestConv2dNetTrainerDevice(unittest.TestCase):
 
     def test_device_matches_cuda_availability(self):
@@ -218,6 +229,7 @@ class TestConv2dNetTrainerDevice(unittest.TestCase):
             self.assertEqual(trainer.device.type, expected)
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestEarlyStopping(unittest.TestCase):
 
     def test_first_call_never_stops(self):
@@ -239,6 +251,7 @@ class TestEarlyStopping(unittest.TestCase):
         self.assertTrue(es(1.0))    # no improvement, counter=2 >= patience
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestWeightedLosses(unittest.TestCase):
 
     def test_weighted_mse_loss_matches_manual_computation(self):
@@ -264,6 +277,7 @@ class TestWeightedLosses(unittest.TestCase):
         self.assertAlmostEqual(loss_fn(preds, targets).item(), 2.5, places=5)
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestUpdateLossWeights(unittest.TestCase):
 
     def _check(self, nmodes):
@@ -288,6 +302,7 @@ class TestUpdateLossWeights(unittest.TestCase):
         self._check(nmodes=3)
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestConv2dNetTrainerTrigger(unittest.TestCase):
 
     def test_trigger_noop_when_inputs_not_set(self):
@@ -369,6 +384,7 @@ class TestConv2dNetTrainerTrigger(unittest.TestCase):
             self.assertIn('Training complete', buf.getvalue())
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestToTorchHelper(unittest.TestCase):
 
     def test_to_torch_converts_numpy_array(self):

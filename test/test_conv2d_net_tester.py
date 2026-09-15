@@ -9,11 +9,18 @@ import specula
 specula.init(0)  # Default target device
 
 import numpy as np
-import torch
 
 from specula.base_value import BaseValue
-from specula.lib.efficient_u_net import UNetRegressor
-from specula.processing_objects.conv2d_net_tester import Conv2dNetTester
+
+# torch is an optional dependency (see pyproject.toml's "nn" extra): skip
+# every test in this module rather than failing collection when it's absent.
+try:
+    import torch
+    from specula.lib.efficient_u_net import UNetRegressor
+    from specula.processing_objects.conv2d_net_tester import Conv2dNetTester
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
 
 
 NMODES = 5
@@ -65,6 +72,7 @@ def feed_batch(tester, batch=BATCH, nmodes=NMODES, h=H, w=W, seed=0):
     tester.check_ready(1)
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestConv2dNetTesterConstruction(unittest.TestCase):
 
     def test_missing_model_file_raises(self):
@@ -124,6 +132,7 @@ class TestConv2dNetTesterConstruction(unittest.TestCase):
             self.assertTrue(tester.model.training is False)  # eval() was called
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestConv2dNetTesterTrigger(unittest.TestCase):
 
     def test_trigger_computes_predictions_and_updates_stats(self):
@@ -158,6 +167,7 @@ class TestConv2dNetTesterTrigger(unittest.TestCase):
             self.assertEqual(len(tester.all_errors), 2)
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestConv2dNetTesterFinalize(unittest.TestCase):
 
     def test_finalize_with_no_data_prints_message(self):
