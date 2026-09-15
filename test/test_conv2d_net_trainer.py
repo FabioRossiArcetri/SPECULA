@@ -370,6 +370,18 @@ class TestConv2dNetTrainerTrigger(unittest.TestCase):
             self.assertTrue(os.path.isfile(trainer.network_filename))
             self.assertTrue(os.path.isfile(trainer.stats_filename))
 
+    def test_trigger_creates_missing_parent_directory_before_saving(self):
+        with tempfile.TemporaryDirectory() as d:
+            nested_dir = os.path.join(d, 'does', 'not', 'exist', 'yet')
+            trainer = build_trainer(nested_dir, epoch_len=1)
+            self.assertFalse(os.path.isdir(nested_dir))
+
+            feed_batch(trainer)
+            trainer.trigger()
+
+            self.assertTrue(os.path.isfile(trainer.network_filename))
+            self.assertTrue(os.path.isfile(trainer.stats_filename))
+
     def test_second_trigger_accumulates_validation_set(self):
         with tempfile.TemporaryDirectory() as d:
             trainer = build_trainer(d, epoch_len=1, val_split=0.25)

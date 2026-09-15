@@ -437,6 +437,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
                 self.min_loss = eval_loss
                 # --- FIX --- always save best model
                 model_to_save = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
+                os.makedirs(os.path.dirname(self.network_filename) or '.', exist_ok=True)
                 torch.save(model_to_save.state_dict(), self.network_filename)
                 stats = {
                     'meanp': float(self.meanp),

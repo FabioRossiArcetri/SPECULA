@@ -1,0 +1,60 @@
+---
+# Linear interaction matrix + reconstruction matrix calibration: builds
+# the scao_pyr_nonlin_im (Intmat) and scao_pyr_nonlin_rec (Recmat) tags.
+#
+# scao_pyr_nonlin_im doubles as the reference forward model used both by
+# PyramidNonlinearCalibrator (to build the nonlinear response curves, see
+# calib_nonlinear.yml) and by PyramidNonlinearRec at reconstruction time
+# (the "intmat" it forward-predicts slopes with).
+#
+# A modest push-pull amplitude (50 nm) is used here, in the linear regime,
+# exactly like a standard interaction matrix calibration -- the wide
+# amplitude sweep that characterizes the *nonlinear* response is a
+# separate step (calib_nonlinear.yml), reusing this linear model as its
+# reference.
+
+pushpull:
+  class:     'PushPullGenerator'
+  nmodes:     54
+  amp:       50.0
+  outputs: ['output']
+
+main_override:
+  total_time:  0.108
+
+prop_override:
+  inputs:
+    common_layer_list: ['pupilstop',
+                  'dm.out_layer']
+
+dm_override:
+  sign: 1
+  inputs:
+      in_command: 'pushpull.output'
+
+detector_override:
+  photon_noise:      False
+  readout_noise:     False
+
+
+im_calibrator:
+  class: 'ImCalibrator'
+  nmodes: 54
+  im_tag:     'scao_pyr_nonlin_im'
+  overwrite: True
+  inputs:
+    in_slopes: 'slopec.out_slopes'
+    in_commands: 'pushpull.output'
+  outputs: ['out_intmat']
+
+
+rec_calibrator:
+  class: 'RecCalibrator'
+  nmodes: 54
+  rec_tag:     'scao_pyr_nonlin_rec'
+  overwrite: True
+  inputs:
+    in_intmat: 'im_calibrator.out_intmat'
+
+
+remove: ['atmo', 'rec', 'control', 'psf']

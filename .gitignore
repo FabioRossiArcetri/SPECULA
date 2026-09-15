@@ -144,5 +144,6 @@ dmypy.json
 **/calib/
 **/output/
 **/*.png
+**/trained_models/
 ConvolutionKernel*
 

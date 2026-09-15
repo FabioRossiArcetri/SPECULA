@@ -1,0 +1,28 @@
+---
+# Pupil-detection calibration: builds the scao_pyr_nonlin_pupdata tag used
+# by `slopec` in params_scao_pyr_nonlin.yml.
+#
+# Uses a large modulation just for this step (clean, well-separated pupil
+# images are easier to threshold), independent of the mod_amp: 0 used for
+# actual (non-modulated) operation -- the same convention already used by
+# config/scao/calib_pyr_pupdata.yml.
+
+pyr_pupdata:
+  class: 'PyrPupdataCalibrator'
+  thr1: 0.1
+  thr2: 0.25
+  output_tag:        'scao_pyr_nonlin_pupdata'
+  inputs:
+    in_i: 'pyramid.out_i'
+
+prop_override:
+  inputs:
+    common_layer_list: ['pupilstop']
+
+main_override:
+  total_time:  0.001
+
+pyramid_override:
+  mod_amp:           10.0                   # Modulation radius (in lambda/D units)
+
+remove: ['atmo', 'slopec', 'rec', 'control', 'dm', 'psf']

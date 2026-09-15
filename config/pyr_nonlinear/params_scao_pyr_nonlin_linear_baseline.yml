@@ -1,0 +1,13 @@
+---
+# Same 10-mode-restricted closed loop as params_scao_pyr_nonlin_baseline.yml,
+# but with the plain linear Modalrec, for a same-conditions comparison.
+
+rec_override:
+  ncutmodes: 44   # scao_pyr_nonlin_rec has 54 modes; keep only the first 10
+
+control_override:
+  int_gain:  [0.5]
+  n_modes:   [10]
+
+dm_override:
+  nmodes: 10

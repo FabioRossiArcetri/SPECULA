@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from specula import cpuArray
+from specula.base_processing_obj import InputDesc
 from specula.processing_objects.base_modalrec import BaseModalrec
 from specula.connections import InputValue
 from specula.base_value import BaseValue
@@ -106,6 +107,14 @@ class Conv2dNetRec(BaseModalrec):
 
         self.inputs['baseline'] = InputValue(type=BaseValue, optional=True)
         self.modes.value = self.xp.zeros(nmodes, dtype=self.dtype)
+
+    @classmethod
+    def input_names(cls):
+        names = dict(BaseModalrec.input_names())
+        names['baseline'] = InputDesc(
+            BaseValue, 'Baseline reconstructor output added back to the network '
+                      'output for residual learning; see Conv2dNetTrainer (optional)')
+        return names
 
     def trigger_code(self):
         slopes_obj = self.local_inputs['in_slopes']

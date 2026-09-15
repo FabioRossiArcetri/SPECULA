@@ -1,0 +1,29 @@
+---
+# Trains the residual-learning CNN directly on the data buffered by
+# params_scao_pyr_nonlin_train_data.yml, in the same run (no intermediate
+# dataset file), mirroring config/other/params_atmo_petals_ol_train.yml's
+# pattern of wiring data_buffer's outputs straight into Conv2dNetTrainer.
+#
+# label_offset/baseline_offset are 0 here (not Conv2dNetTrainer's default
+# of 1): modal_analysis.out_modes and PyramidNonlinearRec.out_modes are
+# already plain nmodes-length mode vectors, with no leading placeholder
+# column (unlike the historical petals config this default was written
+# for).
+
+nn_trainer:
+  class:             'Conv2dNetTrainer'
+  network_filename:  './trained_models/scao_pyr_nonlin_cnn.pth'
+  nmodes:            10
+  channels:          16
+  depth:             2
+  input_channels:    2
+  conv_block_type:   0
+  epoch_len:         5
+  val_split:         0.2
+  label_offset:      0
+  baseline_offset:   0
+  inputs:
+    input_2d_batch: 'data_buffer.input_2d_buffered'
+    labels:         'data_buffer.modes_buffered'
+    baseline:       'data_buffer.baseline_buffered'
+  outputs: ['loss']

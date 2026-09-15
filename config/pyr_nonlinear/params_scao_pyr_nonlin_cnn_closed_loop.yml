@@ -1,0 +1,56 @@
+---
+# Closed-loop deployment/test of the residual-learning CNN: swaps `rec`
+# for Conv2dNetRec, wired to the same PyramidNonlinearRec baseline used
+# to generate its training data (params_scao_pyr_nonlin_train_data.yml),
+# so the network's output (a residual) is added back to the baseline's
+# estimate to form the final reconstructed modes.
+#
+# network_filename below must point at a checkpoint produced by training
+# Conv2dNetTrainer on the data buffered by
+# params_scao_pyr_nonlin_train_data.yml (baseline connected, so the
+# network learns baseline_modes-and-onward the residual). Update it to
+# match wherever that training run saved its checkpoint. Note
+# Conv2dNetTrainer only appends its "_cvtypeX_mY_chZ_dpW" parameter suffix
+# when none of those substrings already appear in the *full given path*
+# (not just the filename) -- "trained_models" itself contains "_m", so
+# with that directory name no suffix gets appended and the checkpoint
+# keeps exactly the name given here.
+
+nonlinear_rec:
+  class:              'PyramidNonlinearRec'
+  recmat_object:      'scao_pyr_nonlin_rec'
+  intmat_object:      'scao_pyr_nonlin_im'
+  nonlinear_calib_object: 'scao_pyr_nonlin_nlcal'
+  nmodes:             10
+  inputs:
+    in_slopes:        'slopec.out_slopes'
+
+# `rec` is redefined below with a different class (Conv2dNetRec instead of
+# Modalrec), which a plain _override can't do cleanly: _override only ever
+# adds/replaces dict keys, it never removes one, so a leftover key the new
+# class doesn't accept (recmat_object, here) would break construction.
+# Removing and redefining it under the same name sidesteps that; the
+# tradeoff is that removing `rec` also strips `control`'s `delta_comm`
+# input wire (since it pointed at 'rec.out_modes'), so that has to be
+# reconnected explicitly in control_override below.
+remove: ['rec']
+
+rec:
+  class:              'Conv2dNetRec'
+  network_filename:   './trained_models/scao_pyr_nonlin_cnn.pth'
+  nmodes:             10
+  channels:           16
+  depth:              2
+  input_channels:     2
+  inputs:
+    in_slopes: 'slopec.out_slopes'
+    baseline: 'nonlinear_rec.out_modes'
+
+control_override:
+  int_gain:  [0.5]
+  n_modes:   [10]
+  inputs:
+    delta_comm: 'rec.out_modes'
+
+dm_override:
+  nmodes: 10

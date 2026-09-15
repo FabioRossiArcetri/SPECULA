@@ -1,0 +1,20 @@
+---
+# Closed-loop run using PyramidNonlinearRec (the calibrated analytic
+# baseline) instead of the plain linear Modalrec, using the tags built by
+# calib_pupdata.yml / calib_rec.yml / calib_nonlinear.yml.
+
+rec_override:
+  class:              'PyramidNonlinearRec'
+  intmat_object:      'scao_pyr_nonlin_im'
+  nonlinear_calib_object: 'scao_pyr_nonlin_nlcal'
+  nmodes:             10   # only the swept (potentially saturating) modes; see calib_nonlinear.yml
+
+# The rest of the loop is restricted to the same 10 modes PyramidNonlinearRec
+# was calibrated for (see calib_nonlinear.yml).
+control_override:
+  int_gain:  [0.5]
+  n_modes:   [10]
+
+dm_override:
+  nmodes: 10
+

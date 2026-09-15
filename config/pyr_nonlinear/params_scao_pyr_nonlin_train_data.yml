@@ -1,0 +1,86 @@
+---
+# Closed-loop training-data generation for the residual-learning CNN.
+#
+# Answers the "many short simulations vs one long one with hacks" question
+# directly: this drives seeing/wind through a wide range of values within
+# a SINGLE run, by switching `seeing`/`wind_speed`/`wind_direction` (already
+# WaveGenerator objects in the base config) from a constant to a SQUARE
+# wave via a plain _override -- no new objects, no rewiring, no framework
+# changes needed (a richer, non-periodic multi-level schedule is possible
+# too via ScheduleGenerator/TimeHistoryGenerator, but that requires
+# swapping the object's class, which -- since YAML _override can only add
+# or replace dict keys, never remove the object and its wiring to redefine
+# it under the same name -- is a bigger change than this case study needs).
+# Every half-period toggle forces the loop to re-converge, so the buffered
+# data naturally mixes transient (just-perturbed) and near-steady-state
+# (settled) regimes across a wide range of turbulence strengths and wind
+# conditions, with realistic temporal correlation -- unlike drawing i.i.d.
+# random phase screens open-loop, which is what produced the "good open
+# loop, bad closed loop" mismatch in the first place.
+#
+# The loop is driven by PyramidNonlinearRec (the calibrated analytic
+# baseline, see params_scao_pyr_nonlin_baseline.yml) so the WFS residual
+# distribution buffered here already reflects a reasonably-corrected loop,
+# not raw open-loop turbulence. modal_analysis decomposes the actual
+# residual phase (what the WFS is really looking at) onto the same 10
+# Zernike modes as the baseline/CNN, giving the "true modes" label;
+# baseline-rec.out_modes is buffered alongside it so Conv2dNetTrainer can
+# train on the residual between the two (see baseline_offset/label_offset
+# in Conv2dNetTrainer's docstring).
+
+main_override:
+  total_time: 2.0
+
+seeing_override:
+  wave_type: 'SQUARE'
+  constant:  [0.9]     # toggles between 0.9-0.5=0.4" and 0.9+0.5=1.4"
+  amp:       [0.5]
+  freq:      [2.5]     # half-period 0.2s: forces re-convergence often
+
+wind_speed_override:
+  wave_type: 'SQUARE'
+  constant:  [17.5]    # toggles between 5 and 30 m/s
+  amp:       [12.5]
+  freq:      [2.5]
+
+wind_direction_override:
+  wave_type: 'SQUARE'
+  constant:  [90.0]    # toggles between 0 and 180 deg
+  amp:       [90.0]
+  freq:      [2.5]
+
+rec_override:
+  class:              'PyramidNonlinearRec'
+  intmat_object:      'scao_pyr_nonlin_im'
+  nonlinear_calib_object: 'scao_pyr_nonlin_nlcal'
+  nmodes:             10
+
+control_override:
+  int_gain:  [0.5]
+  n_modes:   [10]
+
+dm_override:
+  nmodes: 10
+
+slopes2d:
+  class:                'Slopes2D'
+  inputs:
+    in_slopes: 'slopec.out_slopes'
+  outputs: ['out_value']
+
+modal_analysis:
+  class:                'ModalAnalysis'
+  type_str:             'zernike'
+  npixels:               160
+  nmodes:                10
+  inputs:
+    in_ef: 'prop.out_on_axis_source_ef'
+  outputs: ['out_modes']
+
+data_buffer:
+  class:             'DataBuffer'
+  buffer_size:       2000
+  inputs:
+    input_list: ['input_2d-slopes2d.out_value',
+                 'modes-modal_analysis.out_modes',
+                 'baseline-rec.out_modes']

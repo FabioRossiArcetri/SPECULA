@@ -118,6 +118,26 @@ class TestConv2dNetRecConstruction(unittest.TestCase):
             self.assertEqual(set(rec.outputs.keys()), {'out_modes'})
             self.assertTrue(rec.model.training is False)
 
+    @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
+    def test_sanity_check_passes_with_baseline_wired(self):
+        # Regression test: sanity_check() (run by Simul/LoopControl before
+        # any real simulation) failed here because Conv2dNetRec inherits
+        # BaseModalrec.input_names(), which doesn't declare 'baseline', so
+        # the framework rejected it as an undeclared input the moment a
+        # real YAML actually wired one up -- something no direct-Python
+        # unit test here caught until this one.
+        with tempfile.TemporaryDirectory() as d:
+            rec, _, _ = build_rec(d)
+            baseline = BaseValue(value=np.zeros(NMODES, dtype=np.float32))
+            rec.inputs['baseline'].set(baseline)
+            rec.sanity_check()  # must not raise
+
+    @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
+    def test_sanity_check_passes_without_baseline_wired(self):
+        with tempfile.TemporaryDirectory() as d:
+            rec, _, _ = build_rec(d)
+            rec.sanity_check()  # must not raise: baseline is optional
+
 
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestConv2dNetRecTrigger(unittest.TestCase):

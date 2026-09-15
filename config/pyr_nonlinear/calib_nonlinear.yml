@@ -1,0 +1,52 @@
+---
+# Nonlinear response calibration: sweeps each mode through a range of
+# amplitudes that goes well beyond the linear regime used for calib_rec.yml
+# (up to 400 nm here, vs the 50 nm push-pull used for the linear IM), to
+# characterize the pyramid's saturation curve per mode. Builds the
+# scao_pyr_nonlin_nlcal (NonlinearCalibration) tag used by PyramidNonlinearRec.
+#
+# Only the first few (low-order) modes are swept: those are the ones that
+# actually reach a large enough amplitude, relative to a single subaperture,
+# to saturate a non-modulated pyramid's response -- sweeping all 54 modes
+# through the same wide amplitude range would mostly waste time recalibrating
+# already-linear high-order modes.
+
+sweep:
+  class:      'ModalAmplitudeSweepGenerator'
+  nmodes:     10
+  amplitudes: [-400.0, -200.0, -100.0, -50.0, -25.0, -10.0,
+                 10.0,   25.0,  50.0, 100.0, 200.0, 400.0]
+  nsamples:   2
+  outputs: ['output']
+
+main_override:
+  total_time:  0.240   # 10 modes * 12 amplitudes * 2 samples * 1ms
+
+prop_override:
+  inputs:
+    common_layer_list: ['pupilstop',
+                  'dm.out_layer']
+
+dm_override:
+  sign: 1
+  nmodes: 10                   # match sweep.output length exactly
+  inputs:
+      in_command: 'sweep.output'
+
+detector_override:
+  photon_noise:      False
+  readout_noise:     False
+
+
+nonlinear_calibrator:
+  class: 'PyramidNonlinearCalibrator'
+  nmodes: 10
+  intmat_object: 'scao_pyr_nonlin_im'
+  calib_tag:     'scao_pyr_nonlin_nlcal'
+  overwrite: True
+  inputs:
+    in_slopes: 'slopec.out_slopes'
+    in_commands: 'sweep.output'
+
+
+remove: ['atmo', 'rec', 'control', 'psf']
