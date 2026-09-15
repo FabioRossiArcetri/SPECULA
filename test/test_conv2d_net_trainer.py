@@ -126,13 +126,11 @@ class TestConv2dNetTrainerLoading(unittest.TestCase):
             for key in source_state:
                 torch.testing.assert_close(loaded_state[key].cpu(), source_state[key].cpu())
 
-    def test_full_model_checkpoint_falls_back_to_new_model(self):
+    def test_full_model_checkpoint_is_loaded(self):
         # torch.save(model, path) (a full model object, not a state_dict) is
-        # handled by a separate code branch, but with this torch version
-        # torch.load(..., map_location='cpu') defaults to weights_only=True,
-        # which refuses to unpickle an arbitrary model class. The load
-        # exception is caught by Conv2dNetTrainer, which logs a warning and
-        # falls back to a freshly-initialized model instead of crashing.
+        # handled by a separate code branch. torch.load(..., map_location='cpu')
+        # is called with weights_only=False so this actually gets loaded
+        # instead of being rejected/falling back to a fresh model.
         with tempfile.TemporaryDirectory() as d:
             net_path = os.path.join(d, 'existing_m20_ch4_dp0.010.pth')
             stats_path = net_path.replace('.pth', '_stats.json')
@@ -142,15 +140,19 @@ class TestConv2dNetTrainerLoading(unittest.TestCase):
             )
             torch.save(source_model, net_path)
             with open(stats_path, 'w') as f:
-                json.dump({'meanp': 0.0, 'stdp': 1.0,
-                           'meanmodes': [0.0] * NMODES, 'stdmodes': [1.0] * NMODES,
+                json.dump({'meanp': 0.5, 'stdp': 1.5,
+                           'meanmodes': [0.1] * NMODES, 'stdmodes': [1.1] * NMODES,
                            'nmodes': NMODES}, f)
 
             trainer = build_trainer(d, network_name='existing_m20_ch4_dp0.010.pth',
                                      load_from_file=True)
 
-            self.assertIsNone(trainer.meanp)
-            self.assertIsInstance(trainer.model, torch.nn.Module)
+            self.assertEqual(trainer.meanp, 0.5)
+            self.assertEqual(trainer.stdp, 1.5)
+            loaded_state = trainer.model.state_dict()
+            source_state = source_model.state_dict()
+            for key in source_state:
+                torch.testing.assert_close(loaded_state[key].cpu(), source_state[key].cpu())
 
     def test_checkpoint_without_stats_file_warns_and_sets_none(self):
         with tempfile.TemporaryDirectory() as d:
@@ -168,6 +170,43 @@ class TestConv2dNetTrainerLoading(unittest.TestCase):
             self.assertIsNone(trainer.stdp)
             self.assertIsNone(trainer.meanmodes)
             self.assertIsNone(trainer.stdmodes)
+
+
+class TestLossWeightInitialization(unittest.TestCase):
+    """The initial per-mode weight vector (piston weighted highest, the next
+    few low-order modes weighted low, everything else at the default) must
+    always have exactly `nmodes` entries, for any nmodes."""
+
+    def test_nmodes_greater_than_six_matches_original_pattern(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, nmodes=20, channels=4, depth=1)
+            weights = trainer.loss_fn.weights.detach().numpy()
+            expected = [2.0, 0.02, 0.02, 0.01, 0.01, 0.01] + [0.05] * 14
+            self.assertEqual(len(weights), 20)
+            np.testing.assert_allclose(weights, expected)
+
+    def test_nmodes_equal_to_six_is_all_low_order_weights(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, nmodes=6, channels=4, depth=1)
+            weights = trainer.loss_fn.weights.detach().numpy()
+            expected = [2.0, 0.02, 0.02, 0.01, 0.01, 0.01]
+            self.assertEqual(len(weights), 6)
+            np.testing.assert_allclose(weights, expected)
+
+    def test_nmodes_less_than_six_truncates_without_changing_length(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, nmodes=3, channels=4, depth=1)
+            weights = trainer.loss_fn.weights.detach().numpy()
+            expected = [2.0, 0.02, 0.02]
+            self.assertEqual(len(weights), 3)
+            np.testing.assert_allclose(weights, expected)
+
+    def test_nmodes_equal_to_one_is_just_piston(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, nmodes=1, channels=4, depth=1)
+            weights = trainer.loss_fn.weights.detach().numpy()
+            self.assertEqual(len(weights), 1)
+            np.testing.assert_allclose(weights, [2.0])
 
 
 class TestConv2dNetTrainerDevice(unittest.TestCase):
@@ -227,10 +266,7 @@ class TestWeightedLosses(unittest.TestCase):
 
 class TestUpdateLossWeights(unittest.TestCase):
 
-    def test_weights_are_inverse_std_normalized_to_nmodes(self):
-        # nmodes=6 so the weight-init slice assignment in __init__
-        # (ww[1:6] = [...]) does not change the length of the weights buffer.
-        nmodes = 6
+    def _check(self, nmodes):
         with tempfile.TemporaryDirectory() as d:
             trainer = build_trainer(d, nmodes=nmodes, channels=4, depth=1)
             modes = np.arange(1, 3 * nmodes + 1).reshape(3, nmodes).astype(float)
@@ -242,6 +278,14 @@ class TestUpdateLossWeights(unittest.TestCase):
 
             np.testing.assert_allclose(
                 trainer.loss_fn.weights.detach().numpy(), expected, rtol=1e-5)
+
+    def test_weights_are_inverse_std_normalized_to_nmodes(self):
+        self._check(nmodes=6)
+
+    def test_weights_work_for_nmodes_less_than_six(self):
+        # Regression check: the weights buffer used to end up longer than
+        # nmodes here, making this copy_() fail with a shape mismatch.
+        self._check(nmodes=3)
 
 
 class TestConv2dNetTrainerTrigger(unittest.TestCase):

@@ -133,7 +133,10 @@ class Conv2dNetTrainer(BaseProcessingObj):
         # =========================
         if load_from_file:
             try:
-                checkpoint = torch.load(self.network_filename, map_location='cpu')
+                # weights_only=False: these checkpoints are produced by our own
+                # training runs (state_dict or a full model object), never
+                # loaded from an untrusted or shared source.
+                checkpoint = torch.load(self.network_filename, map_location='cpu', weights_only=False)
                 model = UNetRegressor(
                     input_channels=1,
                     output_size=nmodes,
@@ -215,8 +218,11 @@ class Conv2dNetTrainer(BaseProcessingObj):
         #   Loss and optim setup
         # =========================
         ww = [0.05] * nmodes
-        ww[0] = 2.0
-        ww[1:6] = [0.02, 0.02, 0.01, 0.01, 0.01]
+        if nmodes > 0:
+            ww[0] = 2.0
+        low_order_weights = [0.02, 0.02, 0.01, 0.01, 0.01]
+        n_low_order = min(len(low_order_weights), max(0, nmodes - 1))
+        ww[1:1 + n_low_order] = low_order_weights[:n_low_order]
 
         self.loss_fn = WeightedMSELoss(weights=ww, device=self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3, weight_decay=0)

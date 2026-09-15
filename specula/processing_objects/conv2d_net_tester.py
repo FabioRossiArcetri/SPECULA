@@ -34,8 +34,11 @@ class Conv2dNetTester(BaseProcessingObj):
         # Load model
         if os.path.isfile(self.network_filename):
 
-            # Load to CPU first 
-            checkpoint = torch.load(self.network_filename, map_location='cpu')
+            # Load to CPU first
+            # weights_only=False: these checkpoints are produced by our own
+            # training runs (state_dict or a full model object), never
+            # loaded from an untrusted or shared source.
+            checkpoint = torch.load(self.network_filename, map_location='cpu', weights_only=False)
             
             # Create the model architecture on CPU
             model = UNetRegressor(
@@ -106,6 +109,7 @@ class Conv2dNetTester(BaseProcessingObj):
         self.total_squared_error = None
         self.count = 0
         self.all_errors = []
+        self.all_targets = []
 
     def trigger(self):
         x_in = self.local_inputs['input_2d_batch']
@@ -147,16 +151,21 @@ class Conv2dNetTester(BaseProcessingObj):
         # Compute error in original units
         error = preds - modes
         
-        # Update statistics
+        # Update statistics (summed over the batch axis, so total_abs_error/
+        # total_squared_error stay a per-mode (1, nmodes) running total
+        # regardless of each trigger's batch size)
+        batch_abs_error = self.xp.sum(self.xp.abs(error), axis=0, keepdims=True)
+        batch_squared_error = self.xp.sum(error ** 2, axis=0, keepdims=True)
         if self.total_abs_error is None:
-            self.total_abs_error = self.xp.abs(error)
-            self.total_squared_error = error ** 2
+            self.total_abs_error = batch_abs_error
+            self.total_squared_error = batch_squared_error
         else:
-            self.total_abs_error += self.xp.abs(error)
-            self.total_squared_error += error ** 2
+            self.total_abs_error += batch_abs_error
+            self.total_squared_error += batch_squared_error
         
         self.count += ph.shape[0]  # Count batch size
         self.all_errors.append(error)
+        self.all_targets.append(modes)
 
         self.preds.value = preds
         self.preds.generation_time = self.current_time
@@ -195,10 +204,7 @@ class Conv2dNetTester(BaseProcessingObj):
         std_error = self.xp.std(all_errors_concat, axis=0)
 
         # Retrieve corresponding targets
-        all_targets_concat = self.xp.concatenate(
-            [y_in.get_value()[:, 1:self.nmodes+1] for y_in in [self.local_inputs['labels']]],
-            axis=0
-        )
+        all_targets_concat = self.xp.concatenate(self.all_targets, axis=0)
 
         # === NEW: Symmetric Mean Absolute Percentage Error (SMAPE) ===
         eps = 1e-3

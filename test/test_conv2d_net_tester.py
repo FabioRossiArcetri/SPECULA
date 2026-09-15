@@ -85,13 +85,11 @@ class TestConv2dNetTesterConstruction(unittest.TestCase):
                 Conv2dNetTester(network_filename=net_path,
                                  nmodes=NMODES, channels=CHANNELS, depth=DEPTH)
 
-    def test_full_model_checkpoint_currently_raises_on_load(self):
+    def test_full_model_checkpoint_is_loaded(self):
         # torch.save(model, path) (a full model object, not a state_dict) is
-        # handled by a dedicated branch in the source, but with this torch
-        # version torch.load(..., map_location='cpu') defaults to
-        # weights_only=True, which refuses to unpickle an arbitrary model
-        # class. Unlike Conv2dNetTrainer, Conv2dNetTester does not catch
-        # this, so construction currently fails outright for such files.
+        # handled by a dedicated branch in the source. torch.load(...,
+        # map_location='cpu') is called with weights_only=False so this
+        # actually gets loaded instead of raising.
         with tempfile.TemporaryDirectory() as d:
             net_path = os.path.join(d, 'net.pth')
             stats_path = net_path.replace('.pth', '_stats.json')
@@ -105,9 +103,13 @@ class TestConv2dNetTesterConstruction(unittest.TestCase):
                            'meanmodes': [0.0] * NMODES, 'stdmodes': [1.0] * NMODES,
                            'nmodes': NMODES}, f)
 
-            with self.assertRaises(Exception):
-                Conv2dNetTester(network_filename=net_path, nmodes=NMODES,
-                                 channels=CHANNELS, depth=DEPTH, target_device_idx=-1)
+            tester = Conv2dNetTester(network_filename=net_path, nmodes=NMODES,
+                                      channels=CHANNELS, depth=DEPTH, target_device_idx=-1)
+
+            loaded_state = tester.model.state_dict()
+            source_state = source_model.state_dict()
+            for key in source_state:
+                torch.testing.assert_close(loaded_state[key].cpu(), source_state[key].cpu())
 
     def test_successful_construction_loads_stats_and_outputs(self):
         with tempfile.TemporaryDirectory() as d:
@@ -172,22 +174,53 @@ class TestConv2dNetTesterFinalize(unittest.TestCase):
             feed_batch(tester, seed=3)
             tester.trigger()
 
+            # Ground truth, derived directly from the per-sample error that
+            # trigger() recorded, independent of the accumulator internals.
+            error = tester.all_errors[0]
+            expected_mae = np.mean(np.abs(error), axis=0, keepdims=True)
+            expected_rmse = np.sqrt(np.mean(error**2, axis=0, keepdims=True))
+
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 tester.finalize()
 
             self.assertIn('FINAL TEST STATISTICS', buf.getvalue())
-            # NOTE: total_abs_error/total_squared_error are accumulated
-            # per-sample (never reduced over the batch axis), so with a
-            # single trigger() call these outputs keep the (batch, nmodes)
-            # shape rather than a true per-mode (1, nmodes) summary.
-            self.assertEqual(tester.outputs['mean_absolute_error'].shape, (BATCH, NMODES))
-            self.assertEqual(tester.outputs['root_mean_squared_error'].shape, (BATCH, NMODES))
+            self.assertEqual(tester.outputs['mean_absolute_error'].shape, (1, NMODES))
+            self.assertEqual(tester.outputs['root_mean_squared_error'].shape, (1, NMODES))
             self.assertEqual(tester.outputs['smape'].shape, (NMODES,))
             self.assertTrue(np.isscalar(tester.outputs['overall_smape'])
                              or tester.outputs['overall_smape'].shape == ())
-            self.assertTrue(np.all(tester.outputs['mean_absolute_error'] >= 0))
-            self.assertTrue(np.all(tester.outputs['root_mean_squared_error'] >= 0))
+            np.testing.assert_allclose(
+                tester.outputs['mean_absolute_error'], expected_mae, rtol=1e-5)
+            np.testing.assert_allclose(
+                tester.outputs['root_mean_squared_error'], expected_rmse, rtol=1e-5)
+
+    def test_finalize_handles_varying_batch_sizes_across_triggers(self):
+        # Regression check: total_abs_error/total_squared_error used to keep
+        # the shape of whichever batch created them, so a second trigger()
+        # with a different batch size would fail to broadcast into it.
+        with tempfile.TemporaryDirectory() as d:
+            tester, _, _ = build_tester(d)
+            feed_batch(tester, batch=4, seed=1)
+            tester.trigger()
+            feed_batch(tester, batch=7, seed=2)
+            tester.trigger()
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                tester.finalize()
+
+            self.assertEqual(tester.count, 11)
+            self.assertEqual(tester.outputs['mean_absolute_error'].shape, (1, NMODES))
+
+            # all_targets must accumulate across triggers just like
+            # all_errors, matching each trigger's batch size.
+            self.assertEqual([t.shape[0] for t in tester.all_targets], [4, 7])
+
+            expected_mae = np.mean(
+                np.abs(np.concatenate(tester.all_errors, axis=0)), axis=0, keepdims=True)
+            np.testing.assert_allclose(
+                tester.outputs['mean_absolute_error'], expected_mae, rtol=1e-5)
 
 
 if __name__ == '__main__':
