@@ -86,8 +86,24 @@ class Conv2dNetTrainer(BaseProcessingObj):
                  conv_block_type=0,
                  depth=5,
                  val_split=0.2,
+                 label_offset=1,
+                 baseline_offset=0,
                  target_device_idx=None,
                  precision=None):
+        """
+        label_offset : int, optional
+            Index of the first true mode within the buffered 'labels'
+            value (default 1, matching the historical convention where
+            index 0 is a non-mode placeholder).
+        baseline_offset : int, optional
+            Index of the first mode within the buffered 'baseline' value,
+            if the optional 'baseline' input is connected (default 0).
+            When connected, the network is trained on the *residual*
+            ``labels[label_offset:label_offset+nmodes] -
+            baseline[baseline_offset:baseline_offset+nmodes]`` instead of
+            the raw labels, so it only has to learn what the baseline
+            reconstructor does not already capture.
+        """
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
@@ -97,6 +113,8 @@ class Conv2dNetTrainer(BaseProcessingObj):
         self.epoch_len = epoch_len
         self.grad_clip_value = 1.0
         self.val_split = val_split
+        self.label_offset = label_offset
+        self.baseline_offset = baseline_offset
         self.verbose = True
 
 
@@ -236,6 +254,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
 
         self.inputs['input_2d_batch'] = InputValue(type=BaseValue)
         self.inputs['labels'] = InputValue(type=BaseValue)
+        self.inputs['baseline'] = InputValue(type=BaseValue, optional=True)
         self.outputs["loss"] = BaseValue(target_device_idx=target_device_idx)
 
         self.X = self.y = None
@@ -295,7 +314,13 @@ class Conv2dNetTrainer(BaseProcessingObj):
 
         try:
             ph = self.X.get_value()[:, 1] * self.X.get_value()[:, 0]
-            modes = self.y.get_value()[:, 1:self.nmodes + 1]
+            modes = self.y.get_value()[:, self.label_offset:self.label_offset + self.nmodes]
+
+            baseline_in = self.local_inputs['baseline']
+            if baseline_in is not None:
+                baseline_modes = baseline_in.get_value()[
+                    :, self.baseline_offset:self.baseline_offset + self.nmodes]
+                modes = modes - baseline_modes
         except Exception as e:
             print(f"[{self.name}] ERROR extracting data: {e}")
             return

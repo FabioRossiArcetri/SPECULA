@@ -64,6 +64,23 @@ def feed_batch(trainer, batch=BATCH, nmodes=NMODES, h=H, w=W, seed=0):
     trainer.check_ready(1)
 
 
+def feed_batch_with_baseline(trainer, labels, baseline, batch=BATCH, h=H, w=W, seed=0):
+    """Like feed_batch(), but with explicit labels/baseline arrays
+    (shape (batch, n)) instead of random ones, and a 'baseline' input."""
+    rng = np.random.default_rng(seed)
+    x_val = BaseValue(value=rng.standard_normal((batch, 2, h, w)).astype(np.float32))
+    y_val = BaseValue(value=labels.astype(np.float32))
+    b_val = BaseValue(value=baseline.astype(np.float32))
+    t = x_val.seconds_to_t(1)
+    x_val.generation_time = t
+    y_val.generation_time = t
+    b_val.generation_time = t
+    trainer.inputs['input_2d_batch'].set(x_val)
+    trainer.inputs['labels'].set(y_val)
+    trainer.inputs['baseline'].set(b_val)
+    trainer.check_ready(1)
+
+
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestNetworkFilenameHandling(unittest.TestCase):
 
@@ -382,6 +399,65 @@ class TestConv2dNetTrainerTrigger(unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 trainer.finalize()
             self.assertIn('Training complete', buf.getvalue())
+
+
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
+class TestResidualLearning(unittest.TestCase):
+    """When a 'baseline' input is connected, the network must be trained
+    on labels - baseline instead of the raw labels."""
+
+    def test_baseline_input_is_optional_and_unconnected_by_default(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d)
+            self.assertTrue(trainer.inputs['baseline'].optional)
+
+    def test_zero_residual_when_baseline_equals_labels(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, epoch_len=1)
+            rng = np.random.default_rng(0)
+            labels = rng.standard_normal((BATCH, NMODES + 1))
+            # baseline equal to the true labels over the sliced mode range
+            # (label_offset=1 by default): residual must be exactly zero.
+            baseline = np.zeros((BATCH, NMODES))
+            baseline[:] = labels[:, 1:NMODES + 1]
+
+            feed_batch_with_baseline(trainer, labels, baseline)
+            trainer.trigger()
+
+            # meanmodes/stdmodes are computed directly from the (residual)
+            # training target, independent of the network itself.
+            np.testing.assert_allclose(trainer.meanmodes, np.zeros(NMODES), atol=1e-6)
+            np.testing.assert_allclose(trainer.stdmodes, np.full(NMODES, 1e-8), atol=1e-9)
+
+    def test_nonzero_residual_matches_labels_minus_baseline(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, epoch_len=1)
+            rng = np.random.default_rng(1)
+            labels = rng.standard_normal((BATCH, NMODES + 1))
+            baseline = rng.standard_normal((BATCH, NMODES))
+
+            feed_batch_with_baseline(trainer, labels, baseline)
+            trainer.trigger()
+
+            expected_residual = labels[:, 1:NMODES + 1] - baseline
+            np.testing.assert_allclose(
+                trainer.meanmodes, np.mean(expected_residual, axis=0), atol=1e-5)
+
+    def test_baseline_offset_selects_correct_columns(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, epoch_len=1, nmodes=3)
+            trainer.baseline_offset = 2
+            rng = np.random.default_rng(2)
+            labels = rng.standard_normal((BATCH, 4))
+            # baseline has extra leading columns that must be skipped
+            baseline_full = rng.standard_normal((BATCH, 5))
+
+            feed_batch_with_baseline(trainer, labels, baseline_full, batch=BATCH)
+            trainer.trigger()
+
+            expected_residual = labels[:, 1:4] - baseline_full[:, 2:5]
+            np.testing.assert_allclose(
+                trainer.meanmodes, np.mean(expected_residual, axis=0), atol=1e-5)
 
 
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")

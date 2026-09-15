@@ -72,6 +72,21 @@ def feed_batch(tester, batch=BATCH, nmodes=NMODES, h=H, w=W, seed=0):
     tester.check_ready(1)
 
 
+def feed_batch_with_baseline(tester, labels, baseline, batch=BATCH, h=H, w=W, seed=0):
+    rng = np.random.default_rng(seed)
+    x_val = BaseValue(value=rng.standard_normal((batch, 2, h, w)).astype(np.float32))
+    y_val = BaseValue(value=labels.astype(np.float32))
+    b_val = BaseValue(value=baseline.astype(np.float32))
+    t = x_val.seconds_to_t(1)
+    x_val.generation_time = t
+    y_val.generation_time = t
+    b_val.generation_time = t
+    tester.inputs['input_2d_batch'].set(x_val)
+    tester.inputs['labels'].set(y_val)
+    tester.inputs['baseline'].set(b_val)
+    tester.check_ready(1)
+
+
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestConv2dNetTesterConstruction(unittest.TestCase):
 
@@ -147,6 +162,26 @@ class TestConv2dNetTesterTrigger(unittest.TestCase):
             self.assertIsNotNone(tester.total_abs_error)
             self.assertIsNotNone(tester.total_squared_error)
 
+    def test_denormalization_uses_correct_affine_formula(self):
+        """Regression test: predictions must be denormalized as
+        pred_norm * std + mean, not pred_norm * (std + mean) -- the latter
+        is only numerically indistinguishable from the former when mean=0,
+        which is why it previously slipped through with all-zero meanmodes
+        in the other tests here."""
+        with tempfile.TemporaryDirectory() as d:
+            tester, _, _ = build_tester(d)
+            tester.meanmodes = np.array([10.0, -5.0, 2.0, 0.0, 3.0])
+            tester.stdmodes = np.array([2.0, 1.0, 0.5, 4.0, 1.5])
+
+            normalized_output = torch.zeros(BATCH, NMODES)
+            tester.model = lambda x: normalized_output
+
+            feed_batch(tester)
+            tester.trigger()
+
+            expected = np.tile(tester.meanmodes, (BATCH, 1))  # pred_norm == 0
+            np.testing.assert_allclose(tester.outputs['prediction'], expected)
+
     def test_trigger_noop_when_inputs_missing(self):
         with tempfile.TemporaryDirectory() as d:
             tester, _, _ = build_tester(d)
@@ -165,6 +200,54 @@ class TestConv2dNetTesterTrigger(unittest.TestCase):
 
             self.assertEqual(tester.count, 2 * BATCH)
             self.assertEqual(len(tester.all_errors), 2)
+
+
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
+class TestResidualLearning(unittest.TestCase):
+    """When a 'baseline' input is connected, the (denormalized) network
+    output is a residual and must be added back to the baseline to form
+    the final reported prediction, comparable to the full true labels."""
+
+    def test_baseline_input_is_optional_and_unconnected_by_default(self):
+        with tempfile.TemporaryDirectory() as d:
+            tester, _, _ = build_tester(d)
+            self.assertTrue(tester.inputs['baseline'].optional)
+
+    def test_prediction_adds_baseline_back_to_network_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            tester, _, _ = build_tester(d)
+            tester.meanmodes = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+            tester.stdmodes = np.ones(NMODES)
+            tester.model = lambda x: torch.zeros(BATCH, NMODES)  # predicted residual == meanmodes
+
+            rng = np.random.default_rng(3)
+            labels = rng.standard_normal((BATCH, NMODES + 1))
+            baseline = rng.standard_normal((BATCH, NMODES))
+
+            feed_batch_with_baseline(tester, labels, baseline)
+            tester.trigger()
+
+            expected = np.tile(tester.meanmodes, (BATCH, 1)) + baseline
+            np.testing.assert_allclose(tester.outputs['prediction'], expected, atol=1e-5)
+
+    def test_error_is_computed_against_full_labels_not_residual(self):
+        with tempfile.TemporaryDirectory() as d:
+            tester, _, _ = build_tester(d)
+            tester.meanmodes = np.zeros(NMODES)
+            tester.stdmodes = np.ones(NMODES)
+
+            rng = np.random.default_rng(4)
+            labels = rng.standard_normal((BATCH, NMODES + 1))
+            baseline = rng.standard_normal((BATCH, NMODES))
+            # network predicts the exact residual -> perfect reconstruction
+            exact_residual = labels[:, 1:NMODES + 1] - baseline
+            tester.model = lambda x: torch.tensor(exact_residual, dtype=torch.float32)
+
+            feed_batch_with_baseline(tester, labels, baseline)
+            tester.trigger()
+
+            np.testing.assert_allclose(
+                tester.outputs['prediction'], labels[:, 1:NMODES + 1], atol=1e-5)
 
 
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")

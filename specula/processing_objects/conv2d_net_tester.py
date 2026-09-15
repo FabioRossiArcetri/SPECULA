@@ -18,7 +18,21 @@ class Conv2dNetTester(BaseProcessingObj):
                  dropout=0.01,
                  conv_block_type=0,
                  depth=5,
+                 label_offset=1,
+                 baseline_offset=0,
                  precision: int = None):
+        """
+        label_offset : int, optional
+            Index of the first true mode within the buffered 'labels'
+            value (default 1, matching Conv2dNetTrainer's convention).
+        baseline_offset : int, optional
+            Index of the first mode within the buffered 'baseline' value,
+            if the optional 'baseline' input is connected (default 0).
+            When connected, the network's (denormalized) output is treated
+            as a residual and the baseline is added back to it before
+            comparing against the full true labels -- the inference-time
+            counterpart of Conv2dNetTrainer's residual-learning mode.
+        """
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
@@ -28,6 +42,8 @@ class Conv2dNetTester(BaseProcessingObj):
         self.nmodes = nmodes
         self.channels = channels
         self.dropout = dropout
+        self.label_offset = label_offset
+        self.baseline_offset = baseline_offset
         self.first = True
         self.device = torch.device("cpu") # torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
@@ -92,7 +108,8 @@ class Conv2dNetTester(BaseProcessingObj):
         
         self.inputs['input_2d_batch'] = InputValue(type=BaseValue)
         self.inputs['labels'] = InputValue(type=BaseValue)
-        
+        self.inputs['baseline'] = InputValue(type=BaseValue, optional=True)
+
 
         self.preds = BaseValue(target_device_idx=target_device_idx)
         self.preds.value = self.xp.array((nmodes))
@@ -120,7 +137,17 @@ class Conv2dNetTester(BaseProcessingObj):
 
         # Extract phase and modes
         ph = x_in.get_value()[:, 1] * x_in.get_value()[:, 0]
-        modes = y_in.get_value()[:, 1:self.nmodes+1]
+        modes = y_in.get_value()[:, self.label_offset:self.label_offset + self.nmodes]
+
+        baseline_in = self.local_inputs['baseline']
+        if baseline_in is not None:
+            baseline_modes = baseline_in.get_value()[
+                :, self.baseline_offset:self.baseline_offset + self.nmodes]
+            # what the network was trained to predict (see Conv2dNetTrainer)
+            network_target = modes - baseline_modes
+        else:
+            baseline_modes = None
+            network_target = modes
 
         if self.verbose:
             print(f"[{self.name}] Input phase shape: {ph.shape}")
@@ -129,7 +156,7 @@ class Conv2dNetTester(BaseProcessingObj):
 
         # Apply the SAME normalization as training
         ph = (ph - self.meanp) / self.stdp
-        modes_normalized = (modes - self.meanmodes) / self.stdmodes
+        modes_normalized = (network_target - self.meanmodes) / self.stdmodes
 
         ph = ph[:, self.xp.newaxis, :, :]  # shape (B, 1, H, W)
 
@@ -144,9 +171,13 @@ class Conv2dNetTester(BaseProcessingObj):
             # Compute loss on normalized values
             loss_normalized = self.loss_fn(preds_normalized, targets_normalized).item()
 
-        # Denormalize predictions to original scale
+        # Denormalize predictions to original scale. If a baseline is
+        # connected this is the predicted *residual*; add the baseline back
+        # to get the full reconstructed modes, comparable to `modes`.
         preds_normalized_np = self.xp.asarray(preds_normalized.cpu().numpy())
-        preds = preds_normalized_np * (self.stdmodes + self.meanmodes)
+        preds = preds_normalized_np * self.stdmodes + self.meanmodes
+        if baseline_modes is not None:
+            preds = preds + baseline_modes
 
         # Compute error in original units
         error = preds - modes
