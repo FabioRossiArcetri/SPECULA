@@ -860,7 +860,7 @@ store:
         main:
           class: 'SimulParams'
           root_dir: dummy
-          
+
         test:
           class: 'Pupilstop'
           tag: 'abcdef'
@@ -869,8 +869,63 @@ store:
         simul = Simul('dummy.yaml')
         params = yaml.safe_load(yml)
 
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, r"foo"):
             simul.build_objects(params)
+
+    def test_gui_pos_allowed_as_extra_parameter_with_tag(self):
+        '''gui_pos is a generic, purely-cosmetic parameter and must not be
+        treated as an "extra parameter" error when restoring by tag.'''
+        yml = '''
+        main:
+          class: 'SimulParams'
+          root_dir: dummy
+
+        test:
+          class: 'Pupilstop'
+          tag: 'abcdef'
+          gui_pos: [10, 20]
+        '''
+        simul = Simul('dummy.yaml')
+        params = yaml.safe_load(yml)
+
+        from specula.data_objects.pupilstop import Pupilstop
+        from specula.data_objects.simul_params import SimulParams
+        dummy_pupilstop = Pupilstop(SimulParams(pixel_pupil=4, pixel_pitch=1.0),
+                                     target_device_idx=-1)
+
+        with patch.object(Pupilstop, 'restore', return_value=dummy_pupilstop):
+            simul.build_objects(params)
+
+        self.assertIs(simul.objs['test'], dummy_pupilstop)
+        self.assertEqual(simul.objs['test'].tag, 'abcdef')
+
+    def test_send_remote_output_raises_when_source_is_not_processing_obj(self):
+        '''Only a BaseProcessingObj can own a remote output queue
+        (addRemoteOutput); sending from a plain data object must fail loudly
+        instead of silently misbehaving.'''
+        simul = self.dummySimul
+        simul.objs['a'].outputs['out'] = DummyOutput()
+        simul.remote_objs_ranks['remote_dest'] = 1
+
+        with self.assertRaises(ValueError):
+            simul.connect('a.out', 'in', 'remote_dest')
+
+    def test_send_remote_output_succeeds_for_processing_obj(self):
+        from specula.base_processing_obj import BaseProcessingObj
+
+        proc_obj = BaseProcessingObj(target_device_idx=-1)
+        proc_obj.name = 'a'
+        proc_obj.outputs['out'] = DummyOutput()
+
+        simul = self.dummySimul
+        simul.objs['a'] = proc_obj
+        simul.remote_objs_ranks['remote_dest'] = 1
+
+        simul.connect('a.out', 'in', 'remote_dest')
+
+        self.assertEqual(len(proc_obj.remote_outputs['out']), 1)
+        remote_rank, tag, delay = proc_obj.remote_outputs['out'][0]
+        self.assertEqual(remote_rank, 1)
 
     def test_exception_raised_when_restoring_with_no_type_hint(self):
         yml = '''

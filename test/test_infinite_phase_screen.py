@@ -1,12 +1,78 @@
 import unittest
 import os
+from unittest.mock import patch
 import specula
 specula.init(0)  # Default target device
 
 from specula import np, cpuArray
 from specula.lib.calc_phasescreen import calc_phasescreen
+from specula.data_objects.infinite_phase_screen import (
+    ft_phase_screen_vect,
+    compute_covariance_from_PSD_vect,
+)
 
 from test.specula_testlib import cpu_and_gpu
+
+
+class TestFtPhaseScreenVect(unittest.TestCase):
+    """Tests for the module-level helper ft_phase_screen_vect()"""
+
+    def _psd(self):
+        # simple power-law-like 1D PSD, decreasing with frequency
+        f1d = np.linspace(1e-3, 10.0, 200)
+        psd = 1.0 / f1d**2
+        return f1d, psd
+
+    def test_output_shapes(self):
+        f1d, psd = self._psd()
+        N = 32
+        phs, psd2d, del_f = ft_phase_screen_vect(f1d, psd, N, delta=0.1, seed=1)
+        self.assertEqual(phs.shape, (N, N))
+        self.assertEqual(psd2d.shape, (N, N))
+        self.assertTrue(np.isreal(phs).all())
+        self.assertGreater(del_f, 0)
+
+    def test_reproducibility_with_same_seed(self):
+        f1d, psd = self._psd()
+        phs1, _, _ = ft_phase_screen_vect(f1d, psd, 32, delta=0.1, seed=42)
+        phs2, _, _ = ft_phase_screen_vect(f1d, psd, 32, delta=0.1, seed=42)
+        np.testing.assert_array_equal(phs1, phs2)
+
+    def test_different_seed_gives_different_screen(self):
+        f1d, psd = self._psd()
+        phs1, _, _ = ft_phase_screen_vect(f1d, psd, 32, delta=0.1, seed=1)
+        phs2, _, _ = ft_phase_screen_vect(f1d, psd, 32, delta=0.1, seed=2)
+        self.assertFalse(np.allclose(phs1, phs2))
+
+    def test_psd_scaling_scales_screen_amplitude(self):
+        # cn is proportional to sqrt(PSD), so scaling the PSD by a factor c
+        # scales the resulting screen amplitude by sqrt(c) (same seed => same
+        # underlying random numbers).
+        f1d, psd = self._psd()
+        phs1, _, _ = ft_phase_screen_vect(f1d, psd, 32, delta=0.1, seed=7)
+        phs2, _, _ = ft_phase_screen_vect(f1d, psd * 4.0, 32, delta=0.1, seed=7)
+        np.testing.assert_allclose(phs2, phs1 * 2.0, atol=1e-8)
+
+
+class TestComputeCovarianceFromPSDVect(unittest.TestCase):
+    """Tests for the module-level helper compute_covariance_from_PSD_vect()"""
+
+    def test_output_shapes_and_finiteness(self):
+        f_vect = np.logspace(-4, 4, 500)
+        psd_vect = 1.0 / (1.0 + f_vect**2)
+        fht, rd = compute_covariance_from_PSD_vect(f_vect, psd_vect, P=4, Q=4, points=2000)
+        self.assertEqual(fht.shape, (2000,))
+        self.assertEqual(rd.shape, (2000,))
+        self.assertTrue(np.all(np.isfinite(fht)))
+        self.assertTrue(np.all(np.isfinite(rd)))
+
+    def test_output_is_shifted_to_be_non_negative(self):
+        # The function subtracts (min - 1e-6), so the minimum must be
+        # essentially exactly 1e-6 above zero.
+        f_vect = np.logspace(-4, 4, 500)
+        psd_vect = 1.0 / (1.0 + f_vect**2)
+        fht, _ = compute_covariance_from_PSD_vect(f_vect, psd_vect, P=4, Q=4, points=2000)
+        self.assertAlmostEqual(np.min(fht), 1e-6, places=9)
 
 @unittest.skipIf(os.environ.get('CI') == 'true', "Disable for CI issues with Ubuntu and Python >=3.11")
 class TestInfinitePhaseScreen(unittest.TestCase):
@@ -211,3 +277,123 @@ class TestInfinitePhaseScreen(unittest.TestCase):
         # Should still be identical after evolution
         np.testing.assert_array_equal(screen1_evolved, screen2_evolved,
                                      "Evolved screens with same seed should remain identical")
+
+    @cpu_and_gpu
+    def test_random_seed_none_raises(self, target_device_idx, xp):
+        """random_seed is mandatory: passing None must raise ValueError"""
+
+        # moved here to avoid CI issues
+        from specula.data_objects.infinite_phase_screen import InfinitePhaseScreen
+
+        with self.assertRaises(ValueError):
+            InfinitePhaseScreen(64, 0.1, 0.2, 25.0,
+                               random_seed=None,
+                               target_device_idx=target_device_idx)
+
+    @cpu_and_gpu
+    def test_psd1d_data_path_builds_screen(self, target_device_idx, xp):
+        """When psd1d_data/psd1d_freq_data are provided, the screen must be
+        generated from them instead of the analytical von Karman formula,
+        and phase_covariance() must use the precomputed interpolation table."""
+
+        # moved here to avoid CI issues
+        from specula.data_objects.infinite_phase_screen import InfinitePhaseScreen
+
+        mx_size = 32
+        pixel_scale = 0.1
+        r0 = 0.2
+        L0 = 25.0
+        random_seed = 555
+
+        f_vect = np.logspace(-4, 4, 500)
+        psd_vect = 1.0 / (1.0 + f_vect**2)
+
+        ips = InfinitePhaseScreen(mx_size, pixel_scale, r0, L0,
+                                 random_seed=random_seed,
+                                 psd1d_freq_data=f_vect,
+                                 psd1d_data=psd_vect,
+                                 target_device_idx=target_device_idx)
+
+        self.assertIsNotNone(ips.cov_1D_data)
+        self.assertIsNotNone(ips.cov_1D_rd)
+        self.assertIsNotNone(ips.full_scrn)
+        # scrn must be well formed (finite values, requested size)
+        scrn = cpuArray(ips.scrn)
+        self.assertEqual(scrn.shape, (mx_size, mx_size))
+        self.assertTrue(np.all(np.isfinite(scrn)))
+
+        # phase_covariance must interpolate from the precomputed table,
+        # matching a direct np.interp call with the same table.
+        r = xp.array([0.1, 0.5, 1.0])
+        cov = cpuArray(ips.phase_covariance(r, r0, L0))
+        expected = np.interp(cpuArray(r) + 1e-40, ips.cov_1D_rd, ips.cov_1D_data)
+        np.testing.assert_allclose(cov, expected, rtol=1e-6)
+
+    @cpu_and_gpu
+    def test_psd1d_data_reproducible_with_same_seed(self, target_device_idx, xp):
+        """Two screens built from the same PSD table and seed must be identical."""
+
+        # moved here to avoid CI issues
+        from specula.data_objects.infinite_phase_screen import InfinitePhaseScreen
+
+        f_vect = np.logspace(-4, 4, 500)
+        psd_vect = 1.0 / (1.0 + f_vect**2)
+
+        ips1 = InfinitePhaseScreen(32, 0.1, 0.2, 25.0, random_seed=99,
+                                  psd1d_freq_data=f_vect, psd1d_data=psd_vect,
+                                  target_device_idx=target_device_idx)
+        ips2 = InfinitePhaseScreen(32, 0.1, 0.2, 25.0, random_seed=99,
+                                  psd1d_freq_data=f_vect, psd1d_data=psd_vect,
+                                  target_device_idx=target_device_idx)
+
+        np.testing.assert_array_equal(cpuArray(ips1.scrn), cpuArray(ips2.scrn))
+
+    @cpu_and_gpu
+    def test_add_line_tracks_lastmax_and_clears_first_flag(self, target_device_idx, xp):
+        """add_line() should initialize lastmax from the first row RMS and then
+        update it as an exponential moving average of subsequent row RMS values."""
+
+        # moved here to avoid CI issues
+        from specula.data_objects.infinite_phase_screen import InfinitePhaseScreen
+
+        ips = InfinitePhaseScreen(32, 0.1, 0.2, 25.0, random_seed=321,
+                                 target_device_idx=target_device_idx)
+
+        self.assertTrue(ips.first)
+        self.assertEqual(ips.lastmax, 1)
+
+        ips.add_line(row=1, after=1)
+        self.assertFalse(ips.first)
+        first_lastmax = ips.lastmax
+        self.assertGreater(first_lastmax, 0)
+
+        ips.add_line(row=1, after=1)
+        # lastmax after the second call is a blend of the previous value and
+        # the new row's rms, so it generally differs from the first estimate.
+        self.assertGreater(ips.lastmax, 0)
+
+    @cpu_and_gpu
+    def test_add_line_warns_and_still_updates_on_rms_spike(self, target_device_idx, xp):
+        """A row whose rms suddenly spikes above 2*lastmax must still be
+        normalized and incorporated (with a warning), not rejected."""
+
+        # moved here to avoid CI issues
+        from specula.data_objects.infinite_phase_screen import InfinitePhaseScreen
+
+        ips = InfinitePhaseScreen(32, 0.1, 0.2, 25.0, random_seed=654,
+                                 target_device_idx=target_device_idx)
+
+        # Establish a baseline lastmax with a normal line.
+        ips.add_line(row=1, after=1)
+        baseline_lastmax = ips.lastmax
+
+        spike_line = ips.xp.ones(ips.stencil_size) * (baseline_lastmax * 100)
+        with patch.object(ips, 'get_new_line', return_value=spike_line):
+            ips.add_line(row=1, after=1)
+
+        # lastmax is an EMA that must have grown after the spike.
+        self.assertGreater(ips.lastmax, baseline_lastmax)
+
+
+if __name__ == '__main__':
+    unittest.main()

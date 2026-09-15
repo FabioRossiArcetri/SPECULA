@@ -479,7 +479,44 @@ class TestLift(unittest.TestCase):
         # 4. Assert the outputs are exactly identical
         # assert_array_equal checks that shapes and elements match perfectly
         np.testing.assert_array_equal(
-            modesCube_int, 
-            modesCube_float, 
+            modesCube_int,
+            modesCube_float,
             err_msg="modesCube differs between int and float mask2d inputs."
         )
+
+    @cpu_and_gpu
+    def test_wrap_coefficients_within_range_is_unchanged(self, target_device_idx, xp):
+        """Coefficients already inside [-lambda/2, lambda/2) must be returned unchanged."""
+        lift = build_lift(target_device_idx=target_device_idx)
+        wavelength = 750.0
+        coeffs = np.array([0.0, 100.0, -374.9, 374.9], dtype=np.float32)
+
+        wrapped = cpuArray(lift._wrap_coefficients(coeffs, wavelength))
+
+        np.testing.assert_allclose(wrapped, coeffs, atol=1e-3)
+
+    @cpu_and_gpu
+    def test_wrap_coefficients_wraps_outside_range(self, target_device_idx, xp):
+        """Coefficients outside [-lambda/2, lambda/2) must be folded back by multiples of lambda."""
+        lift = build_lift(target_device_idx=target_device_idx)
+        wavelength = 750.0
+        # 500 -> 500 - 750 = -250 ; -600 -> -600 + 750 = 150 ; 2000 -> 2000 - 3*750 = -250
+        coeffs = np.array([500.0, -600.0, 2000.0], dtype=np.float32)
+        expected = np.array([-250.0, 150.0, -250.0], dtype=np.float32)
+
+        wrapped = cpuArray(lift._wrap_coefficients(coeffs, wavelength))
+
+        np.testing.assert_allclose(wrapped, expected, atol=1e-3)
+        self.assertTrue(np.all(wrapped >= -wavelength / 2))
+        self.assertTrue(np.all(wrapped < wavelength / 2))
+
+    @cpu_and_gpu
+    def test_wrap_coefficients_upper_boundary(self, target_device_idx, xp):
+        """Exactly +lambda/2 must wrap to -lambda/2 (half-open interval)."""
+        lift = build_lift(target_device_idx=target_device_idx)
+        wavelength = 750.0
+        coeffs = np.array([375.0], dtype=np.float32)
+
+        wrapped = cpuArray(lift._wrap_coefficients(coeffs, wavelength))
+
+        np.testing.assert_allclose(wrapped, [-375.0], atol=1e-3)

@@ -222,7 +222,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3, weight_decay=0)
         self.plateau_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode="min", factor=0.8, patience=self.patience // 10,
-            verbose=True, min_lr=0.5e-5
+            min_lr=0.5e-5
         )
 
         self.early_stopping = EarlyStopping(patience=self.patience, min_delta=1e-6)

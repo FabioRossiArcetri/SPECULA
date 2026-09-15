@@ -1,4 +1,5 @@
 import os
+import tempfile
 import specula
 specula.init(0)  # Default target device
 
@@ -546,3 +547,57 @@ class TestAtmoInfiniteEvolution(unittest.TestCase):
         # Verify that the layer has the correct generation time and amplitude
         self.assertEqual(atmo.layer_list[0].generation_time, atmo.current_time)
         np.testing.assert_array_equal(cpuArray(atmo.layer_list[0].A), 1)
+
+    @cpu_and_gpu
+    def test_psd1d_files_are_loaded_and_propagated_to_screens(self, target_device_idx, xp):
+        """psd1d_file / psd1d_freq_file, if given, must be loaded from data_dir
+        and forwarded to every InfinitePhaseScreen layer."""
+
+        f_vect = np.logspace(-4, 4, 500)
+        psd_vect = 1.0 / (1.0 + f_vect**2)
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            psd_path = os.path.join(data_dir, 'psd1d.npy')
+            freq_path = os.path.join(data_dir, 'psd1d_freq.npy')
+            np.save(psd_path, psd_vect)
+            np.save(freq_path, f_vect)
+
+            simul_params = SimulParams(pixel_pupil=16, pixel_pitch=0.05, time_step=1)
+            atmo = AtmoInfiniteEvolution(
+                simul_params,
+                data_dir=data_dir,
+                psd1d_file='psd1d.npy',
+                psd1d_freq_file='psd1d_freq.npy',
+                L0=23,
+                heights=[30.0],
+                Cn2=[1.0],
+                fov=0.0,
+                target_device_idx=target_device_idx,
+            )
+
+            np.testing.assert_array_equal(atmo.psd1d_data, psd_vect)
+            np.testing.assert_array_equal(atmo.psd1d_freq_data, f_vect)
+            self.assertEqual(len(atmo.infinite_phasescreens), 1)
+            screen = atmo.infinite_phasescreens[0]
+            np.testing.assert_array_equal(cpuArray(screen.psd1d_data), psd_vect)
+            np.testing.assert_array_equal(cpuArray(screen.psd1d_freq_data), f_vect)
+            self.assertIsNotNone(screen.cov_1D_data)
+
+    @cpu_and_gpu
+    def test_no_psd1d_file_leaves_psd_data_none(self, target_device_idx, xp):
+        """When psd1d_file/psd1d_freq_file are not given (default), no PSD
+        table should be loaded and screens fall back to the analytical formula."""
+
+        simul_params = SimulParams(pixel_pupil=16, pixel_pitch=0.05, time_step=1)
+        atmo = AtmoInfiniteEvolution(
+            simul_params,
+            L0=23,
+            heights=[30.0],
+            Cn2=[1.0],
+            fov=0.0,
+            target_device_idx=target_device_idx,
+        )
+
+        self.assertIsNone(atmo.psd1d_data)
+        self.assertIsNone(atmo.psd1d_freq_data)
+        self.assertIsNone(atmo.infinite_phasescreens[0].psd1d_data)

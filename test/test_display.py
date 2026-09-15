@@ -56,6 +56,8 @@ class TestDisplays(unittest.TestCase):
         self.assertIsNotNone(display.inputs['phase'])
         self.assertIsNotNone(display.ax)
         self.assertIsNotNone(display.fig)
+        # phase maps use a colormap symmetric around zero
+        self.assertEqual(display.img.get_cmap().name, 'seismic')
 
         matplotlib.pyplot.close(display.fig)
 

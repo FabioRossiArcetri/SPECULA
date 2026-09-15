@@ -56,6 +56,7 @@ class InfinitePhaseScreen(BaseDataObj):
     process that simulates atmospheric turbulence.
     """
     def __init__(self, mx_size, pixel_scale, r0, L0, random_seed, stencil_size_factor=1,
+                 psd1d_freq_data=None, psd1d_data=None,
                  xp=None, target_device_idx=None, precision=None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
