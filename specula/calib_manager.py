@@ -80,7 +80,10 @@ class CalibManager():
             'vibrations': 'vibrations/',
             'Layer': 'layers/',
             'data': 'data/',
-            'projection': 'popt/'
+            'projection': 'popt/',
+            'nonlinear_calib': 'nonlinear_calib/',
+            'NonlinearCalibration': 'nonlinear_calib/',
+            'PyramidNonlinearCalibrator': 'nonlinear_calib/',
         }
         self.root_dir = root_dir
         self.logger = get_specula_logger('specula.calib_manager')
