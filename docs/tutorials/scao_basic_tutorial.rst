@@ -19,6 +19,13 @@ A more advanced SCAO simulation tutorial is available in the :ref:`scao_tutorial
 * Basic understanding of adaptive optics concepts
 * Python and YAML familiarity
 
+.. note::
+
+   **About atmospheric and source parameters:**
+   All atmospheric parameters (seeing, layer heights) and source heights are defined at zenith.
+   See :ref:`simulation_parameters` for details on units, conventions, and the zenith angle treatment.
+
+
 Tutorial Overview
 -----------------
 
@@ -65,6 +72,7 @@ Each **section** in the YAML file corresponds to a specific object (or "block") 
 - **Special Notes:**  
   
   - In the propagation block (``prop``), the input ``common_layer_list`` often includes ``dm.out_layer:-1``. This is a SPECULA convention to handle feedback in the simulation loop. The ``-1`` index is used to resolve an ambiguity in closed-loop simulations: not all the elements of the loop can perform their operations at the same time, at least one must happen at the following time step. In an Adaptive Optics context the DM output is computed during the current time step, but it is applied in the next time step.
+  - This is a one-step causal lag imposed by the loop structure. It is different from the controller latency parameter ``delay``. In other words, ``dm.out_layer:-1`` means "use the DM command from the previous step", while ``control.delay`` is the additional delay introduced by the integrator/controller itself. The total loop delay is therefore not only the controller delay: it includes the unavoidable one-step feedback lag plus the controller latency.
 
 **Example:**
 
@@ -95,6 +103,7 @@ Create a YAML configuration file, for example ``params_scao_pyr_basic.yml``:
 .. code-block:: yaml
 
    # main section with simulation parameters used by most of the components
+   # Note: zenith angle is not specified, so it is assumed to be 0 (on-axis) 
    main:
      class:             'SimulParams'
      root_dir:          './calib/'             # Root directory for calibration manager  
@@ -108,7 +117,7 @@ Create a YAML configuration file, for example ``params_scao_pyr_basic.yml``:
    # init method of the WaveGenerator class.
    seeing:
      class:             'WaveGenerator'
-     constant:          0.8                   # ["] seeing value
+     constant:          0.8                   # ["] seeing value (500nm and at zenith)
 
    # Wind speed and direction, also static in this example.
    # These can be functions of time or vary per layer in more complex setups.
@@ -218,18 +227,17 @@ Create a YAML configuration file, for example ``params_scao_pyr_basic.yml``:
    # It uses a reconstruction matrix that is computed during the calibration phase.
    rec:
      class:              'Modalrec'  
-     recmat_object:      'scao_recmat'         # reconstruction matrix tag
+     recmat_object:      'scao_pyr_rec'         # reconstruction matrix tag
      inputs:
        in_slopes:        'slopec.out_slopes'
-     outputs:  ['out_modes', 'out_pseudo_ol_modes'] 
+     outputs:  ['out_modes'] 
 
    # The control block computes the control commands based on the differential modal coefficients.
    # The modal coefficients are differential because it operates in closed loop.
    # The full list of parameters can be found in the init method of the Integrator class.
    control:
      class:             'Integrator'
-     simul_params_ref:  'main'
-     delay:             2                      # Total temporal delay in time steps
+     delay:             2                      # Controller delay in time steps, additional to the 1-step causal feedback lag from dm.out_layer:-1
      int_gain:          [0.5]                  # Integrator gain (for 'INT' control)
      n_modes:           [54]                   # This means we use 54 modes with the same gain
      inputs:
@@ -274,6 +282,26 @@ Create a YAML configuration file, for example ``params_scao_pyr_basic.yml``:
      inputs:
        input_list: ['res_ef-prop.out_on_axis_source_ef']
 
+If the full-rate data volume is too large, ``DataStore`` can downsample what is
+written to disk for selected inputs:
+
+.. code-block:: yaml
+
+   data_store:
+     class:             'DataStore'
+     store_dir:         './output'
+     downsample_factor_by_input:
+       res_ef:          50
+       sr:              5
+     inputs:
+       input_list: ['res_ef-prop.out_on_axis_source_ef',
+                    'sr-psf.out_sr']
+
+In this example, ``res_ef`` is stored every 50 received samples and ``sr``
+every 5. The keys in ``downsample_factor_by_input`` are the aliases before the dash
+in ``input_list``. If you want a single cadence for all inputs, use
+``downsample_factor`` instead. The two options cannot be combined.
+
 Part 2: Calibration
 -------------------
 
@@ -310,6 +338,7 @@ Create a YAML file, for example ``params_scao_pyr_test_pupdata.yml``:
      class: 'PyrPupdataCalibrator'
      thr1: 0.1
      thr2: 0.25
+     display_debug: True
      output_tag:        'scao_pupdata'
      inputs:
        in_i: 'pyramid.out_i'

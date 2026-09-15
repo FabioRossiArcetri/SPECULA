@@ -1,5 +1,5 @@
 
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.base_value import BaseValue
 from specula.connections import InputValue
 from specula.data_objects.pixels import Pixels
@@ -9,6 +9,11 @@ from specula.data_objects.recmat import Recmat
 
 
 class Slopec(BaseProcessingObj):
+    """
+    Slope Computer abstract processing object.
+    Base class for processing objects that compute slopes from pixel data, 
+    such as Shack-Hartmann or Pyramid slopes.
+    """
     def __init__(self,
                  sn: Slopes=None,
                  recmat: Recmat=None,
@@ -16,18 +21,38 @@ class Slopec(BaseProcessingObj):
                  filt_recmat: Recmat=None,
                  filtmat=None,
                  weight_int_pixel_dt: float=0,
+                 interleave: bool=False,
                  target_device_idx: int=None,
                  precision: int=None
                 ):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         self.sn = sn
-        self.slopes = Slopes(self.nslopes(), target_device_idx=self.target_device_idx) 
-        self.flux_per_subaperture_vector = BaseValue(value=self.xp.zeros(self.nsubaps(), dtype=self.dtype),
-                                                     target_device_idx=self.target_device_idx)
+        self.slopes = Slopes(
+            self.nslopes(), interleave=interleave,
+            target_device_idx=self.target_device_idx
+        )
+        self.flux_per_subaperture_vector = BaseValue(
+            value=self.xp.zeros(self.nsubaps(), dtype=self.dtype),
+            target_device_idx=self.target_device_idx,
+            precision=precision
+        )
 
-        self.total_counts = BaseValue(value=self.xp.zeros(1, dtype=self.dtype), target_device_idx=self.target_device_idx)
-        self.subap_counts = BaseValue(value=self.xp.zeros(1, dtype=self.dtype), target_device_idx=self.target_device_idx)
+        self.total_counts = BaseValue(value=self.xp.zeros(1, dtype=self.dtype),
+                                      target_device_idx=self.target_device_idx,
+                                      precision=precision)
+        self.subap_counts = BaseValue(value=self.xp.zeros(1, dtype=self.dtype),
+                                      target_device_idx=self.target_device_idx,
+                                      precision=precision)
+        # 2d view of the slopes, e.g. shape (2, size_x, size_y) for a single
+        # subaperture-sized x/y slope map. Allocated lazily on the first
+        # post_trigger() call, once a derived class has set self.slopes.single_mask
+        # and self.slopes.display_map (see Slopes.get2d()). Its exact shape depends
+        # on those, and it is not duplicated data: it is recomputed from self.slopes
+        # at every step, not accumulated separately.
+        self.slopes_map = BaseValue(target_device_idx=self.target_device_idx,
+                                    precision=precision)
+        self._slopes_map_unavailable = False
         self.recmat = recmat
         if filtmat is not None:
             if filt_intmat:
@@ -38,7 +63,9 @@ class Slopec(BaseProcessingObj):
             self.filt_recmat = Recmat(filtmat[1], target_device_idx=self.target_device_idx)
         else:
             if bool(filt_intmat) != bool(filt_recmat):
-                raise ValueError('Both filt_intmat and filt_recmat must be set for slopes filtering')
+                raise ValueError(
+                    'Both filt_intmat and filt_recmat must be set for slopes filtering'
+                )
             self.filt_intmat = filt_intmat
             self.filt_recmat = filt_recmat
 
@@ -55,6 +82,20 @@ class Slopec(BaseProcessingObj):
         self.outputs['out_flux_per_subaperture'] = self.flux_per_subaperture_vector
         self.outputs['out_total_counts'] = self.total_counts
         self.outputs['out_subap_counts'] = self.subap_counts
+        self.outputs['out_slopes_map'] = self.slopes_map
+
+    @classmethod
+    def input_names(cls):
+        return {'in_pixels': InputDesc(Pixels, 'Input pixel data from detector')}
+
+    @classmethod
+    def output_names(cls):
+        return {'out_slopes': OutputDesc(Slopes, 'Computed wavefront slopes'),
+                'out_flux_per_subaperture': OutputDesc(BaseValue, 'Flux per subaperture'),
+                'out_total_counts': OutputDesc(BaseValue, 'Total photon counts'),
+                'out_subap_counts': OutputDesc(BaseValue, 'Counts per subaperture'),
+                'out_slopes_map': OutputDesc(BaseValue, '2d view of the slopes '
+                                              '(e.g. shape (2, size_x, size_y)), see Slopes.get2d()')}
 
     # Derived classes must implement this method
     def nsubaps(self):
@@ -72,7 +113,7 @@ class Slopec(BaseProcessingObj):
         if self.weight_int_pixel_dt <= 0:
             return
 
-        current_pixels = self.inputs['in_pixels'].get(self.target_device_idx).pixels.copy()
+        current_pixels = self.inputs['in_pixels'].get(self.target_device_idx).pixels
 
         # Initialize accumulated pixels if not exists
         if self.int_pixels is None:
@@ -116,12 +157,30 @@ class Slopec(BaseProcessingObj):
             sl0 = m @ self.filt_intmat.intmat.T
             self.slopes.slopes -= sl0
 
+        # Not duplicated storage: recomputed from self.slopes at every step
+        # via the existing single_mask/display_map machinery (see Slopes.get2d()).
+        # Some Slopec subclasses set up single_mask/display_map in a way that is
+        # not (yet) compatible with get2d(); rather than crashing the whole
+        # simulation, out_slopes_map is simply left unset for those, and a
+        # warning is logged once.
+        if self.slopes.single_mask is not None and self.slopes.display_map is not None:
+            if not self._slopes_map_unavailable:
+                try:
+                    self.slopes_map.set_value(self.slopes.get2d())
+                    self.outputs['out_slopes_map'].generation_time = self.current_time
+                except (IndexError, ValueError) as e:
+                    self._slopes_map_unavailable = True
+                    self.logger.warning(
+                        f'{self.__class__.__name__}: out_slopes_map could not be computed '
+                        f'({e}); this output will stay empty for this object.'
+                    )
+
         self.outputs['out_slopes'].generation_time = self.current_time
         self.outputs['out_flux_per_subaperture'].generation_time = self.current_time
         self.outputs['out_total_counts'].generation_time = self.current_time
         self.outputs['out_subap_counts'].generation_time = self.current_time
 
         #rms = self.xp.sqrt(self.xp.mean(self.slopes.slopes**2))
-        #print('Slopes have been filtered. '
+        #self.logger.info('Slopes have been filtered. '
         #      'New slopes min, max and rms: '
         #      f'{self.slopes.slopes.min()}, {self.slopes.slopes.max()}, {rms}')

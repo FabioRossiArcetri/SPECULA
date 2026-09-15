@@ -2,13 +2,12 @@
 import numpy as np
 from pathlib import Path
 from typing import Dict, Optional, Tuple
-import yaml
 from astropy.io import fits
 
-from specula.simul import Simul
+from specula.base_replay_analyser import BaseReplayAnalyser
 from specula.lib.calc_psf import calc_psf_geometry
 
-class FieldAnalyser:
+class FieldAnalyser(BaseReplayAnalyser):
     """
     Class to analyze field PSF, modal analysis, and phase cubes
     for a given tracking number in the Specula framework.
@@ -22,7 +21,7 @@ class FieldAnalyser:
         wavelength_nm (float): Wavelength in nanometers.
         start_time (float): Start time for the analysis.
         end_time (Optional[float]): End time for the analysis, if applicable.
-        verbose (bool): Whether to print verbose output during processing.
+        log_level (str): Logging level if different from default specula one
     """
 
     def __init__(self,
@@ -32,45 +31,26 @@ class FieldAnalyser:
                  wavelength_nm: float = 750.0,
                  start_time: float = 0.1,
                  end_time: Optional[float] = None,
-                 verbose: bool = False):
+                 display: bool = False,
+                 log_level: Optional[str] = None,
+                 on_missing_downstream_consumers: str = 'error',):
 
-        self.data_dir = Path(data_dir)
-        self.tracking_number = tracking_number
+        super().__init__(data_dir, tracking_number, start_time, end_time, display, log_level,
+                          on_missing_downstream_consumers)
+
         self.polar_coordinates = np.atleast_2d(polar_coordinates)
         self.wavelength_nm = wavelength_nm
-        self.start_time = start_time
-        self.end_time = end_time
-        self.verbose = verbose
 
         # Loaded parameters
-        self.params = None
         self.sources = []
         self.distances = []
 
-        # Paths - modify to create separate directories
-        self.tn_dir = self.data_dir / tracking_number
-        self.base_output_dir = self.data_dir  # Base directory for analysis results
-
         # Create separate directories for each analysis type
-        self.psf_output_dir = self.base_output_dir / f"{tracking_number}_PSF"
-        self.modal_output_dir = self.base_output_dir / f"{tracking_number}_MA"
-        self.cube_output_dir = self.base_output_dir / f"{tracking_number}_CUBE"
+        self.psf_output_dir = self._make_output_dir("PSF")
+        self.modal_output_dir = self._make_output_dir("MA")
+        self.cube_output_dir = self._make_output_dir("CUBE")
 
-        # Verify that the tracking number directory exists
-        if not self.tn_dir.exists():
-            raise FileNotFoundError(f"Tracking number directory not found: {self.tn_dir}")
-
-        self._load_simulation_params()
         self._setup_sources()
-
-    def _load_simulation_params(self):
-        """Load simulation parameters from tracking number"""
-        params_file = self.tn_dir / "params.yml"
-        if not params_file.exists():
-            raise FileNotFoundError(f"Parameters file not found: {params_file}")
-
-        with open(params_file, 'r') as f:
-            self.params = yaml.safe_load(f)
 
     def _setup_sources(self):
         """Setup field sources"""
@@ -98,7 +78,7 @@ class FieldAnalyser:
         Args:
             source_dict: source parameter dict
             pixel_size_mas: PSF pixel size in milliarcseconds
-            
+
         Returns:
             Tuple of (psf_filename, sr_filename) without .fits extension
         """
@@ -110,11 +90,11 @@ class FieldAnalyser:
     def _get_modal_filename(self, source_dict: dict, modal_params: dict) -> str:
         """
         Generate modal analysis filename for a given source
-        
+
         Args:
             source_dict: source parameter dict
             modal_params: Modal analysis parameters
-            
+
         Returns:
             Filename without .fits extension
         """
@@ -126,6 +106,20 @@ class FieldAnalyser:
             modal_filename += f"_nmodes{modal_params['nmodes']}"
         elif 'nzern' in modal_params:
             modal_filename += f"_nzern{modal_params['nzern']}"
+        elif 'ifunc_ref' in modal_params:
+            modal_filename += f"_ifref{modal_params['ifunc_ref']}"
+        elif 'ifunc_object' in modal_params:
+            modal_filename += f"_ifobj{modal_params['ifunc_object']}"
+        elif 'ifunc' in modal_params:
+            val = modal_params['ifunc']
+            modal_filename += f"_ifunc{val if isinstance(val, str) else 'custom'}"
+        elif 'ifunc_inv_ref' in modal_params:
+            modal_filename += f"_ifref{modal_params['ifunc_inv_ref']}"
+        elif 'ifunc_inv_object' in modal_params:
+            modal_filename += f"_ifobj{modal_params['ifunc_inv_object']}"
+        elif 'ifunc_inv' in modal_params:
+            val = modal_params['ifunc_inv']
+            modal_filename += f"_ifunc{val if isinstance(val, str) else 'custom'}"
 
         if 'type_str' in modal_params:
             modal_filename += f"_{modal_params['type_str']}"
@@ -149,23 +143,14 @@ class FieldAnalyser:
         cube_filename = f"cube_r{r:.1f}t{theta:.1f}_wl{self.wavelength_nm:.0f}nm"
         return cube_filename
 
-    def _build_replay_params_from_datastore(self) -> dict:
-        """
-        Build replay params using the existing build_replay mechanism in Simul
-        but with modified DataStore input_list containing only DM commands
-        """
-        simul = Simul([])
-        return simul.build_targeted_replay(self.params, 'prop', set_store_dir=str(self.tn_dir))
-
     def _build_replay_params_psf(self) -> dict:
         """
         Build replay_params for field PSF calculation using build_replay mechanism
         """
         # Get base replay params from DataStore mechanism
-        replay_params = self._build_replay_params_from_datastore()
+        replay_params = self._build_replay_params_from_datastore('prop')
 
-        if self.verbose:
-            print(f"Base replay_params keys: {list(replay_params.keys())}")
+        self.logger.debug(f"Base replay_params keys: {list(replay_params.keys())}")
 
         # Add field sources to existing parameters
         self._add_field_sources_to_params(replay_params)
@@ -181,7 +166,6 @@ class FieldAnalyser:
                 'simul_params_ref': 'main',
                 'wavelengthInNm': self.wavelength_nm,
                 'pixel_size_mas': self.psf_pixel_size_mas,
-                'start_time': self.start_time,
                 'inputs': {
                     'in_ef': f'prop.out_field_source_{i}_ef'
                 },
@@ -208,9 +192,8 @@ class FieldAnalyser:
             }
         }
 
-        if self.verbose:
-            print(f"Final replay_params keys: {list(replay_params.keys())}")
-            print(f"PSF files to be saved: {psf_input_list}")
+        self.logger.debug(f"Final replay_params keys: {list(replay_params.keys())}")
+        self.logger.debug(f"PSF files to be saved: {psf_input_list}")
 
         return replay_params
 
@@ -219,25 +202,10 @@ class FieldAnalyser:
         Build replay_params for field modal analysis using build_replay mechanism
         """
         # Get base replay params from DataStore mechanism
-        replay_params = self._build_replay_params_from_datastore()
+        replay_params = self._build_replay_params_from_datastore('prop')
 
         # Add field sources to existing parameters
         self._add_field_sources_to_params(replay_params)
-
-        # Create simple IFunc with modal_params (let ModalAnalysis handle the complexity)
-        ifunc_config = {
-            'class': 'IFunc',
-            'type_str': modal_params.get('type_str', 'zernike'),
-            'nmodes': modal_params.get('nmodes', modal_params.get('nzern', 100)),
-            'npixels': modal_params.get('npixels', replay_params['main']['pixel_pupil'])
-        }
-
-        # Add optional parameters if present
-        for param in ['obsratio', 'diaratio', 'start_mode', 'idx_modes']:
-            if param in modal_params:
-                ifunc_config[param] = modal_params[param]
-
-        replay_params['modal_analysis_ifunc'] = ifunc_config
 
         # Add ModalAnalysis for each source
         modal_input_list = []
@@ -245,15 +213,12 @@ class FieldAnalyser:
             modal_name = f'modal_analysis_{i}'
             modal_config = {
                 'class': 'ModalAnalysis',
-                'ifunc_ref': 'modal_analysis_ifunc',
                 'inputs': {'in_ef': f'prop.out_field_source_{i}_ef'},
                 'outputs': ['out_modes']
             }
 
-            # Add ModalAnalysis-specific parameters
-            for param in ['dorms', 'wavelengthInNm']:
-                if param in modal_params:
-                    modal_config[param] = modal_params[param]
+            # Forward all modal params as-is; unsupported keys will be caught at object creation time.
+            modal_config.update(modal_params)
 
             replay_params[modal_name] = modal_config
 
@@ -272,8 +237,7 @@ class FieldAnalyser:
             }
         }
 
-        if self.verbose:
-            print(f"Modal files to be saved: {modal_input_list}")
+        self.logger.debug(f"Modal files to be saved: {modal_input_list}")
 
         return replay_params
 
@@ -282,7 +246,7 @@ class FieldAnalyser:
         Build replay_params for field phase cubes using build_replay mechanism
         """
         # Get base replay params from DataStore mechanism
-        replay_params = self._build_replay_params_from_datastore()
+        replay_params = self._build_replay_params_from_datastore('prop')
 
         # Add field sources to existing parameters
         self._add_field_sources_to_params(replay_params)
@@ -304,8 +268,7 @@ class FieldAnalyser:
             }
         }
 
-        if self.verbose:
-            print(f"Cube files to be saved: {cube_input_list}")
+        self.logger.debug(f"Cube files to be saved: {cube_input_list}")
 
         return replay_params
 
@@ -326,8 +289,7 @@ class FieldAnalyser:
             raise KeyError(f"AtmoPropagation object not found in replay_params. "
                         f"Available objects: {available_objects}")
 
-        if self.verbose:
-            print(f"Found propagation object: '{prop_key}'")
+        self.logger.debug(f"Found propagation object: '{prop_key}'")
 
         # Add field sources
         for i, source_dict in enumerate(self.sources):
@@ -350,57 +312,54 @@ class FieldAnalyser:
         output_list = [f'out_field_source_{i}_ef' for i in range(len(self.sources))]
         prop_config['outputs'] = output_list
 
-        if self.verbose:
-            print(f"Updated propagation object '{prop_key}':")
-            print(f"  Sources: {source_refs}")
-            print(f"  Outputs: {output_list}")
+        self.logger.debug(f"Updated propagation object '{prop_key}':")
+        self.logger.debug(f"  Sources: {source_refs}")
+        self.logger.debug(f"  Outputs: {output_list}")
 
-    def _run_simulation_with_params(self, params_dict: dict, output_dir: Path) -> Simul:
+    def _add_displays_to_params(self, replay_params: dict):
         """
-        Common simulation execution logic using minimal temporary file
+        Injects PhaseDisplay and DMDisplay objects into the YAML configuration
+        if the display flag is set to True.
         """
-        import tempfile
-        import os
+        if not self.display:
+            return
 
-        output_dir.mkdir(parents=True, exist_ok=True)
+        self.logger.debug("Injecting display objects into simulation parameters...")
 
-        if self.verbose:
-            print(f"Computing simulation with parameters to be saved by DataStore in: {output_dir}")
+        # 1. Phase display for the first field source
+        if len(self.sources) > 0:
+            replay_params['ph_disp'] = {
+                'class': 'PhaseDisplay',
+                'inputs': {'phase': 'prop.out_field_source_0_ef'},
+                'title': 'PUPIL PHASE (Field Source 0)'
+            }
 
-        # Create minimal temporary YAML file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as temp_file:
-            yaml.dump(params_dict, temp_file, default_flow_style=False, sort_keys=False)
-            temp_params_file = temp_file.name
+        # 2. DM displays (automatically find all DMs in the simulation)
+        dm_keys = [k for k, v in replay_params.items() if isinstance(v, dict) and v.get('class') == 'DM']
 
-        try:
-            # Create Simul instance normally (this initializes all required attributes)
-            simul = Simul(temp_params_file)
-            simul.run()
-            return simul
-        except Exception as e:
-            print(f"Simulation failed: {e}")
-            print(f"Check DataStore output in: {output_dir}")
-            print(f"Temp params file for debugging: {temp_params_file}")
-            raise
-        finally:
-            # Clean up temporary file
-            try:
-                os.unlink(temp_params_file)
-            except:
-                pass  # File cleanup failure is not critical
+        for dm_key in dm_keys:
+            disp_key = f"{dm_key}_disp"
+            replay_params[disp_key] = {
+                'class': 'PhaseDisplay',
+                'inputs': {'phase': f'{dm_key}.out_layer'},
+                'title': f'{dm_key.upper()} SHAPE'
+            }
+
+    def _add_extra_objects_to_params(self, params_dict: dict):
+        self._add_displays_to_params(params_dict)
 
     def compute_field_psf(self,
-                        psf_sampling: Optional[float] = None, 
+                        psf_sampling: Optional[float] = None,
                         psf_pixel_size_mas: Optional[float] = None,
                         force_recompute: bool = False) -> Dict:
         """
         Calculate field PSF using SPECULA's replay system
-        
+
         Args:
             psf_sampling: PSF sampling factor (alternative to psf_pixel_size_mas)
             psf_pixel_size_mas: Desired PSF pixel size in milliarcseconds (alternative to psf_sampling)
             force_recompute: Force recomputation even if files exist
-            
+
         Note:
             Either psf_sampling or psf_pixel_size_mas must be specified, but not both.
         """
@@ -426,7 +385,7 @@ class FieldAnalyser:
                                     self.wavelength_nm,
                                     nd=psf_sampling,
                                     pixel_size_mas=psf_pixel_size_mas)
-        
+
         self.psf_sampling = psf_geometry.nd
         self.psf_pixel_size_mas = psf_geometry.pixel_size_mas
 
@@ -443,46 +402,38 @@ class FieldAnalyser:
                     break
 
             if all_exist:
-                if self.verbose:
-                    print(f"Loading existing PSF results from: {self.psf_output_dir}")
+                self.logger.debug(f"Loading existing PSF results from: {self.psf_output_dir}")
                 return self._load_psf_results()
 
-        if self.verbose:
-            print(f"Computing field PSF for {len(self.sources)} sources...")
+        self.logger.debug(f"Computing field PSF for {len(self.sources)} sources...")
 
         # Setup replay parameters and run simulation
         replay_params = self._build_replay_params_psf()
-        simul = self._run_simulation_with_params(replay_params, self.psf_output_dir)
+        _ = self._run_simulation_with_params(replay_params, self.psf_output_dir)
 
-        if self.verbose:
-            print(f"Actual PSF pixel size: {self.psf_pixel_size_mas:.2f} mas")
+        self.logger.debug(f"Actual PSF pixel size: {self.psf_pixel_size_mas:.2f} mas")
 
         # Extract results from DataStore (files are automatically saved)
         results = self._load_psf_results()
 
         return results
 
-    def compute_modal_analysis(self, modal_params: Optional[Dict] = None, force_recompute: bool = False) -> Dict:
+    def compute_modal_analysis(self, modal_params: Optional[Dict] = None,
+                               force_recompute: bool = False) -> Dict:
         """
         Calculate field modal analysis using replay system
 
         Args:
-            modal_params: Simple dictionary with basic parameters:
-                        - type_str: 'zernike', 'kl', etc. (default: 'zernike')
-                        - nmodes/nzern: number of modes (default: 100)
-                        - obsratio, diaratio: pupil parameters (optional)
-                        - dorms: compute RMS flag (optional)
-                        If None, attempts to extract from DM configuration
+            modal_params: Dictionary of ModalAnalysis arguments.
+                        Typical keys: ifunc_ref, ifunc_inv_ref, ifunc_object,
+                        ifunc_inv_object, type_str,
+                        nmodes/nzern, npixels, obsratio, diaratio,
+                        wavelengthInNm, dorms.
+                        If None, attempts to extract from DM configuration.
             force_recompute: Force recomputation even if files exist
         """
         if modal_params is None:
             modal_params = self._extract_modal_params_from_dm()
-
-        # Validate and set defaults
-        if 'nmodes' not in modal_params and 'nzern' not in modal_params:
-            modal_params['nmodes'] = 100
-        if 'type_str' not in modal_params:
-            modal_params['type_str'] = 'zernike'
 
         # Check if files exist
         all_exist = True
@@ -495,17 +446,15 @@ class FieldAnalyser:
                     break
 
             if all_exist:
-                if self.verbose:
-                    print(f"Loading existing modal analysis from: {self.modal_output_dir}")
+                self.logger.debug(f"Loading existing modal analysis from: {self.modal_output_dir}")
                 return self._load_modal_results(modal_params)
 
-        if self.verbose:
-            print(f"Computing field modal analysis for {len(self.sources)} sources...")
-            print(f"Modal parameters: {modal_params}")
+        self.logger.debug(f"Computing field modal analysis for {len(self.sources)} sources...")
+        self.logger.debug(f"Modal parameters: {modal_params}")
 
         # Setup replay parameters and run simulation
         replay_params = self._build_replay_params_modal(modal_params)
-        simul = self._run_simulation_with_params(replay_params, self.modal_output_dir)
+        _ = self._run_simulation_with_params(replay_params, self.modal_output_dir)
 
         # Extract results from DataStore (files are automatically saved)
         results = self._load_modal_results(modal_params)
@@ -527,16 +476,14 @@ class FieldAnalyser:
                     break
 
             if all_exist:
-                if self.verbose:
-                    print(f"Loading existing phase cubes from: {self.cube_output_dir}")
+                self.logger.debug(f"Loading existing phase cubes from: {self.cube_output_dir}")
                 return self._load_cube_results()
 
-        if self.verbose:
-            print(f"Computing field phase cubes for {len(self.sources)} sources...")
+        self.logger.debug(f"Computing field phase cubes for {len(self.sources)} sources...")
 
         # Setup replay parameters and run simulation
         replay_params = self._build_replay_params_cube()
-        simul = self._run_simulation_with_params(replay_params, self.cube_output_dir)
+        _ = self._run_simulation_with_params(replay_params, self.cube_output_dir)
 
         # Extract results from DataStore (files are automatically saved)
         results = self._load_cube_results()
@@ -616,11 +563,10 @@ class FieldAnalyser:
             cube_filename = self._get_cube_filename(source_dict)
             cube_path = self.cube_output_dir / f"{cube_filename}.fits"
 
-            with fits.open(cube_path) as hdul:
-                results['phase_cubes'].append(hdul[0].data)   # pylint: disable=no-member
-
-                if results['times'] is None and len(hdul) > 1:
-                    results['times'] = hdul[1].data           # pylint: disable=no-member
+            data, times = self._read_fits_primary_and_times(cube_path)
+            results['phase_cubes'].append(data)
+            if results['times'] is None and times is not None:
+                results['times'] = times
 
         return results
 
@@ -628,9 +574,14 @@ class FieldAnalyser:
         """
         Extract modal parameters from DM configuration with simple fallback
         """
+        main_cfg = self.params.get('main', {}) if self.params else {}
+
         # Try to find a DM with height=0 and extract basic parameters
         if self.params is None:
-            return {'type_str': 'zernike', 'nmodes': 100}
+            modal_params = {'type_str': 'zernike', 'nmodes': 100}
+            if 'pixel_pupil' in main_cfg:
+                modal_params['npixels'] = main_cfg['pixel_pupil']
+            return modal_params
 
         # Look for DM with height=0
         for obj_name, obj_config in self.params.items():
@@ -640,7 +591,8 @@ class FieldAnalyser:
                     modal_params = {}
 
                     # Direct copy of relevant parameters
-                    for param in ['type_str', 'nmodes', 'nzern', 'obsratio', 'diaratio']:
+                    for param in ['type_str', 'nmodes', 'nzern', 'npixels', 'obsratio', 'diaratio',
+                                  'ifunc_ref', 'ifunc_inv_ref', 'ifunc_object', 'ifunc_inv_object']:
                         if param in obj_config:
                             modal_params[param] = obj_config[param]
 
@@ -652,19 +604,27 @@ class FieldAnalyser:
                                 if param in ifunc_config and param not in modal_params:
                                     modal_params[param] = ifunc_config[param]
 
-                    # Ensure we have basic parameters
-                    if 'nmodes' not in modal_params and 'nzern' not in modal_params:
-                        modal_params['nmodes'] = 100
-                    if 'type_str' not in modal_params:
-                        modal_params['type_str'] = 'zernike'
+                    # Ensure we have basic parameters only if no explicit IFunc source is provided
+                    has_explicit_ifunc = any(
+                        name in modal_params for name in
+                        ('ifunc_ref', 'ifunc_inv_ref', 'ifunc_object', 'ifunc_inv_object', 'ifunc', 'ifunc_inv')
+                    )
+                    if not has_explicit_ifunc:
+                        if 'nmodes' not in modal_params and 'nzern' not in modal_params:
+                            modal_params['nmodes'] = 100
+                        if 'type_str' not in modal_params:
+                            modal_params['type_str'] = 'zernike'
+                        if 'npixels' not in modal_params and 'pixel_pupil' in main_cfg:
+                            modal_params['npixels'] = main_cfg['pixel_pupil']
 
-                    if self.verbose:
-                        print(f"Extracted modal parameters from DM '{obj_name}': {modal_params}")
+                    self.logger.debug(f"Extracted modal parameters from DM '{obj_name}': {modal_params}")
 
                     return modal_params
 
         # Fallback to defaults
-        if self.verbose:
-            print("No suitable DM found, using default modal parameters")
+        self.logger.debug("No suitable DM found, using default modal parameters")
 
-        return {'type_str': 'zernike', 'nmodes': 100}
+        modal_params = {'type_str': 'zernike', 'nmodes': 100}
+        if 'pixel_pupil' in main_cfg:
+            modal_params['npixels'] = main_cfg['pixel_pupil']
+        return modal_params

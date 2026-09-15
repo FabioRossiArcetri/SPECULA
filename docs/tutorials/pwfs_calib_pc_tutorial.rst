@@ -149,7 +149,7 @@ Create ``params_scao_pyr_calib_sn.yml``:
    - Typical values range from 0.85 to 0.95 depending on system performance.
 
 Step 2: Run Slope Null Calibration
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
@@ -163,7 +163,7 @@ Part 2: Interaction Matrix Calibration
 The interaction matrix is now computed by applying push-pull commands on top of the atmospheric background, similar to operational conditions.
 
 Step 1: Create IM Calibration File
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Create ``params_scao_pyr_calib_rec_pc.yml``:
 
@@ -252,18 +252,38 @@ Create ``params_scao_pyr_calib_rec_pc.yml``:
        in_command: 'scale_random.out_value'
      outputs: ['out_layer']
 
-   # Combine turbulence background with push-pull DM commands
+   # 'atmo' is removed from the simulation below, so prop can no longer
+   # reference 'atmo.layer_list' as its atmo_layer_list input. Here prop only
+   # combines the partial-correction layer (dm_random) with the push-pull
+   # layer (dm) on top of the pupilstop.
    prop_override:
      source_dict_ref: ['on_axis_source']
      inputs:
        common_layer_list: ['pupilstop', 'dm_random.out_layer', 'dm.out_layer']
      outputs: ['out_on_axis_source_ef']
 
+   # Combine the raw turbulence field with the correction + push-pull field.
+   # This must happen at the electric-field level (ElectricFieldCombinator),
+   # not by adding atmo_random's output to prop's common_layer_list: the
+   # latter expects phase Layer objects, while atmo_random.out_on_axis_source_ef
+   # is an ElectricField.
+   ef_combinator:
+     class: 'ElectricFieldCombinator'
+     inputs:
+       in_ef1: 'atmo_random.out_on_axis_source_ef'    # Turbulence
+       in_ef2: 'prop.out_on_axis_source_ef'           # Correction + push-pull
+     outputs: ['out_ef']
+
    # Override DM to use push-pull commands
    dm_override:
      sign: 1
      inputs:
        in_command: 'pushpull.output'
+
+   # Override Pyramid input to use the combined field (turbulence + correction + push-pull)
+   pyramid_override:
+     inputs:
+       in_ef: 'ef_combinator.out_ef'
 
    # Disable detector noise for clean IM measurement
    detector_override:
@@ -281,7 +301,8 @@ Create ``params_scao_pyr_calib_rec_pc.yml``:
 
 - ``ncycles: 100``: Multiple push-pull cycles average out atmospheric fluctuations
 - ``update_interval: 2``: Atmospheric phase changes during calibration
-- ``dm_random.out_layer`` in ``common_layer_list``: Adds atmospheric background to push-pull signal
+- ``ef_combinator``: Merges the raw turbulence field (``atmo_random``) with the correction + push-pull field (``prop``), since ``atmo`` is removed and prop can no longer supply turbulence itself
+- ``pyramid_override``: Feeds the WFS with the combined field instead of ``prop``'s output directly
 
 Step 2: Run IM Calibration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -295,7 +316,7 @@ This generates:
 - ``scao_pyr_rec_pc_s1.0_c09.fits``: Corresponding reconstruction matrix
 
 Part 3: Using Partial Correction Calibration
--------------------------------------------
+---------------------------------------------
 
 Update your main YAML to use the new calibration:
 
@@ -393,7 +414,7 @@ This tutorial demonstrated:
 
 
 .. [1] Agapito, G., et al. "Non-modulated pyramid wavefront sensor. Use in sensing and correcting atmospheric turbulence" 
-       A&A, 677, A168 (2023). `ADS <https://ui.adsabs.harvard.edu/abs/2023A%26A...677A..168A/abstract>`_
+       A&A, 677, A168 (2023). `ADS <https://ui.adsabs.harvard.edu/abs/2023A%26A...677A.168A/abstract>`_
 
 .. seealso::
 

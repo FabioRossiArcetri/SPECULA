@@ -4,7 +4,6 @@ from specula.processing_objects.modulated_pyramid import ModulatedPyramid
 from specula.lib.make_xy import make_xy
 from specula.data_objects.simul_params import SimulParams
 
-
 @fuse(kernel_name='pyr1_fused')
 def pyr1_fused(u_fp, ffv, fpsf, masked_exp, xp):
     psf = xp.real(u_fp * xp.conj(u_fp))
@@ -20,12 +19,16 @@ def pyr1_abs2(v, norm, ffv, xp):
 
 
 class ModulatedDoubleRoof(ModulatedPyramid):
+    """
+    Pyramid wavefront sensor with double roof processing object.
+    Includes tip-tilt modulation and double roof.
+    """
     def __init__(self,
                  simul_params: SimulParams,
-                 wavelengthInNm: float, # TODO =750,
-                 fov: float,            # TODO =2.0,
-                 pup_diam: int,         # TODO =30,
-                 output_resolution: int,# TODO =80,
+                 wavelengthInNm: float,
+                 fov: float,
+                 pup_diam: int,
+                 output_resolution: int,
                  mod_amp: float = 3.0,
                  mod_step: int = None,
                  fov_errinf: float = 0.5,
@@ -39,6 +42,7 @@ class ModulatedDoubleRoof(ModulatedPyramid):
                  pyr_edge_def_ld: float = 0.0,
                  pyr_tip_def_ld: float = 0.0,
                  pyr_tip_maya_ld: float = 0.0,
+                 pyr_max_side_ld: float = 0.0,
                  min_pup_dist: float = None,
                  rotAnglePhInDeg: float = 0.0,
                  xShiftPhInPixel: float = 0.0,    # same as SH
@@ -64,6 +68,7 @@ class ModulatedDoubleRoof(ModulatedPyramid):
                  pyr_edge_def_ld=pyr_edge_def_ld,
                  pyr_tip_def_ld=pyr_tip_def_ld,
                  pyr_tip_maya_ld=pyr_tip_maya_ld,
+                 pyr_max_side_ld=pyr_max_side_ld,
                  min_pup_dist=min_pup_dist,
                  rotAnglePhInDeg=rotAnglePhInDeg,
                  xShiftPhInPixel=xShiftPhInPixel,
@@ -77,7 +82,7 @@ class ModulatedDoubleRoof(ModulatedPyramid):
         self.pup_dist = pup_dist
 
         # After initialization, create the second roof's exponential
-        iu = 1j  # complex unit
+        iu = self.xp.array(1j, dtype=self.complex_dtype)  # complex unit
         roof1_exp = self.xp.exp(-2 * self.xp.pi * iu * self.roof1_tlt, dtype=self.complex_dtype)
         roof2_exp = self.xp.exp(-2 * self.xp.pi * iu * self.roof2_tlt, dtype=self.complex_dtype)
 
@@ -87,14 +92,13 @@ class ModulatedDoubleRoof(ModulatedPyramid):
         # Pre-allocate arrays to avoid memory allocation in trigger_code
         self.roof1_image = self.xp.zeros((self.fft_totsize, self.fft_totsize), dtype=self.dtype)
         self.roof2_image = self.xp.zeros((self.fft_totsize, self.fft_totsize), dtype=self.dtype)
-        self.roof2_factor = self.xp.ones((self.fft_totsize, self.fft_totsize), dtype=self.dtype)
 
         # Pre-calculate mid points
         self.mid_h = self.fft_totsize // 2
         self.mid_w = self.fft_totsize // 2
 
     def get_pyr_tlt(self, p, c):
-        A = int((p + c) // 2)
+        A = int(round((p + c) / 2.0))
         # Create two separate roofs instead of a 4-faced pyramid
         roof1_tlt = self.xp.zeros((2 * A, 2 * A), dtype=self.dtype)
         roof2_tlt = self.xp.zeros((2 * A, 2 * A), dtype=self.dtype)
@@ -148,6 +152,7 @@ class ModulatedDoubleRoof(ModulatedPyramid):
 
         # Return the first roof for compatibility (the second will be accessed directly)
         return self.roof1_tlt
+
 
     def trigger_code(self):
         u_tlt_const = self.ef * self.tlt_f

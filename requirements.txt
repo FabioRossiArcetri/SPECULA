@@ -3,10 +3,12 @@ scipy
 astropy
 matplotlib
 symao >= 1.0.1
-astro-seeing>=1.1
+astro-seeing >= 1.1
+synim == 1.2.3
 flask-socketio
 python-socketio
 requests
 pytest
 scikit-image
 torch[neuralNetworks]
+imageio-ffmpeg

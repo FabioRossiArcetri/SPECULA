@@ -6,10 +6,8 @@ import tempfile
 import unittest
 import shutil
 import numpy as np
-from unittest.mock import MagicMock, patch
-from typing import Union
+from unittest.mock import MagicMock
 
-from specula.base_value import BaseValue
 from specula.data_objects.intmat import Intmat
 from specula.data_objects.ifunc import IFunc
 from specula.data_objects.m2c import M2C
@@ -51,22 +49,6 @@ class TestRecCalibrator(unittest.TestCase):
         self.assertEqual(calibrator.rec_path, os.path.join(self.test_dir, f'{rec_tag}.fits'))
         self.assertIn('in_intmat', calibrator.inputs)
 
-    def test_initialization_with_tag_template(self):
-        """Test RecCalibrator initialization with tag_template"""
-        nmodes = 15
-        tag_template = 'template_rec'
-
-        calibrator = RecCalibrator(
-            nmodes=nmodes,
-            data_dir=self.test_dir,
-            rec_tag=None,  # Explicitly pass None
-            tag_template=tag_template
-        )
-
-        self.assertEqual(calibrator.nmodes, nmodes)
-        self.assertEqual(calibrator.data_dir, self.test_dir)
-        self.assertEqual(calibrator.rec_path, os.path.join(self.test_dir, f'{tag_template}.fits'))
-
     def test_initialization_with_custom_parameters(self):
         """Test RecCalibrator initialization with custom parameters"""
         nmodes = 20
@@ -94,33 +76,12 @@ class TestRecCalibrator(unittest.TestCase):
         self.assertEqual(calibrator.target_device_idx, target_device_idx)
         self.assertEqual(calibrator.precision, precision)
 
-    def test_initialization_with_auto_rec_tag(self):
-        """Test RecCalibrator initialization with rec_tag='auto' and tag_template"""
-        nmodes = 12
-        tag_template = 'auto_template'
-
-        calibrator = RecCalibrator(
-            nmodes=nmodes,
-            data_dir=self.test_dir,
-            rec_tag='auto',
-            tag_template=tag_template
-        )
-
-        self.assertEqual(calibrator.rec_path, os.path.join(self.test_dir, f'{tag_template}.fits'))
-
     def test_initialization_missing_both_tags(self):
         """Test that RecCalibrator raises TypeError when rec_tag is not provided"""
         with self.assertRaises(TypeError) as context:
             RecCalibrator(nmodes=10, data_dir=self.test_dir)
 
         self.assertIn('missing 1 required positional argument: \'rec_tag\'', str(context.exception))
-
-    def test_initialization_missing_both_tags_with_auto(self):
-        """Test that RecCalibrator raises ValueError when rec_tag is 'auto' and tag_template is None"""
-        with self.assertRaises(ValueError) as context:
-            RecCalibrator(nmodes=10, data_dir=self.test_dir, rec_tag='auto')
-
-        self.assertIn('At least one of tag_template and rec_tag must be set', str(context.exception))
 
     def test_initialization_with_empty_rec_tag(self):
         """Test that RecCalibrator accepts empty string rec_tag"""
@@ -273,7 +234,7 @@ class TestRecCalibrator(unittest.TestCase):
         # Check that in_intmat input is properly configured
         self.assertIn('in_intmat', calibrator.inputs)
         input_value = calibrator.inputs['in_intmat']
-        self.assertEqual(input_value.output_ref_type, Intmat)
+        self.assertEqual(input_value.type, Intmat)
 
     def test_inheritance_from_base_processing_obj(self):
         """Test that RecCalibrator properly inherits from BaseProcessingObj"""
@@ -364,7 +325,7 @@ class TestRecCalibratorMMSE(unittest.TestCase):
         self.nmodes = 10  # Primi 10 modi Zernike (escluso piston)
         self.npixels = 64
         self.diameter = 8.0
-        self.r0 = 0.15
+        self.r0 = 0.20
         self.L0 = 25.0
 
         # Create Zernike modal base
@@ -609,8 +570,8 @@ class TestRecCalibratorMMSE(unittest.TestCase):
         pinv_rec = Recmat.restore(pinv_calibrator.rec_path, target_device_idx=target_device_idx)
 
         # They should be different
-        diff = np.mean(np.abs(mmse_rec.recmat - pinv_rec.recmat))
-        self.assertGreater(diff, 1e-6)  # Should be significantly different
+        diff = np.mean(np.abs(mmse_rec.recmat - pinv_rec.recmat)) / np.mean(np.abs(pinv_rec.recmat))
+        self.assertGreater(diff, 1e-5)  # Should be significantly different
 
     @cpu_and_gpu
     def test_mmse_zernike_different_seeing_conditions(self, target_device_idx, xp):
@@ -657,8 +618,8 @@ class TestRecCalibratorMMSE(unittest.TestCase):
         rec_good = Recmat.restore(calibrator_good.rec_path, target_device_idx=target_device_idx)
         rec_poor = Recmat.restore(calibrator_poor.rec_path, target_device_idx=target_device_idx)
 
-        diff = np.mean(np.abs(rec_good.recmat - rec_poor.recmat))
-        self.assertGreater(diff, 1e-6)  # Should be different
+        diff = np.mean(np.abs(rec_good.recmat - rec_poor.recmat)) / np.mean(np.abs(rec_poor.recmat))
+        self.assertGreater(diff, 1e-5)  # Should be different
 
     @cpu_and_gpu
     def test_mmse_zernike_subset_modes(self, target_device_idx, xp):

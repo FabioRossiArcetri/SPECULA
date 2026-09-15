@@ -1,5 +1,7 @@
 from specula import fuse
 from specula.processing_objects.slopec import Slopec
+from specula.base_processing_obj import OutputDesc
+from specula.base_value import BaseValue
 from specula.data_objects.pupdata import PupData
 from specula.data_objects.slopes import Slopes
 
@@ -15,11 +17,16 @@ def clamp_generic_more(x, c, y, xp):
 
 
 class PyrSlopec(Slopec):
+    """
+    Pyramid slopes computer processing object. 
+    Computes pyramid slopes from pixel data using the 4 pupil intensities.
+    """
+
     def __init__(self,
                  pupdata: PupData,
                  sn: Slopes=None,
                  shlike: bool=False,
-                 norm_factor: float=None,   # TODO =1.0,
+                 norm_factor: float=None,
                  thr_value: float=0,
                  slopes_from_intensity: bool=False,
                  target_device_idx: int=None,
@@ -36,7 +43,7 @@ class PyrSlopec(Slopec):
         if shlike and slopes_from_intensity:
             raise ValueError('Both SHLIKE and SLOPES_FROM_INTENSITY parameters are set. Only one of these should be used.')
 
-        if shlike and norm_factor != 0:
+        if shlike and norm_factor is not None:
             raise ValueError('Both SHLIKE and NORM_FACTOR parameters are set. Only one of these should be used.')
 
         self.shlike = shlike
@@ -47,19 +54,48 @@ class PyrSlopec(Slopec):
             self.pupdata.set_slopes_from_intensity(slopes_from_intensity)   # TODO we should not modify an external object,
                                                                             # since it could be used elsewhere
         pupil_idx = self.pupdata.pupil_idx
-        all_idx = self.xp.concatenate([pupil_idx(i) for i in range(4)]).astype(self.xp.int64)
+        all_idx = self.xp.concatenate([self.to_xp(pupil_idx(i), dtype=self.xp.int64) \
+                                       for i in range(4)])
         self.pup_idx  = all_idx[all_idx >= 0] # Exclude -1 padding
         self.pup_idx0 = pupil_idx(0)[pupil_idx(0) >= 0]  # Exclude -1 padding
         self.pup_idx1 = pupil_idx(1)[pupil_idx(1) >= 0]   # Exclude -1 padding
         self.pup_idx2 = pupil_idx(2)[pupil_idx(2) >= 0]   # Exclude -1 padding
         self.pup_idx3 = pupil_idx(3)[pupil_idx(3) >= 0]   # Exclude -1 padding
         self.outputs['out_pupdata'] = self.pupdata
-        
+
+        # Local (single-subaperture-sized) index map, shared by all 4 pupils since
+        # they only differ by a translation to their own quadrant. Used to remap
+        # the raw A, B, C, D pixel vectors (same length/order as pup_idx0..3) into
+        # 2d subaperture images, reusing the same geometry as Slopes.get2d()
+        # instead of duplicating index bookkeeping.
+        self.subap_map_idx = self.pupdata.local_display_map()
+        subap_shape = self.pupdata.single_mask().shape
+        self.pixels_subap = BaseValue(
+            value=self.xp.zeros((4,) + subap_shape, dtype=self.dtype),
+            target_device_idx=self.target_device_idx, precision=precision)
+        self.pixels_subap_sum = BaseValue(
+            value=self.xp.zeros(subap_shape, dtype=self.dtype),
+            target_device_idx=self.target_device_idx, precision=precision)
+        self.outputs['out_pixels_subap'] = self.pixels_subap
+        self.outputs['out_pixels_subap_sum'] = self.pixels_subap_sum
+
         if self.slopes_from_intensity:
             self.slopes.single_mask = self.pupdata.complete_mask()
         else:
             self.slopes.single_mask = self.pupdata.single_mask()
         self.slopes.display_map = self.pupdata.display_map
+
+    @classmethod
+    def output_names(cls):
+        result = super().output_names()
+        result.update({
+            'out_pupdata': OutputDesc(PupData, 'Pupil data with subaperture geometry'),
+            'out_pixels_subap': OutputDesc(BaseValue, 'Raw (pre-threshold) pixel intensities of the '
+                                            '4 pupils (A, B, C, D), shape (4, size_x, size_y)'),
+            'out_pixels_subap_sum': OutputDesc(BaseValue, 'Sum of the raw intensities of the 4 pupils, '
+                                                'shape (size_x, size_y); useful e.g. for scintillation analysis'),
+        })
+        return result
 
     def nsubaps(self):
         return self.pupdata.n_subap
@@ -110,18 +146,22 @@ class PyrSlopec(Slopec):
             if self.norm_factor is not None:
                 inv_factor[0] = self.norm_factor
                 factor = 1.0 / inv_factor[0]
-            elif not self.shlike:
-                inv_factor[0] = self.total_intensity /  self.nsubaps()
-                factor = 1.0 / inv_factor
+                self.sx, self.sy = self._compute_pyr_slopes(A, B, C, D, factor)
+            elif self.shlike:
+                # sh_like: normalize per subaperture using flux_per_subap (vectorial normalization)
+                self.sx, self.sy = self._compute_pyr_slopes(A, B, C, D, 1.0)
+                # Avoid division by zero
+                flux_clamped = self.xp.where(flux_per_subap > 0, flux_per_subap, 1.0)
+                self.sx /= flux_clamped
+                self.sy /= flux_clamped
             else:
-                inv_factor[0] = self.xp.sum(self.flat_pixels[self.pup_idx])
+                # Default: global normalization
+                inv_factor[0] = self.total_intensity / self.nsubaps()
                 factor = 1.0 / inv_factor[0]
-
-            self.sx, self.sy = self._compute_pyr_slopes(A, B, C, D, factor)
-
-        clamp_generic_more(0, 1, inv_factor, xp=self.xp)
-        self.sx *= inv_factor[0]
-        self.sy *= inv_factor[0]
+                self.sx, self.sy = self._compute_pyr_slopes(A, B, C, D, factor)
+                clamp_generic_more(0, 1, inv_factor, xp=self.xp)
+                self.sx *= inv_factor[0]
+                self.sy *= inv_factor[0]
 
         self.slopes.xslopes = self.sx
         self.slopes.yslopes = self.sy
@@ -130,3 +170,28 @@ class PyrSlopec(Slopec):
         super().post_trigger()
 
         self.outputs['out_pupdata'].generation_time = self.current_time
+
+        # Raw (pre-threshold) 2d sub-images of the 4 pupils, and their sum.
+        # Deliberately NOT computed in trigger_code(): trigger_code may be
+        # captured once into a CUDA graph and then only replayed (see
+        # BaseProcessingObj.trigger_code docstring), so anything not on the
+        # critical path to out_slopes would be baked permanently into the
+        # replayed graph regardless of whether these outputs are actually
+        # used downstream. post_trigger() always runs in eager Python/GPU
+        # mode, once per step, so this is the right place for it. Reads
+        # directly from the (untouched) input pixels rather than
+        # self.flat_pixels, which trigger_code() has already thresholded
+        # and clamped in place by the time post_trigger() runs.
+        raw_pixels = self.local_inputs['in_pixels'].pixels.ravel()
+        raw_A = raw_pixels[self.pup_idx0].astype(self.xp.float32)
+        raw_B = raw_pixels[self.pup_idx1].astype(self.xp.float32)
+        raw_C = raw_pixels[self.pup_idx2].astype(self.xp.float32)
+        raw_D = raw_pixels[self.pup_idx3].astype(self.xp.float32)
+        self.xp.put(self.pixels_subap.value[0], self.subap_map_idx, raw_A)
+        self.xp.put(self.pixels_subap.value[1], self.subap_map_idx, raw_B)
+        self.xp.put(self.pixels_subap.value[2], self.subap_map_idx, raw_C)
+        self.xp.put(self.pixels_subap.value[3], self.subap_map_idx, raw_D)
+        self.xp.put(self.pixels_subap_sum.value, self.subap_map_idx, raw_A + raw_B + raw_C + raw_D)
+
+        self.outputs['out_pixels_subap'].generation_time = self.current_time
+        self.outputs['out_pixels_subap_sum'].generation_time = self.current_time
