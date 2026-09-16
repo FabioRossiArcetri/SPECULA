@@ -3,6 +3,7 @@ import os
 import json
 import tempfile
 import unittest
+import unittest.mock
 import contextlib
 
 import specula
@@ -425,6 +426,30 @@ class TestConv2dNetTrainerTrigger(unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 trainer.finalize()
             self.assertIn('Training complete', buf.getvalue())
+
+    def test_logs_train_val_loss_every_100_steps(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, epoch_len=1)
+            feed_batch(trainer)
+            trainer.step_count = 99  # this trigger() call increments it to 100
+
+            with self.assertLogs(trainer.logger.logger, level='INFO') as cm:
+                trainer.trigger()
+
+            self.assertEqual(trainer.step_count, 100)
+            self.assertTrue(any('modal_analysis ground truth' in msg for msg in cm.output))
+            self.assertTrue(any('train=' in msg and 'val=' in msg for msg in cm.output))
+
+    def test_does_not_log_loss_on_non_multiple_of_100_steps(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, epoch_len=1)
+            feed_batch(trainer)
+            trainer.step_count = 50  # this trigger() call increments it to 51
+
+            with unittest.mock.patch.object(trainer.logger, 'info') as mock_info:
+                trainer.trigger()
+
+            mock_info.assert_not_called()
 
 
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")

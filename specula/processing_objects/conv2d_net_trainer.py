@@ -456,6 +456,13 @@ class Conv2dNetTrainer(BaseProcessingObj):
                 print(f"[{self.name}] Step {self.step_count} | LR {lr:.2e} | "
                       f"Train {self.loss.item():.6f} | Val {eval_loss:.6f} | Best {self.min_loss:.6f}")
 
+            if self.step_count % 100 == 0:
+                self.logger.info(
+                    f"[{self.name}] Step {self.step_count}: loss between CNN output and "
+                    f"modal_analysis ground truth (weighted MSE, normalized) -- "
+                    f"train={self.loss.item():.6f}, val={eval_loss:.6f}"
+                )
+
             if self.enable_early_stopping and self.early_stopping(eval_loss):
                 self.should_stop = True
                 print(f"[{self.name}] Early stopping triggered at step {self.step_count}")
