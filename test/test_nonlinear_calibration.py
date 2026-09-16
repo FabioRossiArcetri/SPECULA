@@ -70,6 +70,26 @@ class TestNonlinearCalibration(unittest.TestCase):
         self.assertEqual(restored.nmodes, calib.nmodes)
         self.assertEqual(restored.nsamples, calib.nsamples)
 
+    @cpu_and_gpu
+    def test_get_value_returns_responses(self, target_device_idx, xp):
+        calib = self._build(target_device_idx)
+        np.testing.assert_array_equal(cpuArray(calib.get_value()), cpuArray(calib.responses))
+
+    @cpu_and_gpu
+    def test_set_value_updates_responses_in_place(self, target_device_idx, xp):
+        calib = self._build(target_device_idx)
+        original = calib.responses
+        new_values = cpuArray(calib.responses) * 2.0
+        calib.set_value(new_values)
+        np.testing.assert_allclose(cpuArray(calib.responses), new_values)
+        self.assertIs(calib.responses, original)  # not reallocated
+
+    @cpu_and_gpu
+    def test_set_value_rejects_wrong_shape(self, target_device_idx, xp):
+        calib = self._build(target_device_idx)
+        with self.assertRaises(AssertionError):
+            calib.set_value(np.zeros((1, 1)))
+
 
 if __name__ == '__main__':
     unittest.main()

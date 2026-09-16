@@ -71,6 +71,105 @@ class TestGenerators(unittest.TestCase):
         np.testing.assert_almost_equal(min(value), -amp)
 
     @cpu_and_gpu
+    def test_wave_generator_square_default_duty_cycle_is_symmetric(self, target_device_idx, xp):
+        amp = 1.0
+        freq = 1.0
+        f = WaveGenerator('SQUARE', amp=amp, freq=freq, target_device_idx=target_device_idx)
+        f.setup()
+
+        n = 1000
+        high = 0
+        for i in range(n):
+            t = f.seconds_to_t(i / n)
+            f.check_ready(t)
+            f.trigger()
+            f.post_trigger()
+            if cpuArray(f.outputs['output'].value)[0] > 0:
+                high += 1
+
+        # default duty_cycle=0.5: about half the period at +amp
+        self.assertAlmostEqual(high / n, 0.5, delta=0.02)
+
+    @cpu_and_gpu
+    def test_wave_generator_square_duty_cycle_25_percent(self, target_device_idx, xp):
+        amp = 1.0
+        freq = 1.0
+        f = WaveGenerator('SQUARE', amp=amp, freq=freq, duty_cycle=0.25,
+                          target_device_idx=target_device_idx)
+        f.setup()
+
+        n = 1000
+        high = 0
+        for i in range(n):
+            t = f.seconds_to_t(i / n)
+            f.check_ready(t)
+            f.trigger()
+            f.post_trigger()
+            if cpuArray(f.outputs['output'].value)[0] > 0:
+                high += 1
+
+        self.assertAlmostEqual(high / n, 0.25, delta=0.02)
+
+    @cpu_and_gpu
+    def test_wave_generator_square_duty_cycle_first_and_last_fraction(self, target_device_idx, xp):
+        # With duty_cycle=0.3 and freq=1Hz, the wave must be high for
+        # t in [0, 0.3) and low for t in [0.3, 1.0), within one period.
+        amp = 3.0
+        f = WaveGenerator('SQUARE', amp=amp, freq=1.0, duty_cycle=0.3,
+                          target_device_idx=target_device_idx)
+        f.setup()
+
+        def value_at(t_sec):
+            t = f.seconds_to_t(t_sec)
+            f.check_ready(t)
+            f.trigger()
+            f.post_trigger()
+            return cpuArray(f.outputs['output'].value)[0]
+
+        np.testing.assert_almost_equal(value_at(0.1), amp)
+        np.testing.assert_almost_equal(value_at(0.29), amp)
+        np.testing.assert_almost_equal(value_at(0.31), -amp)
+        np.testing.assert_almost_equal(value_at(0.9), -amp)
+
+    @cpu_and_gpu
+    def test_wave_generator_square_duty_cycle_out_of_range_raises(self, target_device_idx, xp):
+        with self.assertRaises(ValueError):
+            WaveGenerator('SQUARE', duty_cycle=1.5, target_device_idx=target_device_idx)
+        with self.assertRaises(ValueError):
+            WaveGenerator('SQUARE', duty_cycle=-0.1, target_device_idx=target_device_idx)
+
+    @cpu_and_gpu
+    def test_wave_generator_duty_cycle_mismatched_size_raises(self, target_device_idx, xp):
+        with self.assertRaises(ValueError):
+            WaveGenerator('SQUARE', amp=[1.0, 2.0], duty_cycle=[0.2, 0.3, 0.4],
+                          target_device_idx=target_device_idx)
+
+    @cpu_and_gpu
+    def test_wave_generator_sin_ignores_duty_cycle(self, target_device_idx, xp):
+        amp = 1.0
+        freq = 2.0
+        offset = 0.3
+        f_default = WaveGenerator('SIN', amp=amp, freq=freq, offset=offset,
+                                  target_device_idx=target_device_idx)
+        f_custom = WaveGenerator('SIN', amp=amp, freq=freq, offset=offset, duty_cycle=0.1,
+                                 target_device_idx=target_device_idx)
+        f_default.setup()
+        f_custom.setup()
+
+        for t_sec in [0.1, 0.2, 0.3]:
+            t = f_default.seconds_to_t(t_sec)
+            f_default.check_ready(t)
+            f_default.trigger()
+            f_default.post_trigger()
+            f_custom.check_ready(t)
+            f_custom.trigger()
+            f_custom.post_trigger()
+            np.testing.assert_almost_equal(
+                cpuArray(f_default.outputs['output'].value),
+                cpuArray(f_custom.outputs['output'].value),
+            )
+
+    @cpu_and_gpu
     def test_wave_generator_linear(self, target_device_idx, xp):
         """Test WaveGenerator linear functionality"""
         slope = 2.0

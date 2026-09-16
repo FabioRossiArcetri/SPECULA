@@ -76,6 +76,21 @@ class NonlinearCalibration(BaseDataObj):
     def nsamples(self):
         return self.amplitudes.shape[0]
 
+    def get_value(self):
+        '''
+        Get the per-mode response calibration as a numpy/cupy array
+        '''
+        return self.responses
+
+    def set_value(self, v):
+        '''
+        Set new values for the per-mode response calibration
+        Arrays are not reallocated
+        '''
+        assert v.shape == self.responses.shape, \
+            f"Error: input array shape {v.shape} does not match responses shape {self.responses.shape}"
+        self.responses[:] = self.to_xp(v)
+
     def forward(self, mode_indices, amplitude):
         """
         Predict the (saturated) response that `amplitude` would produce,
