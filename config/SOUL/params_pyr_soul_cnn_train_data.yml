@@ -1,0 +1,143 @@
+---
+# Closed-loop training-data generation for a Conv2dNetRec reconstructor on
+# SOUL, using 2D slopes from a NON-modulated pyramid as CNN input.
+#
+# To be used together with the base config:
+#   specula params_pyr_soul.yml params_pyr_soul_cnn_train_data.yml
+#
+# For now the non-linear reconstructor is deliberately not used: the loop
+# is closed with the existing linear `rec` (Modalrec) + `control`
+# (Integrator), completely unchanged below. `slopes2d`/`modal_analysis`
+# only tap into the loop to collect training data; they don't drive it.
+#
+# Caveat: `rec`'s recmat (soul_KLv10_..._ma3_...) was calibrated with the
+# pyramid modulated (mod_amp=3, matching the tag's "_ma3_" component),
+# while this config runs it non-modulated (mod_amp: 0 below). The pyramid
+# response gain differs between the two regimes, so the loop closed here
+# is not gain-optimal for the non-modulated case -- it's "just a linear
+# Rec to close the loop" as requested, not a claim that it's well tuned.
+# If it doesn't converge acceptably, the first things to try are lowering
+# control's int_gain, or calibrating a dedicated non-modulated recmat the
+# same way config/pyr_nonlinear/calib_rec.yml does for the SCAO case
+# study (PushPullGenerator + ImCalibrator + RecCalibrator with the
+# pyramid already at mod_amp: 0).
+
+pyramid_override:
+  mod_amp: 0.0   # non-modulated pyramid
+
+# --- Variable atmospheric conditions ---------------------------------
+# seeing/wind_speed/wind_direction are redefined as PeriodicRandomGenerator
+# (a class swap, not just a parameter tweak): a plain _override can only
+# add/replace dict keys, never remove one, so a leftover key the new
+# class doesn't accept would break construction. Removing and redefining
+# them under the same name sidesteps that; the tradeoff is that removing
+# an object also strips any other object's input wire that pointed at it
+# (here, atmo's seeing/wind_speed/wind_direction inputs), so those are
+# reconnected explicitly in atmo_override below.
+#
+# Periods are chosen as small, pairwise-distinct primes (in seconds) so
+# that within main.total_time (~11s) each parameter is redrawn several
+# times (2s: ~5 draws, 3s: ~3 draws, 5s: ~2 draws) while their combined
+# state repeats only every lcm(2,3,5)=30s -- well beyond this run's
+# length, so the loop never sees the same joint condition twice.
+#
+# data_store is also removed: it dumps the full residual EF to
+# store_dir every step (an absolute path under someone else's home
+# directory in the base config, which fails at finalize() with a
+# PermissionError for anyone else -- confirmed by actually running this
+# config), and this pipeline doesn't need it: slopes2d/modal_analysis/
+# data_buffer below tap the loop for exactly what Conv2dNetTrainer needs.
+remove: ['seeing', 'wind_speed', 'wind_direction', 'data_store']
+
+seeing:
+  class:             'PeriodicRandomGenerator'
+  update_interval:   2.0                    # [s] prime period
+  distribution:      'UNIFORM'
+  constant:          [0.8]                  # ["] centered on the base config's value
+  amp:               [0.8]                  # ["] -> range [0.4, 1.2]
+  output_size:       1
+
+wind_speed:
+  class:             'PeriodicRandomGenerator'
+  update_interval:   3.0                    # [s] prime period
+  distribution:      'UNIFORM'
+  constant:          [2., 4., 6., 25.]      # [m/s] one per atmospheric layer, base config's values
+  amp:               [2., 4., 6., 25.]      # [m/s] -> range [0, 2x nominal] per layer
+  output_size:       4
+
+wind_direction:
+  class:             'PeriodicRandomGenerator'
+  update_interval:   5.0                    # [s] prime period
+  distribution:      'UNIFORM'
+  constant:          [0., 30., -30., 45.]   # [deg] one per atmospheric layer, base config's values
+  amp:               [180., 180., 180., 180.]  # [deg] -> +/-90 deg swing per layer
+  output_size:       4
+
+atmo_override:
+  inputs:
+    seeing:          'seeing.output'
+    wind_speed:       'wind_speed.output'
+    wind_direction:   'wind_direction.output'
+
+# --- gain_mod: SQUARE wave, period 1s, duty_cycle 0.95, values in {0, 1} --
+# amp=0.5/constant=0.5 remap the wave's usual +-1 into {0, 1}. duty_cycle
+# is fixed to 0.95 (95% at 1, 5% at 0), and vi offset=0.95*2*pi shifts the
+# waveform's own cycle boundary so that its high->low (down) transition
+# lands exactly on every integer second (verified against WaveGenerator:
+# with the same time_step as this config, the falling edge is always the
+# very first sample at or after each integer second, never later).
+gain_mod_wave:
+  class:             'WaveGenerator'
+  wave_type:         'SQUARE'
+  freq:              [1.0]
+  amp:               [0.5]
+  constant:          [0.5]
+  duty_cycle:        [0.95]
+  offset:            [5.969026041820607]   # 0.95 * 2*pi
+  outputs: ['output']
+
+control_override:
+  inputs:
+    delta_comm:      'rec.out_modes'
+    gain_mod:        'gain_mod_wave.output'
+
+# --- CNN training-data collection (parallel tap, does not drive the loop) --
+slopes2d:
+  class:                'Slopes2D'
+  inputs:
+    in_slopes: 'slopec.out_slopes'
+  outputs: ['out_value']
+
+# modal_analysis already exists in params_pyr_soul.yml (full KL modal
+# decomposition of the actual residual phase; out_modes is 630-long in
+# this config, since ModalAnalysis uses all of KLmatrix_KL_v10_inv's
+# modes). No override needed here: Conv2dNetTrainer's nmodes=30 below
+# just takes the first 30 columns of whatever it buffers (== control's
+# fastest/lowest-order rate group, n_modes[0]).
+
+data_buffer:
+  class:             'DataBuffer'
+  buffer_size:       1000   # ~0.59s of data per batch -> ~18 training triggers over main.total_time
+  inputs:
+    input_list: ['input_2d-slopes2d.out_value',
+                 'modes-modal_analysis.out_modes']
+
+nn_trainer:
+  class:             'Conv2dNetTrainer'
+  network_filename:  './trained_models/soul_cnn_rec.pth'
+  load_from_file:    true   # resume from network_filename if it already exists
+  nmodes:            30     # matches control's first (lowest-order) rate group
+  channels:          32
+  depth:             4
+  input_channels:    2      # slopes2d.out_value: x/y slope maps
+  conv_block_type:   0
+  epoch_len:         10
+  val_split:         0.2
+  label_offset:      0      # modal_analysis.out_modes has no leading placeholder
+  norm_alpha:        0.05   # default (0.001) assumes thousands of triggers;
+                             # this run only gets ~18, so normalization would
+                             # otherwise stay frozen at the very first batch
+  inputs:
+    input_2d_batch: 'data_buffer.input_2d_buffered'
+    labels:         'data_buffer.modes_buffered'
+  outputs: ['loss']

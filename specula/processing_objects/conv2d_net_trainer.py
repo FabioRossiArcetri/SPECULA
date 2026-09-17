@@ -31,18 +31,6 @@ class WeightedHuberLoss(nn.Module):
         return (self.weights * loss).mean()
 
 
-class WeightedMSELoss(nn.Module):
-    """Element-wise weighted MSE loss"""
-    def __init__(self, weights, device):
-        super().__init__()
-        self.register_buffer("weights", torch.tensor(weights, dtype=torch.float32).to(device))
-
-    def forward(self, preds, targets):
-        diff = preds - targets
-        weighted_sq = self.weights * (diff ** 2)
-        return weighted_sq.mean()
-
-
 # ==============================
 #   Early Stopping (fixed)
 # ==============================
@@ -89,6 +77,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
                  label_offset=1,
                  baseline_offset=0,
                  input_channels=1,
+                 norm_alpha=0.001,
                  target_device_idx=None,
                  precision=None):
         """
@@ -112,9 +101,24 @@ class Conv2dNetTrainer(BaseProcessingObj):
             ``input[:, 1] * input[:, 0]``. Any other value (e.g. 2, for a
             pair of 2D slope maps from Slopes.get2d()) is instead used
             directly and unmodified as the network's input channels.
+        norm_alpha : float, optional
+            Exponential-moving-average rate (in (0, 1]) used to update
+            meanp/stdp/meanmodes/stdmodes on every trigger() after the
+            first (default 0.001, matching the historical hardcoded
+            value). This is a time constant of ~1/norm_alpha triggers: the
+            default assumes many thousands of triggers over a run and
+            adapts very slowly, which for a run with only a handful of
+            triggers (e.g. an expensive, high-resolution simulation) means
+            normalization stays effectively frozen at whatever the very
+            first buffered batch looked like. Set this higher (e.g. 0.05)
+            for runs that only get a small number of triggers.
         """
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
+
+        if not 0 < norm_alpha <= 1:
+            raise ValueError(f'norm_alpha must be in (0, 1], got {norm_alpha}')
+        self.norm_alpha = norm_alpha
 
         self.channels = channels
         self.patience = patience
@@ -196,8 +200,8 @@ class Conv2dNetTrainer(BaseProcessingObj):
                         stats = json.load(f)
                     self.meanp = stats['meanp']
                     self.stdp = stats['stdp']
-                    self.meanmodes = torch.tensor(stats['meanmodes'])
-                    self.stdmodes = torch.tensor(stats['stdmodes'])
+                    self.meanmodes = self.xp.array(stats['meanmodes'], dtype=self.dtype)
+                    self.stdmodes = self.xp.array(stats['stdmodes'], dtype=self.dtype)
                     if self.verbose:
                         print(f"[{self.name}] ✓ Model loaded from {self.network_filename}")
                         print(f"[{self.name}] ✓ Stats loaded from {self.stats_filename}")
@@ -245,14 +249,12 @@ class Conv2dNetTrainer(BaseProcessingObj):
         # =========================
         #   Loss and optim setup
         # =========================
-        ww = [0.05] * nmodes
-        if nmodes > 0:
-            ww[0] = 2.0
-        low_order_weights = [0.02, 0.02, 0.01, 0.01, 0.01]
-        n_low_order = min(len(low_order_weights), max(0, nmodes - 1))
-        ww[1:1 + n_low_order] = low_order_weights[:n_low_order]
-
-        self.loss_fn = WeightedMSELoss(weights=ww, device=self.device)
+        # Plain (unweighted) MSE computed in physical (de-normalized) mode
+        # units -- see trigger(): the network's normalized-space output is
+        # denormalized via meanmodes/stdmodes before the loss is taken, so
+        # modes with larger physical variance naturally dominate the
+        # gradient without needing a hand-tuned per-mode weight vector.
+        self.loss_fn = nn.MSELoss()
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3, weight_decay=0)
         self.plateau_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode="min", factor=0.8, patience=self.patience // 10,
@@ -269,7 +271,10 @@ class Conv2dNetTrainer(BaseProcessingObj):
 
         self.X = self.y = None
         self.min_loss = 1e9
-        self.firstTrigger = True
+        # If normalization stats were successfully restored from a loaded
+        # checkpoint, keep them: the first trigger() must not silently
+        # recompute (and discard) them from scratch on just that one batch.
+        self.firstTrigger = self.meanmodes is None
         self.step_count = 0
         self.should_stop = False
         self.val_inputs = self.val_targets = None
@@ -298,18 +303,6 @@ class Conv2dNetTrainer(BaseProcessingObj):
         else:
             if self.verbose:
                 print(f"[{self.name}] All model parameters on {next(iter(devices))}")
-
-    def update_loss_weights(self, modes):
-        mode_stds = self.xp.std(modes, axis=0)
-        weights = 1.0 / (mode_stds + 1e-8)
-        weights = weights / weights.sum() * self.nmodes
-
-        w_tensor = torch.tensor(weights, dtype=torch.float32, device=self.device)
-        with torch.no_grad():
-            self.loss_fn.weights.data.copy_(w_tensor)
-
-        if self.verbose and self.step_count % 100 == 0:
-            print(f"[{self.name}] Updated loss weights: {weights}")
 
     def trigger(self):
         if self.should_stop:
@@ -349,14 +342,16 @@ class Conv2dNetTrainer(BaseProcessingObj):
                 if self.verbose:
                     print(f"[{self.name}] Normalization initialized.")
             else:
-                alpha = 0.001
+                alpha = self.norm_alpha
                 self.meanp = (1 - alpha) * self.meanp + alpha * self.xp.mean(ph)
                 self.stdp = (1 - alpha) * self.stdp + alpha * (self.xp.std(ph) + 1e-8)
                 self.meanmodes = (1 - alpha) * self.meanmodes + alpha * self.xp.mean(modes, axis=0)
                 self.stdmodes = (1 - alpha) * self.stdmodes + alpha * (self.xp.std(modes, axis=0) + 1e-8)
 
             ph = (ph - self.meanp) / self.stdp
-            modes = (modes - self.meanmodes) / self.stdmodes
+            # modes/targets are kept in physical units -- only the network's
+            # input is normalized. The loss is computed in physical space
+            # (see below), so the target never needs normalizing.
             if self.input_channels == 1:
                 ph = ph[:, self.xp.newaxis, :, :]
 
@@ -382,6 +377,13 @@ class Conv2dNetTrainer(BaseProcessingObj):
             val_inputs_new = self._to_torch(ph_val, model_device)
             val_targets_new = self._to_torch(modes_val, model_device)
 
+            # Used to denormalize the network's (normalized-space) output
+            # back to physical units before computing the loss -- fixed for
+            # the duration of this trigger() call, since meanmodes/stdmodes
+            # are only updated once above.
+            meanmodes_t = self._to_torch(self.meanmodes, model_device)
+            stdmodes_t = self._to_torch(self.stdmodes, model_device)
+
             if not self.val_initialized:
                 self.val_inputs = val_inputs_new.detach()
                 self.val_targets = val_targets_new.detach()
@@ -403,8 +405,9 @@ class Conv2dNetTrainer(BaseProcessingObj):
             self.model.train()
             for _ in range(self.epoch_len):
                 self.optimizer.zero_grad()
-                preds = self.model(inputs)
-                loss = self.loss_fn(preds, targets)
+                preds_normalized = self.model(inputs)
+                preds_physical = preds_normalized * stdmodes_t + meanmodes_t
+                loss = self.loss_fn(preds_physical, targets)
 
                 if torch.isnan(loss) or torch.isinf(loss):
                     print(f"[{self.name}] NaN/Inf loss, skipping batch.")
@@ -428,8 +431,9 @@ class Conv2dNetTrainer(BaseProcessingObj):
                 return
             self.model.eval()
             with torch.no_grad():
-                preds_val = self.model(self.val_inputs)
-                eval_loss = self.loss_fn(preds_val, self.val_targets).item()
+                preds_val_normalized = self.model(self.val_inputs)
+                preds_val_physical = preds_val_normalized * stdmodes_t + meanmodes_t
+                eval_loss = self.loss_fn(preds_val_physical, self.val_targets).item()
 
             self.plateau_scheduler.step(eval_loss)
 
@@ -459,7 +463,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
             if self.step_count % 100 == 0:
                 self.logger.info(
                     f"[{self.name}] Step {self.step_count}: loss between CNN output and "
-                    f"modal_analysis ground truth (weighted MSE, normalized) -- "
+                    f"modal_analysis ground truth (unweighted MSE, physical units) -- "
                     f"train={self.loss.item():.6f}, val={eval_loss:.6f}"
                 )
 
