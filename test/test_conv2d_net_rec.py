@@ -30,10 +30,11 @@ N_VALID = 6  # number of valid subapertures
 
 
 def save_checkpoint(net_path, stats_path, nmodes=NMODES, channels=CHANNELS, depth=DEPTH,
-                     input_channels=2):
+                     input_channels=2, head_type=None):
     model = UNetRegressor(
         input_channels=input_channels, output_size=nmodes, base_channels=channels,
-        input_size=(160, 160), dropout_level=0.0, conv_block_type=0, depth=depth,
+        dropout_level=0.0, conv_block_type=0, depth=depth,
+        head_type=head_type or 'pooled',
     )
     torch.save(model.state_dict(), net_path)
     stats = {
@@ -41,6 +42,8 @@ def save_checkpoint(net_path, stats_path, nmodes=NMODES, channels=CHANNELS, dept
         'meanmodes': [0.0] * nmodes, 'stdmodes': [1.0] * nmodes,
         'nmodes': nmodes,
     }
+    if head_type is not None:   # None: a stats file from before head_type existed
+        stats['head_type'] = head_type
     with open(stats_path, 'w') as f:
         json.dump(stats, f)
     return model
@@ -103,7 +106,7 @@ class TestConv2dNetRecConstruction(unittest.TestCase):
             net_path = os.path.join(d, 'net.pth')
             model = UNetRegressor(
                 input_channels=2, output_size=NMODES, base_channels=CHANNELS,
-                input_size=(160, 160), dropout_level=0.0, conv_block_type=0, depth=DEPTH,
+                dropout_level=0.0, conv_block_type=0, depth=DEPTH,
             )
             torch.save(model.state_dict(), net_path)
             with self.assertRaises(FileNotFoundError):
@@ -131,6 +134,59 @@ class TestConv2dNetRecConstruction(unittest.TestCase):
             baseline = BaseValue(value=np.zeros(NMODES, dtype=np.float32))
             rec.inputs['baseline'].set(baseline)
             rec.sanity_check()  # must not raise
+
+    @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
+    def test_n_frames_stacks_the_previous_slope_maps(self):
+        with tempfile.TemporaryDirectory() as d:
+            net_path = os.path.join(d, 'net.pth')
+            stats_path = net_path.replace('.pth', '_stats.json')
+            model = save_checkpoint(net_path, stats_path, input_channels=2 * 2)
+            with open(stats_path) as f:
+                stats = json.load(f)
+            stats['n_frames'] = 2
+            with open(stats_path, 'w') as f:
+                json.dump(stats, f)
+
+            rec = Conv2dNetRec(network_filename=net_path, nmodes=NMODES, channels=CHANNELS,
+                               depth=DEPTH, input_channels=2, n_frames=2, target_device_idx=-1)
+            first, second = build_slopes(-1, seed=0), build_slopes(-1, seed=1)
+            out1 = run_once(rec, first, -1)
+            out2 = run_once(rec, second, -1)
+
+            m1 = np.asarray(first.get2d(), dtype=np.float32)
+            m2 = np.asarray(second.get2d(), dtype=np.float32)
+            model.eval()
+            with torch.no_grad():
+                # meanp/stdp = 0/1 and meanmodes/stdmodes = 0/1 in the stats:
+                # the output is the raw network output on the stacked maps.
+                exp1 = model(torch.from_numpy(np.concatenate([m1, m1])[None])).numpy()[0]
+                exp2 = model(torch.from_numpy(np.concatenate([m2, m1])[None])).numpy()[0]
+            np.testing.assert_allclose(out1, exp1, rtol=1e-4, atol=1e-5)
+            np.testing.assert_allclose(out2, exp2, rtol=1e-4, atol=1e-5)
+
+            with self.assertRaisesRegex(ValueError, 'n_frames=2'):
+                Conv2dNetRec(network_filename=net_path, nmodes=NMODES, channels=CHANNELS,
+                             depth=DEPTH, input_channels=2, target_device_idx=-1)
+
+    @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
+    def test_spatial_head_checkpoint_is_loaded_and_checked(self):
+        with tempfile.TemporaryDirectory() as d:
+            net_path = os.path.join(d, 'net.pth')
+            stats_path = net_path.replace('.pth', '_stats.json')
+            model = save_checkpoint(net_path, stats_path, depth=2, head_type='spatial')
+
+            rec = Conv2dNetRec(network_filename=net_path, nmodes=NMODES, channels=CHANNELS,
+                               depth=2, input_channels=2, head_type='spatial', target_device_idx=-1)
+            slopes = build_slopes(-1)
+            out = run_once(rec, slopes, -1)
+            x = torch.from_numpy(np.asarray(slopes.get2d(), dtype=np.float32))[None]
+            with torch.no_grad():
+                expected = model.eval()(x).numpy()[0]
+            np.testing.assert_allclose(out, expected, rtol=1e-4, atol=1e-5)
+
+            with self.assertRaisesRegex(ValueError, "head_type='spatial'"):
+                Conv2dNetRec(network_filename=net_path, nmodes=NMODES, channels=CHANNELS,
+                             depth=2, input_channels=2, target_device_idx=-1)
 
     @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
     def test_sanity_check_passes_without_baseline_wired(self):

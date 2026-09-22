@@ -42,6 +42,16 @@ class DataBuffer(BaseProcessingObj):
             if item is not None and item.generation_time == self.current_time:
                 v = item.get_value()
                 self.storage[k][self.step_counter] = v.copy()
+            elif item is not None:
+                # Not fresh this step: skip it rather than buffer a stale
+                # value. emit_buffered_data() below only emits step indices
+                # common to every input, so a dropped step here just costs
+                # one row instead of silently misaligning this input's rows
+                # against the others from this point on.
+                self.logger.warning(
+                    f"DataBuffer: input '{k}' was not fresh at step {self.step_counter} "
+                    f"(generation_time={item.generation_time}, current_time={self.current_time}) "
+                    f"-- this step will be dropped for '{k}'")
 
         self.step_counter += 1
 
@@ -50,11 +60,31 @@ class DataBuffer(BaseProcessingObj):
             self.reset_buffers()
 
     def emit_buffered_data(self):
-        for input_name, data_dict in self.storage.items():
-            if len(data_dict) == 0:
-                continue
+        active_keys = [k for k, d in self.storage.items() if len(d) > 0]
+        if not active_keys:
+            return
+
+        # Only emit step indices present for EVERY buffered input, in a
+        # consistent order -- a step dropped for just one input (see
+        # trigger_code()'s freshness check) must not shift that input's
+        # rows out of alignment with the others.
+        common_steps = set(self.storage[active_keys[0]])
+        for k in active_keys[1:]:
+            common_steps &= set(self.storage[k])
+        common_steps = sorted(common_steps)
+
+        if any(len(self.storage[k]) != len(common_steps) for k in active_keys):
+            dropped_counts = {k: len(self.storage[k]) - len(common_steps) for k in active_keys}
+            dropped_counts = {k: n for k, n in dropped_counts.items() if n > 0}
+            self.logger.warning(
+                f"DataBuffer: buffered inputs had mismatched step counts "
+                f"({dropped_counts} steps dropped per input) -- only the "
+                f"{len(common_steps)} steps common to all inputs were emitted, "
+                f"to keep rows aligned across inputs")
+
+        for input_name in active_keys:
             output_name = f"{input_name}_buffered"
-            values = self.xp.array(list(data_dict.values()))
+            values = self.xp.array([self.storage[input_name][s] for s in common_steps])
             if output_name in self.buffered_outputs:
                 self.buffered_outputs[output_name].value = values
                 self.buffered_outputs[output_name].generation_time = self.current_time

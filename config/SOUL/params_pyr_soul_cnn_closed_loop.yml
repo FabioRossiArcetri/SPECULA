@@ -1,0 +1,115 @@
+---
+# Closed-loop deployment/test of the CNN reconstructor trained by
+# params_pyr_soul_cnn_train_data.yml: swaps `modalrec` for Conv2dNetRec,
+# fed directly by slopec's slopes (Slopes.get2d() gives the 2-channel x/y
+# slope map the network was trained on -- no separate Slopes2D object
+# needed, Conv2dNetRec builds it internally).
+#
+# network_filename below must be the checkpoint that training config saves
+# (its nn_trainer.network_filename).
+#
+# Reduced-order loop, not a full 630-mode correction: the trained network
+# predicts the first nmodes=500 modes (it was not trained with a baseline
+# connected, so its output is the direct mode estimate, not a residual).
+# The other modes have no CNN estimate, so control and dm are both cut
+# down to those 500 modes below, with a separate gain per group of modes
+# (see control_override). If you want the full 630-mode
+# correction (CNN for low-order, modalrec for the rest), that needs a way
+# to concatenate two mode vectors into one -- there's no such object in
+# the codebase yet, so that's a bigger change than this file.
+#
+# Unlike params_pyr_soul_cnn_train_data.yml/_test_data.yml, this file
+# does NOT reintroduce their PeriodicRandomGenerator atmosphere swaps or
+# the gain_mod square wave: those existed to diversify *training* data by
+# deliberately perturbing/opening the loop, which is the opposite of what
+# you want when measuring actual closed-loop performance. Only mod_amp is
+# overridden here, to match the non-modulated regime the network was
+# trained on.
+#
+# data_store is removed for the same reason as in the other two SOUL CNN
+# configs: its store_dir is an absolute path under someone else's home
+# directory in the base config, and fails at finalize() with a
+# PermissionError for anyone else.
+#
+#   specula params_pyr_soul.yml params_pyr_soul_cnn_closed_loop.yml
+
+pyramid_override:
+  mod_amp: 0.0   # non-modulated pyramid, matching the training-data config
+
+remove: ['rec', 'data_store']
+
+modalrec:
+  class:              'Conv2dNetRec'
+  network_filename:   './trained_models/soul_cnn_rec_4f_spatial_m500_g60.pth'
+  nmodes:             500     # must match nn_trainer's nmodes: the checkpoint's regression head is sized for it
+  channels:           64     # must match nn_trainer's channels: the checkpoint's conv layers are sized for it
+  depth:              4      # must match nn_trainer's depth: the checkpoint's encoder/decoder stack is sized for it
+  head_type:          'spatial'  # must match nn_trainer's head_type (checked against the stats file)
+  head_grid:          60     # must match nn_trainer's head_grid (checked against the stats file)
+  n_frames:           4      # must match nn_trainer's n_frames (checked against the stats file)
+  input_channels:     1      # must match nn_trainer's input_channels: Slopes.get2d() returns a
+                             # single intensity map here (slopec has slopes_from_intensity)
+  conv_block_type:    1      # must match nn_trainer's conv_block_type: selects which conv block class is built
+  inputs:
+    # slopecNOSN, not slopec: the network must see the same input it was
+    # trained on, and the training config feeds it from slopecNOSN -- the
+    # slope computer *without* the slope-null subtraction. That reference is
+    # the static illumination pattern (7424 values, mean 1.00, RMS 1.12), so
+    # subtracting it shifts every pixel by more than one standard deviation
+    # of the frozen input normalization (the checkpoint's meanp is 0.516, the
+    # mean of a raw intensity map; sn-subtracted maps have mean ~0).
+    in_slopes: 'slopecNOSN.out_slopes'
+    # no 'baseline' connected: nn_trainer had no baseline input either, so
+    # the network predicts modes directly rather than a residual on top
+    # of a separate baseline reconstructor.
+
+control_override:
+  # One integrator gain (and forgetting factor) per group of modes; n_modes
+  # are the group *sizes* (they must add up to Conv2dNetRec's nmodes, 500).
+  # The groups are the ones the training diagnostics report per-group FVU /
+  # prediction gain for (0-4, 5-19, 20-49, 50-99, 100-199, 200-499): set each
+  # group's gain from how well the CNN reconstructs it there.
+  # Starting values, meant to be tuned: moderate gains where the CNN is
+  # reliable (the loop has ~3 frames of delay: 2 in control + 1 in the DM
+  # tap, so an integrator stays stable only below a gain of ~0.6); low gains
+  # where it isn't, with a slight leak (ff < 1) so that the CNN's small bias
+  # on those modes (0.1-1 nm) can't be integrated into a slow drift.
+  # A gain of 0 leaves a group uncorrected -- the same as cutting the DM
+  # there (dm_override.nmodes below), but per group.
+  # Measured, not guessed: with these the loop reaches a Strehl of 0.85 within
+  # 0.4 s and holds it, as well as the linear loop in the training run.
+  # They are of the same order as the training loop's gains (see
+  # params_pyr_soul_cnn_train_data.yml's control_override), which is the point:
+  # the network learned the residual statistics of a loop running that fast,
+  # and its predictions are shrunk towards the mean (prediction gain ~0.7-0.8
+  # per group), which acts exactly like a further reduction of the loop gain.
+  # The earlier, much lower values (0.12/0.1/0.1/0.1/0.06/0.04) left the
+  # effective loop gain at ~0.07 against the 0.25 the network was trained
+  # under: the loop crawled to a Strehl of 0.2 in 0.7 s, fell back to 0.02,
+  # and wandered between 0.02 and 0.73 without ever settling -- and each
+  # excursion took the residual outside the regime the network was trained
+  # on, which made its estimates worse in turn.
+  #              0-4    5-19   20-49  50-99  100-199 200-499
+  n_modes:   [5,     15,    30,    50,    100,    300]
+  int_gain:  [0.25,  0.25,  0.22,  0.20,  0.15,   0.12]
+  ff:        [1,   1,   0.99,  0.99,  0.99,   0.99]
+  inputs:
+    delta_comm: 'modalrec.out_modes'   # re-wire: remove+redefine above drops this wire, so restate it here
+    # no gain_mod wired (it's optional and defaults to a constant 1.0
+    # when unconnected -- i.e. always fully closed, no modulation)
+
+dm_override:
+  nmodes: 500   # same 500 modes as control: the DM uses only the first nmodes
+                # entries of the command and drops the rest. Which modes are
+                # corrected, and how strongly, is set by the per-group gains above.
+
+# Live SR plot of the actual CNN-driven closed loop -- this is the real
+# performance metric for this config (unlike _test_data.yml's sr_disp,
+# which only shows the unrelated linear loop it taps). Requires a display
+# (e.g. X11 forwarding over ssh); see params_pyr_soul.yml's commented-out
+# sr_disp for the same block, disabled by default there.
+sr_disp:
+  class:            'PlotDisplay'
+  inputs:
+    value:       'psf.out_sr'
+  title:            'SR (CNN closed loop)'

@@ -9,12 +9,8 @@
 # Conv2dNetTrainer on the data buffered by
 # params_scao_pyr_nonlin_train_data.yml (baseline connected, so the
 # network learns baseline_modes-and-onward the residual). Update it to
-# match wherever that training run saved its checkpoint. Note
-# Conv2dNetTrainer only appends its "_cvtypeX_mY_chZ_dpW" parameter suffix
-# when none of those substrings already appear in the *full given path*
-# (not just the filename) -- "trained_models" itself contains "_m", so
-# with that directory name no suffix gets appended and the checkpoint
-# keeps exactly the name given here.
+# match wherever that training run saved its checkpoint (its
+# nn_trainer.network_filename).
 
 nonlinear_rec:
   class:              'PyramidNonlinearRec'

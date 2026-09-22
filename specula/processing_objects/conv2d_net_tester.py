@@ -1,291 +1,155 @@
-import os
 import torch
-import torch.nn as nn
-from specula.base_processing_obj import BaseProcessingObj
-from specula.lib.efficient_u_net import UNetRegressor
 
-from specula.connections import InputValue
-from specula.base_value import BaseValue
 from specula import cpuArray, np
-import json
+from specula.base_processing_obj import BaseProcessingObj
+from specula.base_value import BaseValue
+from specula.connections import InputValue
+from specula.lib.cnn_checkpoint import load_trained_network
+from specula.lib.frame_stacker import FrameStacker
+from specula.processing_objects.conv2d_net_trainer import network_input
+
 
 class Conv2dNetTester(BaseProcessingObj):
+    """
+    Evaluates a network trained by Conv2dNetTrainer on buffered batches
+    with known modes: no training, just the predictions ('prediction'
+    output, and the batch's mean squared error as 'loss') and, at the end
+    of the simulation, per-mode error statistics.
+
+    The network parameters (nmodes, channels, dropout, conv_block_type,
+    depth, head_type, input_channels, n_frames) and label_offset /
+    baseline_offset must match the ones used for training (see
+    Conv2dNetTrainer); n_frames and head_type are checked against the
+    checkpoint's stats file.
+
+    With the optional 'baseline' input connected, the network output is a
+    residual: the baseline is added back to it before comparing with the
+    labels. With the optional 'gain_mod' input connected, samples with
+    gain_mod < gain_mod_threshold (loop open or at reduced gain, not
+    representative of closed-loop operation) are left out of the statistics.
+    """
+
     def __init__(self,
                  network_filename,
                  nmodes=20,
-                 target_device_idx: int = None,
                  channels=32,
                  dropout=0.01,
                  conv_block_type=0,
                  depth=5,
+                 head_type='pooled',
+                 head_grid=32,
+                 input_channels=1,
+                 n_frames=1,
                  label_offset=1,
                  baseline_offset=0,
-                 input_channels=1,
+                 gain_mod_threshold=1.0,
+                 target_device_idx: int = None,
                  precision: int = None):
-        """
-        label_offset : int, optional
-            Index of the first true mode within the buffered 'labels'
-            value (default 1, matching Conv2dNetTrainer's convention).
-        baseline_offset : int, optional
-            Index of the first mode within the buffered 'baseline' value,
-            if the optional 'baseline' input is connected (default 0).
-            When connected, the network's (denormalized) output is treated
-            as a residual and the baseline is added back to it before
-            comparing against the full true labels -- the inference-time
-            counterpart of Conv2dNetTrainer's residual-learning mode.
-        input_channels : int, optional
-            Must match the value used to train the loaded network (see
-            Conv2dNetTrainer).
-        """
-
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
-        self.conv_block_type = conv_block_type
-        self.verbose = False
-        self.network_filename = network_filename
         self.nmodes = nmodes
-        self.channels = channels
-        self.dropout = dropout
+        self.input_channels = input_channels
         self.label_offset = label_offset
         self.baseline_offset = baseline_offset
-        self.input_channels = input_channels
-        self.first = True
-        self.device = torch.device("cpu") # torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.gain_mod_threshold = gain_mod_threshold
+        self.stacker = FrameStacker(n_frames, self.xp)
 
-        # Load model
-        if os.path.isfile(self.network_filename):
+        self.model, stats = load_trained_network(
+            network_filename, nmodes=nmodes, input_channels=input_channels, n_frames=n_frames,
+            channels=channels, depth=depth, dropout=dropout, conv_block_type=conv_block_type,
+            head_type=head_type, head_grid=head_grid)
+        self.meanp = stats['meanp']
+        self.stdp = stats['stdp']
+        self.meanmodes = self.xp.array(stats['meanmodes'])
+        self.stdmodes = self.xp.array(stats['stdmodes'])
 
-            # Load to CPU first
-            # weights_only=False: these checkpoints are produced by our own
-            # training runs (state_dict or a full model object), never
-            # loaded from an untrusted or shared source.
-            checkpoint = torch.load(self.network_filename, map_location='cpu', weights_only=False)
-
-            # Create the model architecture on CPU
-            model = UNetRegressor(
-                input_channels=self.input_channels,
-                output_size=nmodes,
-                base_channels=self.channels,
-                input_size=(160, 160),
-                dropout_level=self.dropout,
-                depth=depth,
-                conv_block_type=conv_block_type
-            )
-            
-            # Load weights - handle different checkpoint formats
-            if isinstance(checkpoint, dict):
-                # It's a state dict
-                model.load_state_dict(checkpoint)
-            elif hasattr(checkpoint, 'state_dict'):
-                # It's a model instance
-                model.load_state_dict(checkpoint.state_dict())
-            else:
-                # Try direct loading
-                model = checkpoint
-            
-            self.model = model.to(self.device)
-            self.model.eval()
-
-            if self.verbose:
-                print(f"[{self.name}] Loaded model from {self.network_filename}")
-        else:
-            raise FileNotFoundError(f"Model file not found at {self.network_filename}")
-        
-        # Load normalization statistics
-        self.stats_filename = network_filename.replace('.pth', '_stats.json')
-        if os.path.isfile(self.stats_filename):
-            with open(self.stats_filename, 'r') as f:
-                stats = json.load(f)
-            self.meanp = stats['meanp']
-            self.stdp = stats['stdp']
-            self.meanmodes = self.xp.array(stats['meanmodes'])
-            self.stdmodes = self.xp.array(stats['stdmodes'])
-            if self.verbose:
-                print(f"[{self.name}] Loaded normalization statistics from {self.stats_filename}")
-                print(f"  Phase: mean={self.meanp:.4f}, std={self.stdp:.4f}")
-                print(f"  Modes: mean shape={self.meanmodes.shape}, std shape={self.stdmodes.shape}")
-        else:
-            raise FileNotFoundError(f"Statistics file not found at {self.stats_filename}. "
-                                   f"Make sure to train the model first!")
-        
-        # Loss function for evaluation
-        self.loss_fn = nn.MSELoss()
-        
         self.inputs['input_2d_batch'] = InputValue(type=BaseValue)
         self.inputs['labels'] = InputValue(type=BaseValue)
         self.inputs['baseline'] = InputValue(type=BaseValue, optional=True)
+        self.inputs['gain_mod'] = InputValue(type=BaseValue, optional=True)
+        self.outputs['loss'] = BaseValue(target_device_idx=target_device_idx)
+        self.outputs['prediction'] = BaseValue(target_device_idx=target_device_idx)
 
-
-        self.preds = BaseValue(target_device_idx=target_device_idx)
-        self.preds.value = self.xp.array((nmodes))
-
-        self.outputs["loss"] = BaseValue(target_device_idx=target_device_idx)
-        self.outputs["prediction"] = self.preds
-        self.outputs["targets"] = BaseValue(target_device_idx=target_device_idx)
-        self.outputs["error"] = BaseValue(target_device_idx=target_device_idx)
-
-        
-
-        # Statistics tracking
-        self.total_abs_error = None
-        self.total_squared_error = None
         self.count = 0
         self.all_errors = []
         self.all_targets = []
 
     def trigger(self):
         x_in = self.local_inputs['input_2d_batch']
-        y_in = self.local_inputs['labels']
-
-        if x_in is None or y_in is None:
+        labels_in = self.local_inputs['labels']
+        if x_in is None or labels_in is None:
             return
 
-        # Extract phase and modes
-        if self.input_channels == 1:
-            ph = x_in.get_value()[:, 1] * x_in.get_value()[:, 0]
-        else:
-            ph = x_in.get_value()
-        modes = y_in.get_value()[:, self.label_offset:self.label_offset + self.nmodes]
-
+        # Stacked before any frame is dropped (see Conv2dNetTrainer).
+        x = self.stacker(network_input(x_in.get_value(), self.input_channels))
+        first = self.label_offset
+        modes = labels_in.get_value()[:, first:first + self.nmodes]
+        baseline = None
         baseline_in = self.local_inputs['baseline']
         if baseline_in is not None:
-            baseline_modes = baseline_in.get_value()[
-                :, self.baseline_offset:self.baseline_offset + self.nmodes]
-            # what the network was trained to predict (see Conv2dNetTrainer)
-            network_target = modes - baseline_modes
-        else:
-            baseline_modes = None
-            network_target = modes
+            b = self.baseline_offset
+            baseline = baseline_in.get_value()[:, b:b + self.nmodes]
 
-        if self.verbose:
-            print(f"[{self.name}] Input phase shape: {ph.shape}")
-            print(f"[{self.name}] Target modes shape: {modes.shape}")
-            print(f"[{self.name}] Target modes (original): {modes}")
+        gain_mod_in = self.local_inputs['gain_mod']
+        if gain_mod_in is not None:
+            keep = self.xp.asarray(gain_mod_in.get_value()).reshape(-1) >= self.gain_mod_threshold
+            if not self.xp.any(keep):
+                return
+            x, modes = x[keep], modes[keep]
+            if baseline is not None:
+                baseline = baseline[keep]
 
-        # Apply the SAME normalization as training
-        ph = (ph - self.meanp) / self.stdp
-        modes_normalized = (network_target - self.meanmodes) / self.stdmodes
-
-        if self.input_channels == 1:
-            ph = ph[:, self.xp.newaxis, :, :]  # shape (B, 1, H, W)
-
-        # Convert to torch tensors
-        inputs = torch.tensor(ph, dtype=torch.float32, device=self.device)
-        targets_normalized = torch.tensor(modes_normalized, dtype=torch.float32, device=self.device)
-
-        # Inference
+        x = (x - self.meanp) / self.stdp
+        if x.ndim == 3:     # single-channel frames: add the channel axis
+            x = x[:, self.xp.newaxis]
         with torch.no_grad():
-            preds_normalized = self.model(inputs)
+            preds_normalized = self.model(torch.from_numpy(np.ascontiguousarray(cpuArray(x), dtype=np.float32)))
+        preds = self.xp.asarray(preds_normalized.numpy()) * self.stdmodes + self.meanmodes
+        if baseline is not None:
+            preds = preds + baseline
 
-            # Compute loss on normalized values
-            loss_normalized = self.loss_fn(preds_normalized, targets_normalized).item()
-
-        # Denormalize predictions to original scale. If a baseline is
-        # connected this is the predicted *residual*; add the baseline back
-        # to get the full reconstructed modes, comparable to `modes`.
-        preds_normalized_np = self.xp.asarray(preds_normalized.cpu().numpy())
-        preds = preds_normalized_np * self.stdmodes + self.meanmodes
-        if baseline_modes is not None:
-            preds = preds + baseline_modes
-
-        # Compute error in original units
         error = preds - modes
-        
-        # Update statistics (summed over the batch axis, so total_abs_error/
-        # total_squared_error stay a per-mode (1, nmodes) running total
-        # regardless of each trigger's batch size)
-        batch_abs_error = self.xp.sum(self.xp.abs(error), axis=0, keepdims=True)
-        batch_squared_error = self.xp.sum(error ** 2, axis=0, keepdims=True)
-        if self.total_abs_error is None:
-            self.total_abs_error = batch_abs_error
-            self.total_squared_error = batch_squared_error
-        else:
-            self.total_abs_error += batch_abs_error
-            self.total_squared_error += batch_squared_error
-        
-        self.count += ph.shape[0]  # Count batch size
+        self.count += x.shape[0]
         self.all_errors.append(error)
         self.all_targets.append(modes)
 
-        self.preds.value = preds
-        self.preds.generation_time = self.current_time
-
-        # Store outputs
-        #self.outputs["loss"] = loss_normalized
-        self.outputs["prediction"] = preds
-        #self.outputs["targets"] = modes
-        #self.outputs["error"] = error
-
-        
-        if self.verbose:
-            print(f"[{self.name}] Predictions (denormalized): {preds}")
-            print(f"[{self.name}] Targets (original): {modes}")
-            print(f"[{self.name}] Error per mode: {error}")
-            print(f"[{self.name}] Normalized loss: {loss_normalized:.6f}")
-            print(f"[{self.name}] Mean absolute error: {self.xp.mean(self.xp.abs(error)):.6f}")
-            print(f"[{self.name}] RMS error: {self.xp.sqrt(self.xp.mean(error**2)):.6f}")
-
-    def post_trigger(self):
-        super().post_trigger()
-
+        self.outputs['prediction'].value = preds
+        self.outputs['prediction'].generation_time = self.current_time
+        self.outputs['loss'].set_value(float(self.xp.mean(error ** 2)))
+        self.outputs['loss'].generation_time = self.current_time
 
     def finalize(self):
         if self.count == 0:
-            print(f"[{self.name}] No data processed!")
+            print(f'[{self.name}] No data processed!')
             return super().finalize()
-        
-        # Compute final statistics
-        mean_abs_error = self.total_abs_error / self.count
-        mean_squared_error = self.total_squared_error / self.count
-        rms_error = self.xp.sqrt(mean_squared_error)
 
-        # Concatenate all errors for statistics
-        all_errors_concat = self.xp.concatenate(self.all_errors, axis=0)
-        std_error = self.xp.std(all_errors_concat, axis=0)
+        errors = cpuArray(self.xp.concatenate(self.all_errors, axis=0))
+        targets = cpuArray(self.xp.concatenate(self.all_targets, axis=0))
+        mae = np.mean(np.abs(errors), axis=0)
+        rmse = np.sqrt(np.mean(errors ** 2, axis=0))
+        std_error = np.std(errors, axis=0)
+        # Symmetric mean absolute percentage error
+        smape = 100.0 * np.mean(
+            2.0 * np.abs(errors) / (np.abs(targets) + np.abs(errors + targets) + 1e-3), axis=0)
 
-        # Retrieve corresponding targets
-        all_targets_concat = self.xp.concatenate(self.all_targets, axis=0)
-
-        # === NEW: Symmetric Mean Absolute Percentage Error (SMAPE) ===
-        eps = 1e-3
-        smape = 100.0 * self.xp.mean(
-            2.0 * self.xp.abs(all_errors_concat) /
-            (self.xp.abs(all_targets_concat) + self.xp.abs(all_errors_concat + all_targets_concat) + eps),
-            axis=0
-        )
-
-        # Also compute overall mean SMAPE across all modes
-        overall_smape = self.xp.mean(smape)
-
-        # Print statistics
-        print(f"\n{'='*80}")
-        print(f"[{self.name}] FINAL TEST STATISTICS")
-        print(f"{'='*80}")
-        print(f"Total samples processed: {self.count}")
-        print(f"\nPer-mode statistics:")
+        print(f"\n{'=' * 80}")
+        print(f'[{self.name}] FINAL TEST STATISTICS')
+        print(f"{'=' * 80}")
+        print(f'Total samples processed: {self.count}')
+        print('\nPer-mode statistics:')
         print(f"{'Mode':<6} {'MAE':<12} {'RMSE':<12} {'SMAPE (%)':<12} {'StdErr':<12}")
-        print(f"{'-'*60}")
-
-        mean_abs_error = cpuArray(mean_abs_error)
-        rms_error = cpuArray(rms_error)
-        std_error = cpuArray(std_error)
-        smape = cpuArray(smape)
-
+        print(f"{'-' * 60}")
         for i in range(self.nmodes):
-            print(f"{i:<6d} {mean_abs_error[0,i]:<12.6f} {rms_error[0,i]:<12.6f} {smape[i]:<12.2f} {std_error[i]:<12.6f}")
+            print(f'{i:<6d} {mae[i]:<12.6f} {rmse[i]:<12.6f} {smape[i]:<12.2f} {std_error[i]:<12.6f}')
+        print('\nOverall statistics:')
+        print(f'  Mean Absolute Error (averaged): {np.mean(mae):.6f}')
+        print(f'  Root Mean Squared Error (averaged): {np.mean(rmse):.6f}')
+        print(f'  Mean SMAPE: {np.mean(smape):.2f}%')
+        print(f'  Maximum MAE across modes: {np.max(mae):.6f} (mode {np.argmax(mae)})')
+        print(f'  Minimum MAE across modes: {np.min(mae):.6f} (mode {np.argmin(mae)})')
+        print(f"{'=' * 80}\n")
 
-        print(f"\nOverall statistics:")
-        print(f"  Mean Absolute Error (averaged): {self.xp.mean(mean_abs_error):.6f}")
-        print(f"  Root Mean Squared Error (averaged): {self.xp.mean(rms_error):.6f}")
-        print(f"  Mean SMAPE: {overall_smape:.2f}%")
-        print(f"  Maximum MAE across modes: {self.xp.max(mean_abs_error):.6f} (mode {np.argmax(mean_abs_error)})")
-        print(f"  Minimum MAE across modes: {self.xp.min(mean_abs_error):.6f} (mode {np.argmin(mean_abs_error)})")
-        print(f"{'='*80}\n")
-
-        # Store results in outputs for external retrieval
-        self.outputs["mean_absolute_error"] = mean_abs_error
-        self.outputs["root_mean_squared_error"] = rms_error
-        self.outputs["smape"] = smape
-        self.outputs["overall_smape"] = overall_smape
-
+        self.mean_absolute_error = mae
+        self.root_mean_squared_error = rmse
+        self.smape = smape
         return super().finalize()

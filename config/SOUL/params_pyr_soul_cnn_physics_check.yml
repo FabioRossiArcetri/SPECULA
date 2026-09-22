@@ -1,0 +1,42 @@
+---
+# Physics check: is there information about modes 20-99 in the non-modulated
+# pyramid slopes once the residual is much smaller?
+#
+# Third file on top of the usual two:
+#   specula params_pyr_soul.yml params_pyr_soul_cnn_train_data.yml params_pyr_soul_cnn_physics_check.yml
+#
+# In the training run (seeing 0.4-1.2", no loop gain on modes >= 100) the
+# residual was ~290 nm RMS (~2.4 rad at 750 nm, far outside a non-modulated
+# pyramid's linear range), and neither the CNN nor a linear ridge map
+# predicted modes 20-99 on new data (forward-in-time FVU > 1). This run shrinks
+# the residual and looks at the same diagnostics: the number that answers the
+# question is the linear ridge's *forward-in-time* FVU per mode group (the
+# "fwd: ... ridge_FVU" column and the "forward in time ... ridge" line). Check
+# first that the residual actually dropped: the "labels this window" line
+# reports it for modes 0-99 and modes >= 100.
+#
+# The CNN is barely trained here (1 minibatch step per trigger): only the
+# ridge baseline matters, and its numbers don't depend on the CNN.
+
+main_override:
+  total_time:        30.0   # ~50 triggers: plenty for the ridge diagnostics
+
+# Fixed, good seeing instead of a random 0.4-1.2" (the train config redefines
+# seeing as a PeriodicRandomGenerator; amp 0 keeps it constant).
+seeing_override:
+  constant:          [0.4]
+  amp:               [0.0]
+
+# Loop gain back on for modes 100-299 and 300-499 (the base config's original
+# values), so the out-of-band residual that aliases into the slopes shrinks
+# too. If the loop turns unstable with these (the "labels this window" RMS
+# grows instead of dropping), remove this block and rerun with the seeing
+# change alone.
+control_override:
+  int_gain:          [0.55, 0.45, 0.40, 0.35]
+
+nn_trainer_override:
+  network_filename:  './trained_models/physics_check.pth'   # keeps the real checkpoint untouched
+  load_from_file:    false
+  replay_steps:      1
+  diag_interval:     5

@@ -1,6 +1,3 @@
-import os
-import json
-
 import numpy as np
 import torch
 
@@ -9,7 +6,8 @@ from specula.base_processing_obj import InputDesc
 from specula.processing_objects.base_modalrec import BaseModalrec
 from specula.connections import InputValue
 from specula.base_value import BaseValue
-from specula.lib.efficient_u_net import UNetRegressor
+from specula.lib.cnn_checkpoint import load_trained_network
+from specula.lib.frame_stacker import FrameStacker
 
 
 class Conv2dNetRec(BaseModalrec):
@@ -45,6 +43,9 @@ class Conv2dNetRec(BaseModalrec):
                  depth=5,
                  input_channels=2,
                  baseline_offset=0,
+                 n_frames=1,
+                 head_type='pooled',
+                 head_grid=32,
                  target_device_idx: int = None,
                  precision: int = None):
         """
@@ -61,45 +62,28 @@ class Conv2dNetRec(BaseModalrec):
             baseline is added back to it to form the final out_modes --
             the closed-loop counterpart of Conv2dNetTrainer/Tester's
             residual-learning mode.
+        n_frames : int, optional
+            Consecutive slope maps stacked as the network input (the current
+            one and the n_frames - 1 before it); must match the value the
+            network was trained with (see Conv2dNetTrainer; it is checked
+            against the checkpoint's stats file). Until n_frames maps have
+            arrived, the missing ones repeat the first.
+        head_type : str, optional
+            'pooled' (default) or 'spatial': the network's regression head
+            (see UNetRegressor); must match the value the network was
+            trained with (it is checked against the checkpoint's stats file).
         """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         self.nmodes = nmodes
         self.input_channels = input_channels
         self.baseline_offset = baseline_offset
-        self.device = torch.device("cpu")
-
-        if not os.path.isfile(network_filename):
-            raise FileNotFoundError(f"Model file not found at {network_filename}")
-
-        # weights_only=False: these checkpoints are produced by our own
-        # training runs (state_dict or a full model object), never loaded
-        # from an untrusted or shared source.
-        checkpoint = torch.load(network_filename, map_location='cpu', weights_only=False)
-        model = UNetRegressor(
-            input_channels=input_channels,
-            output_size=nmodes,
-            base_channels=channels,
-            input_size=(160, 160),
-            dropout_level=dropout,
-            conv_block_type=conv_block_type,
-            depth=depth,
-        )
-        if isinstance(checkpoint, dict):
-            model.load_state_dict(checkpoint)
-        elif hasattr(checkpoint, 'state_dict'):
-            model.load_state_dict(checkpoint.state_dict())
-        else:
-            model = checkpoint
-        self.model = model.to(self.device)
-        self.model.eval()
-
-        stats_filename = network_filename.replace('.pth', '_stats.json')
-        if not os.path.isfile(stats_filename):
-            raise FileNotFoundError(f"Statistics file not found at {stats_filename}. "
-                                    f"Make sure to train the model first!")
-        with open(stats_filename, 'r') as f:
-            stats = json.load(f)
+        self.n_frames = n_frames
+        self.stacker = FrameStacker(n_frames, np)
+        self.model, stats = load_trained_network(
+            network_filename, nmodes=nmodes, input_channels=input_channels, n_frames=n_frames,
+            channels=channels, depth=depth, dropout=dropout, conv_block_type=conv_block_type,
+            head_type=head_type, head_grid=head_grid)
         self.meanp = stats['meanp']
         self.stdp = stats['stdp']
         self.meanmodes = np.asarray(stats['meanmodes'], dtype=float)
@@ -123,8 +107,9 @@ class Conv2dNetRec(BaseModalrec):
             map2d = map2d[np.newaxis, ...]
         map2d = map2d.astype(np.float32)
 
-        ph = (map2d - self.meanp) / self.stdp
-        inputs = torch.from_numpy(ph[np.newaxis, ...]).to(self.device, dtype=torch.float32)
+        stacked = self.stacker(map2d[np.newaxis, ...])   # (1, input_channels * n_frames, H, W)
+        ph = (stacked - self.meanp) / self.stdp
+        inputs = torch.from_numpy(ph.astype(np.float32))
 
         with torch.no_grad():
             preds_normalized = self.model(inputs)

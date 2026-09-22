@@ -1,3 +1,5 @@
+import time
+
 import matplotlib.pyplot as plt
 
 from specula.scalar_values import IntValue
@@ -15,6 +17,14 @@ class BaseDisplay(BaseProcessingObj):
 
     __plot_completed = {}
 
+    # Caps how often _safe_draw() actually repaints the GUI window (see
+    # there for why a repaint is needed at all). Data updates
+    # (_update_display) still happen on every trigger regardless -- this
+    # only throttles the expensive part, so a display tapping a
+    # fast-triggering input (e.g. every simulation step) doesn't spend a
+    # large fraction of the run blocked on GUI repaints.
+    _MIN_REDRAW_INTERVAL = 0.2  # [s] -> at most 5 repaints/second
+
     def __init__(self,
                  title='',
                  window: int=None,
@@ -31,6 +41,7 @@ class BaseDisplay(BaseProcessingObj):
         self.input_key = ''
         self.subplot = subplot
         self.onNotebook = runningOnNotebook()
+        self._last_draw_time = 0.0
 
         if window not in self.__plot_completed:
             self.__plot_completed[window] = {}
@@ -115,15 +126,40 @@ class BaseDisplay(BaseProcessingObj):
 
     def _show_error(self, message):
         self.ax.clear()
-        self.ax.text(0.5, 0.5, message, ha='center', va='center', 
+        self.ax.text(0.5, 0.5, message, ha='center', va='center',
                     transform=self.ax.transAxes, color='red', fontsize=12)
-        self._safe_draw()
+        self._safe_draw(force=True)
 
-    def _safe_draw(self):
-        """Thread-safe drawing method"""
+    # How long plt.pause() actually blocks to let the GUI event loop run.
+    # A near-zero pause is enough to get a repaint through for a *local*
+    # display, but not over X11 forwarding: that repaint is a real network
+    # round-trip, and displays that only get triggered rarely (e.g. once
+    # per training step, with several seconds of uninterrupted GPU work in
+    # between, rather than every simulation step) don't get enough other
+    # opportunities to compensate -- the paint commands just pile up
+    # unflushed until the process exits. This needs to be long enough for
+    # that round-trip regardless of how often _safe_draw() is called.
+    _PAUSE_INTERVAL = 0.05  # [s]
+
+    def _safe_draw(self, force=False):
+        """Thread-safe drawing method, rate-limited to _MIN_REDRAW_INTERVAL
+        (unless force=True, used for one-off events like _show_error).
+
+        draw_idle()+flush_events() alone often isn't enough to force an
+        actual on-screen repaint for a GUI backend (Tk/Qt/GTK) during a
+        long-running, CPU-bound simulation loop that never otherwise
+        yields to the GUI event loop -- the window can stay blank the
+        whole run and only actually paint once, briefly, right as the
+        process exits or is interrupted. plt.pause() explicitly pumps the
+        event loop and forces the repaint.
+        """
+        now = time.monotonic()
+        if not force and now - self._last_draw_time < self._MIN_REDRAW_INTERVAL:
+            return
+        self._last_draw_time = now
         try:
             if self.fig and self.fig.canvas:
                 self.fig.canvas.draw_idle()
-                self.fig.canvas.flush_events()
+                plt.pause(self._PAUSE_INTERVAL)
         except Exception as e:
             self.logger.error(f"Drawing error: {e}")

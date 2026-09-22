@@ -5,7 +5,7 @@ main:
   root_dir:          '/raid1/guido/PASSATA/LBT'         # Root directory for calibration manager  
   pixel_pupil:       220                    # Linear dimension of pupil phase array
   pixel_pitch:       0.037372727            # [m] Pitch of the pupil phase array
-  total_time:        10.9956                # [s] Total simulation running time
+  total_time:        100.9956                # [s] Total simulation running time
   time_step:         0.000588               # [s] Simulation time step
   zenithAngleInDeg:  0.000
   display_server:    False
@@ -53,6 +53,7 @@ atmo:
     wind_direction: 'wind_direction.output'
   outputs: ['layer_list']
 
+
 prop:
   class:                'AtmoPropagation'
   simul_params_ref:     'main'
@@ -62,6 +63,7 @@ prop:
     common_layer_list: ['pupilstop',
                   'dm.out_layer:-1']
   outputs: ['out_on_axis_source_ef']
+
 
 pyramid:
   class:             'ModulatedPyramid'
@@ -75,12 +77,6 @@ pyramid:
   inputs:
     in_ef: 'prop.out_on_axis_source_ef'
 
-modal_analysis:
-  class:                'ModalAnalysis'
-  ifunc_inv_object:     'KLmatrix_KL_v10_inv'
-  inputs:
-    in_ef: 'prop.out_on_axis_source_ef'
-  outputs: ['out_modes']
 
 detector:
   class:             'CCD'
@@ -88,12 +84,12 @@ detector:
   size:              [120,120]               # Detector size in pixels
   dt:                0.000588                # [s] Detector integration time
   bandw:             300                     # [nm] Sensor bandwidth
-  #photon_noise:      True                    # activate photon noise
-  #readout_noise:     True                    # activate readout noise
-  #excess_noise:      True
-  photon_noise:      False                    # activate photon noise
-  readout_noise:     False                    # activate readout noise
-  excess_noise:      False
+  photon_noise:      True                    # activate photon noise
+  readout_noise:     True                    # activate readout noise
+  excess_noise:      True
+  #photon_noise:      False                    # activate photon noise
+  #readout_noise:     False                    # activate readout noise
+  #excess_noise:      False
   readout_level:     0.4                     # readout noise in [e-/pix/frame]
   quantum_eff:       0.32                    # quantum efficiency * total transmission
   inputs:
@@ -102,43 +98,75 @@ detector:
 
 slopec:
   class:             'PyrSlopec'  
-  pupdata_object:    'soul_KLv10_ps220p0.037_pyr40x40_wl750_fv2.1_ft3.0_bn1_th0.30a0.30b'            # tag of the pyramid WFS pupils
+  pupdata_object:    'soul_KLv10_ps220p0.037_pyr40x40_wl750_fv2.1_ft3.0_bn1_th0.30a0.30b_bands40_ctr.fits'
+  #pupdata_object:    'soul_KLv10_ps220p0.037_pyr40x40_wl750_fv2.1_ft3.0_bn1_th0.30a0.30b'            # tag of the pyramid WFS pupils
+  slopes_from_intensity: True
+  sn_object:        'soul_KLv10_sn_pc_s1.0_c09_bands40'
+
   inputs:
     in_pixels:        'detector.out_pixels'
   outputs: ['out_slopes']
 
+slopecNOSN:
+  class:             'PyrSlopec'  
+  pupdata_object:    'soul_KLv10_ps220p0.037_pyr40x40_wl750_fv2.1_ft3.0_bn1_th0.30a0.30b_bands40_ctr.fits'
+  #pupdata_object:    'soul_KLv10_ps220p0.037_pyr40x40_wl750_fv2.1_ft3.0_bn1_th0.30a0.30b'            # tag of the pyramid WFS pupils
+  slopes_from_intensity: True
+  inputs:
+    in_pixels:        'detector.out_pixels'
+  outputs: ['out_slopes']
 
 rec:
   class:              'Modalrec'
-  recmat_object:      'soul_KLv10_ps220p0.037_pyr40x40_wl750_fv2.1_ft3.0_ma3_bn1_th0.30a0.30b_mn500'         # reconstruction matrix tag
+  # recmat_object:      'soul_KLv10_ps220p0.037_pyr40x40_wl750_fv2.1_ft3.0_ma3_bn1_th0.30a0.30b_mn500'         # reconstruction matrix tag
+  recmat_object:      'soul_KLv10_rec_pc_s1.0_c09_amp100_bands40.fits'
   inputs:
     in_slopes:        'slopec.out_slopes'
   outputs: ['out_modes']
 
+
 control:
   class:             'Integrator'
-  delay:             2                      # explicit temporal delay in time steps; additional to the 1-step feedback lag from dm.out_layer:-1
-  int_gain:          [0.55,   0.45,     0.40,     0.35]
+  delay:             2                      # Total temporal delay in time steps
+  int_gain:          [0.55,   0.45,     0.,     0.]
   ff:                [1.0,    0.999996, 0.999365, 0.977895]
   n_modes:           [30,     70,       100,      300]
   inputs:
       delta_comm: 'rec.out_modes'
 
 
+ifunc_object:
+  class: 'IFunc'
+  tag: 'KLmatrix_KL_v10'
+
+
 dm:
   class:             'DM'
   simul_params_ref:  'main'
-  ifunc_object:      'KLmatrix_KL_v10'
+  ifunc_ref:         'ifunc_object'
   height:            0                      # DM height [m]
   inputs:
-      in_command: 'control.out_comm'
+    in_command: 'control.out_comm'
+
+
+ifunc_inv_object:
+  class: 'IFuncInv'
+  tag: 'KLmatrix_KL_v10_inv'
+
+
+modal_analysis:
+  class:             'ModalAnalysis'
+  ifunc_inv_ref:     'ifunc_inv_object'
+  inputs:
+    in_ef: 'prop.out_on_axis_source_ef'
+  outputs: ['out_modes']
 
 
 psf:
   class:             'PSF'
   simul_params_ref:  'main'
   wavelengthInNm:    1650                 # [nm] Imaging wavelength
-  nd:                8                    # padding coefficient for PSF computation
+  nd:                3                    # padding coefficient for PSF computation
   start_time:        0.05                # PSF integration start time
   inputs:
       in_ef:  'prop.out_on_axis_source_ef'
@@ -157,3 +185,30 @@ data_store:
                  'deltaComm-rec.out_modes',
                  'comm-control.out_comm',
                  'srRes-psf.out_sr']
+
+# sc_disp:
+#  class:            'SlopecDisplay'
+#  inputs:
+#    slopes:       'slopec.out_slopes'
+# sr_disp:
+#  class:            'PlotDisplay'
+#  inputs:
+#    value:       'psf.out_sr'
+#  title:            'SR'
+# ph_disp:
+#  class:            'PhaseDisplay'
+#  inputs:
+#    phase:       "prop.out_on_axis_source_ef"
+#  title:            'PUPIL PHASE'
+# dm_disp:
+#  class:            'PhaseDisplay'
+#  inputs:
+#    phase:       "dm.out_layer"
+#  title:            'DM'
+# psf_disp:
+#  class:            'PsfDisplay'
+#  log_scale:           True
+#  inputs:
+#    psf:       "psf.out_psf"
+#  title:            'PSF'
+

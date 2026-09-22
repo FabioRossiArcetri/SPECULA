@@ -35,11 +35,24 @@ pyramid_override:
 # (here, atmo's seeing/wind_speed/wind_direction inputs), so those are
 # reconnected explicitly in atmo_override below.
 #
-# Periods are chosen as small, pairwise-distinct primes (in seconds) so
-# that within main.total_time (~11s) each parameter is redrawn several
-# times (2s: ~5 draws, 3s: ~3 draws, 5s: ~2 draws) while their combined
-# state repeats only every lcm(2,3,5)=30s -- well beyond this run's
-# length, so the loop never sees the same joint condition twice.
+# Periods are distinct primes (in seconds) chosen so that *no two* of
+# them ever redraw on the same simulation step within one run: the
+# smallest pairwise period, lcm(5,7)=35s, already exceeds
+# main.total_time (30.9956s), as do lcm(5,11)=55s and lcm(7,11)=77s.
+#
+# This matters more than the earlier "all three realign only every
+# lcm=30s" reasoning suggested. With the previous 2s/3s/5s periods, the
+# *pairs* realigned constantly inside a single run -- seeing+wind_speed
+# every 6s (5 times over 31s), seeing+wind_direction every 10s (3
+# times), wind_speed+wind_direction every 15s (2 times). A simultaneous
+# two-parameter jump is a much bigger shock to a fixed-gain loop than
+# either parameter moving alone, and those compounded transients showed
+# up as large, recurring spikes in the training loss roughly every ~10
+# triggers (6s / ~0.59s-per-trigger).
+#
+# Each parameter still gets several draws over the run (5s: ~6 draws,
+# 7s: ~4, 11s: ~2), and the combined state now repeats only every
+# lcm(5,7,11)=385s -- far beyond any run of this length.
 #
 # data_store is also removed: it dumps the full residual EF to
 # store_dir every step (an absolute path under someone else's home
@@ -53,8 +66,8 @@ seeing:
   class:             'PeriodicRandomGenerator'
   update_interval:   2.0                    # [s] prime period
   distribution:      'UNIFORM'
-  constant:          [0.8]                  # ["] centered on the base config's value
-  amp:               [0.8]                  # ["] -> range [0.4, 1.2]
+  constant:          [0.9]                  # ["] centered on the base config's value
+  amp:               [0.6]                  # ["] -> range [0.6, 1.2]
   output_size:       1
 
 wind_speed:
@@ -96,48 +109,281 @@ gain_mod_wave:
   offset:            [5.969026041820607]   # 0.95 * 2*pi
   outputs: ['output']
 
+# --- Randomized loop gain on modes 50 and up -----------------------------
+# At the nominal gain the loop keeps these modes at ~2 nm RMS each, below the
+# WFS noise and the aliasing from the modes it doesn't correct: neither the
+# CNN nor a linear map could then predict them on new data (forward-in-time
+# FVU ~0.9-1.2), and the training data had no examples of them being large --
+# which is what happens when the CNN drives the loop and under-corrects them.
+# So control's gain on each of those modes is scaled by its own random factor,
+# redrawn every 0.5 s: 85% of the time 1 (nominal), otherwise uniform in
+# [0.3, 1). Modes 0-49 keep the nominal gain.
+#
+# It started at mode 200, and those modes became the only mid/high ones the
+# CNN could predict better than a linear map (forward-in-time FVU 0.60 vs
+# 0.91), while the un-excited 50-199 stayed at ~1. Hence the extension down
+# to mode 50.
+#
+# How *many* modes are de-gained at once is a stability limit, not a taste:
+# with half of the 580 modes de-gained, down to fully open, the loop diverged
+# -- and it diverged in the low orders (modes 0-19 reached ~5500 nm RMS while
+# the excited 200-499 stayed at 42), because the extra residual takes the
+# non-modulated pyramid out of its linear range and the low-order loop, which
+# runs near its stability limit, goes with it. So the factor never goes below
+# 0.3 of nominal, and the modes are split in two tiers:
+#
+#   modes 50-199:  de-gained 15% of the time. They carry most of the residual,
+#                  so this is where the stability limit bites.
+#   modes 200-629: de-gained 20% of the time. They cost little residual each,
+#                  but there are 430 of them: at 40% the loop diverged again
+#                  (~197 modes de-gained at once, against 87 in the run that
+#                  stayed stable for 54 s), decaying from a Strehl of 0.88 to
+#                  nothing over ~8 s. 20% keeps ~108 de-gained at once, close
+#                  to what was demonstrably stable, while still exciting these
+#                  modes 4 times more often than the 15% tier.
+#
+# The whole loop still opens with gain_mod_wave; the CNN trainer still only
+# sees gain_mod_wave, so its filtering of the open-loop frames is unchanged.
+#
+# control's gain_mod gets one value per mode (630, = sum of its n_modes):
+#   gain_mod_modes = [1 x 50, min(U(0.3, 5), 1) x 150,
+#                     min(U(0.3, 3.8), 1) x 430] * gain_mod_wave
+# (built in this many steps because BaseOperation applies a shorter second
+# operand only to the first elements, instead of broadcasting it).
+mode_gain_nominal:                         # modes 0-49: always 1
+  class:             'WaveGenerator'
+  constant:          [1.0]
+  output_size:       50
+  outputs: ['output']
+
+mode_gain_random_mid:                      # modes 50-199: U(0.3, 5), redrawn every 0.5 s
+  class:             'PeriodicRandomGenerator'
+  update_interval:   0.5
+  distribution:      'UNIFORM'
+  constant:          [2.65]                 # -> U(0.3, 5.0); clamped to 1 below, so
+  amp:               [4.7]                  # these modes stay at nominal gain 85% of the time
+  output_size:       150
+
+mode_gain_random_high:                     # modes 200-629: U(0.3, 3.8), redrawn every 0.5 s
+  class:             'PeriodicRandomGenerator'
+  update_interval:   0.5
+  distribution:      'UNIFORM'
+  constant:          [2.05]                 # -> U(0.3, 3.8); clamped to 1 below, so
+  amp:               [3.5]                  # these modes stay at nominal gain 80% of the time
+  output_size:       430
+
+mode_gain_low_mid:                         # [1 x 50, U(0.3, 5) x 150], clamped below
+  class:             'BaseOperation'
+  concat:            true
+  inputs:
+    in_value1:       'mode_gain_nominal.output'
+    in_value2:       'mode_gain_random_mid.output'
+  outputs: ['out_value']
+
+mode_gain_factor:                          # the 630 factors, all clamped to at most 1
+  class:             'BaseOperation'
+  concat:            true
+  constant_min:      1.0                   # clamp: P(factor = 1) = 0.85 (mid) / 0.80 (high)
+  inputs:
+    in_value1:       'mode_gain_low_mid.out_value'
+    in_value2:       'mode_gain_random_high.output'
+  outputs: ['out_value']
+
+gain_mod_wave_modes:                       # gain_mod_wave, repeated for each of the 500 modes
+  class:             'WaveGenerator'
+  wave_type:         'SQUARE'
+  freq:              [1.0]
+  amp:               [0.5]
+  constant:          [0.5]
+  duty_cycle:        [0.95]
+  offset:            [5.969026041820607]
+  output_size:       630
+  outputs: ['output']
+
+gain_mod_modes:
+  class:             'BaseOperation'
+  mul:               true
+  inputs:
+    in_value1:       'mode_gain_factor.out_value'
+    in_value2:       'gain_mod_wave_modes.output'
+  outputs: ['out_value']
+
 control_override:
+  # Loop gain back on for modes 100-299 and 300-499 (the base config has 0
+  # there). With them at 0, those modes' uncorrected residual (~150 nm RMS)
+  # folded into the slopes, and nothing -- neither the CNN nor a linear map --
+  # could predict modes 20-99 on new data (forward-in-time FVU 0.8-1.6). The
+  # physics check (params_pyr_soul_cnn_physics_check.yml: these gains plus a
+  # fixed 0.4" seeing) brought that residual to ~47 nm RMS and a linear map
+  # then predicted modes 20-99 on new data with FVU ~0.2-0.5.
+  # Caveat seen there: the low-order residual (modes 0-4) roughly doubled
+  # with these gains (~450 vs ~250 nm RMS), possibly because the recmat was
+  # calibrated for a modulated pyramid.
+  int_gain:          [0.45, 0.35, 0.18, 0.08, 0]
+  n_modes:           [30,     70,       100,      300, 130]
+  ff:                [1.0,    0.999996, 0.999365, 0.977895, 1]
+
   inputs:
     delta_comm:      'rec.out_modes'
-    gain_mod:        'gain_mod_wave.output'
+    gain_mod:        'gain_mod_modes.out_value'   # per mode, see above
 
 # --- CNN training-data collection (parallel tap, does not drive the loop) --
 slopes2d:
   class:                'Slopes2D'
   inputs:
-    in_slopes: 'slopec.out_slopes'
+    in_slopes: 'slopecNOSN.out_slopes'
   outputs: ['out_value']
 
 # modal_analysis already exists in params_pyr_soul.yml (full KL modal
 # decomposition of the actual residual phase; out_modes is 630-long in
 # this config, since ModalAnalysis uses all of KLmatrix_KL_v10_inv's
-# modes). No override needed here: Conv2dNetTrainer's nmodes=30 below
-# just takes the first 30 columns of whatever it buffers (== control's
-# fastest/lowest-order rate group, n_modes[0]).
+# modes). No override needed here: Conv2dNetTrainer's nmodes=500 below
+# just takes the first 500 columns of whatever it buffers; the rest are
+# only used by the diagnostics (residual in modes >= 500).
 
 data_buffer:
   class:             'DataBuffer'
   buffer_size:       1000   # ~0.59s of data per batch -> ~18 training triggers over main.total_time
   inputs:
     input_list: ['input_2d-slopes2d.out_value',
-                 'modes-modal_analysis.out_modes']
+                 'modes-modal_analysis.out_modes',
+                 'gain_mod-gain_mod_wave.output']
 
 nn_trainer:
   class:             'Conv2dNetTrainer'
-  network_filename:  './trained_models/soul_cnn_rec.pth'
+  # Frozen normalization, trained with loop gain on modes 100-499 (see
+  # control_override above), the extra normalized loss term
+  # (norm_loss_weight below) and a head that keeps the spatial detail
+  # (head_type / depth below), predicting modes 0-499.
+  network_filename:  './trained_models/soul_cnn_rec_4f_spatial_m500_g60.pth'
   load_from_file:    true   # resume from network_filename if it already exists
-  nmodes:            30     # matches control's first (lowest-order) rate group
-  channels:          32
-  depth:             4
-  input_channels:    2      # slopes2d.out_value: x/y slope maps
-  conv_block_type:   0
-  epoch_len:         10
+  nmodes:            500     # modes 0-499 (modal_analysis gives 630): the same
+                             # modes the linear loop corrects here (control's
+                             # groups add up to 500), so the residual left in
+                             # modes >= 500 is the same here as in closed loop
+                             # with the CNN. Must match Conv2dNetTester's /
+                             # Conv2dNetRec's nmodes.
+  channels:          64
+  depth:             4      # 120x120 maps -> 7x7 bottleneck
+  head_type:         'spatial'  # the full-resolution decoder output, resampled to
+                             # head_grid x head_grid, goes to the modes through a 512-wide hidden
+                             # layer plus a direct linear map. The 'pooled' head
+                             # pooled every level to <= 4x4 grids and narrowed to
+                             # 32 features: at most 32 independent outputs for
+                             # 100 modes, and no fine spatial detail -- which the
+                             # higher-order modes need. Conv2dNetTester and
+                             # Conv2dNetRec must use the same head_type and depth
+                             # (head_type is checked against the stats file).
+  head_grid:         60     # the head resamples its 120x120 feature map to this
+                             # grid before the linear layers. The map holds the
+                             # pyramid's 4 pupil images side by side (60x60 each),
+                             # so the previous 32 averaged neighbouring
+                             # subapertures together -- and across pupils -- which
+                             # is the detail the higher-order modes need.
+  input_channels:    1      # slopes2d.out_value is a single map per frame here:
+                             # slopec has slopes_from_intensity, so Slopes.get2d()
+                             # returns one intensity map instead of the two x/y
+                             # slope maps (which would be input_channels 2)
+  n_frames:          4      # the current map plus the 3 before it, stacked as 4
+                             # channels: noise is independent frame to frame while
+                             # the turbulence is strongly correlated over ~2 ms
+  conv_block_type:   1
+  epoch_len:         3      # unused while replay_size > 0 (see replay_* below)
   val_split:         0.2
+  dropout:           0.1    # was the default 0.01, then 0.05: the training loss (0.4) sat
+                             # well below the loss on each new batch (2-6), i.e.
+                             # the network was fitting the replay buffer
   label_offset:      0      # modal_analysis.out_modes has no leading placeholder
-  norm_alpha:        0.05   # default (0.001) assumes thousands of triggers;
-                             # this run only gets ~18, so normalization would
-                             # otherwise stay frozen at the very first batch
+  max_label_rms:     150    # [nm] drop samples whose residual (modes 0-499, in
+                             # quadrature) is above this. In the windows where the
+                             # residual was ~100-112 nm RMS, neither the CNN nor a
+                             # linear map fitted on the past could predict the next
+                             # batch (forward-in-time FVU ~1): at that size the
+                             # non-modulated pyramid is out of its linear range and
+                             # there is no relation left to learn. It also keeps a
+                             # diverging loop from filling the replay buffer with
+                             # useless samples. Retune from the diagnostics'
+                             # "labels this window" line.
+  freeze_norm:       true   # normalization estimated once, then fixed: with an
+                             # EMA it moved by 27-100% per step, so the network's
+                             # target kept shifting. norm_alpha is unused.
+  init_samples:      4000   # samples collected (~5 triggers, no training) to
+                             # estimate the frozen normalization; they also seed
+                             # the replay buffer
+  norm_alpha:        0.1   # unused while freeze_norm is true
+  # Replay buffer: before, each trigger took 3 full-batch steps on its own
+  # ~0.6 s chunk (60 gradient steps in 20 triggers, one atmospheric
+  # condition at a time, forgotten when the next arrived). Now every
+  # trigger adds its training frames to a buffer and takes many shuffled
+  # minibatch steps over everything collected so far.
+  replay_size:       30000  # max samples kept (~1.7 GB of CPU RAM at 120x120); a
+                             # 100 s run adds ~80/trigger x ~170 triggers
+  replay_subsample:  10     # keep every 10th frame (6 ms apart): consecutive
+                             # 0.6 ms frames are nearly identical
+  replay_steps:      100    # minibatch steps per trigger (training time per
+                             # trigger scales with this)
+  replay_batch:      64
+  grad_clip_value:   20     # loose: the median gradient norm is ~2, so this only
+                             # catches spikes (one of 347 was seen right after a
+                             # restart). A clip at 1 fired on every step and made
+                             # every batch weigh the same.
+  lr_decay:          0.999  # learning rate x0.999 per trigger: 1e-3 -> ~6e-4 after
+                             # 500 triggers. At 0.9999 it stayed at 9.8e-4 for a
+                             # whole run while the validation loss was flat
+  loss_delta:        10.0   # [nm] Huber-loss transition point: bounds the
+                             # influence of occasional large-residual
+                             # samples (gain_mod dips, post-transition
+                             # transients) that would otherwise dominate a
+                             # plain MSE and show up as erratic loss jumps.
+                             # A rough starting point -- retune towards the
+                             # typical per-mode residual you observe.
+  gain_mod_threshold: 1.0   # drop buffered samples where the loop wasn't at
+                             # full gain (see gain_mod_wave above) from
+                             # training -- their much larger transient
+                             # residual isn't representative closed-loop
+                             # operation and was showing up as large,
+                             # erratic loss jumps (see loss_delta above,
+                             # which still handles what gain_mod can't:
+                             # transients from abrupt atmospheric changes).
+  # Transient vs. settled loop. gain_mod_threshold only drops the frames
+  # while the loop is open; the re-convergence right after it re-closes is
+  # still large-residual, hard-to-predict data. The first settle_frames
+  # frames after the loop is back at full gain count as transient, with
+  # weight transient_weight in the loss: training then targets the settled
+  # loop (the regime the CNN will mostly work in once it drives the loop)
+  # while still seeing re-convergence. The diagnostics' "loop transient"
+  # table reports residual and CNN error vs. frames since re-close, to
+  # measure how long the transient really lasts and tune settle_frames; the
+  # frames stay visible there as long as transient_weight > 0.
+  settle_frames:     50     # the loop now settles within ~50 frames (diagnostics'
+                             # transient table: the residual at frames 11-50 is
+                             # already close to the settled one), so only those
+                             # count as transient
+  transient_weight:  0.1
+  # Extra loss term: mean squared error per mode normalized by the mode's
+  # std, added to the nm Huber loss. In the nm loss, modes 20-99 (~3-5 nm per
+  # mode) weigh ~30x less than modes 0-4 (~130 nm per mode) in the gradient,
+  # so the network had almost no push to learn them. The reported train/val
+  # losses remain the plain nm loss.
+  # Lowered from 20: it weighs every mode by its own spread, including the
+  # ones whose residual is mostly noise (modes 50-199 sat at a forward-in-time
+  # FVU of ~1, i.e. unpredictable), so the network was spending capacity
+  # fitting noise there -- training loss 0.19 against 2.8 on each new batch.
+  norm_loss_weight:  5.0
   inputs:
     input_2d_batch: 'data_buffer.input_2d_buffered'
     labels:         'data_buffer.modes_buffered'
-  outputs: ['loss']
+    gain_mod:       'data_buffer.gain_mod_buffered'
+  outputs: ['loss', 'val_loss']
+
+# The training and validation losses are printed every step and stored in the
+# diagnostics file, so no display is wired up here: a PlotDisplay over X11 took
+# a whole run down with it at 54 s of 100 ("XIO: fatal IO error on X server").
+# To watch them live, add back:
+#
+# loss_disp:
+#   class:             'PlotDisplay'
+#   inputs:
+#     value_list: ['nn_trainer.loss', 'nn_trainer.val_loss']
+#   labels:            ['train', 'val']
+#   title:             'Conv2dNetTrainer loss (physical units)'

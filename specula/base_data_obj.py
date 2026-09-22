@@ -50,6 +50,22 @@ class BaseDataObj(BaseTimeObj):
             self_attr = getattr(self, attr)
             self_type = type(self_attr)
             if self_type not in array_types:
+                # A genuine numpy/cupy *scalar* (e.g. a BaseValue
+                # constructed with an initial scalar value: __init__
+                # builds it via self.dtype(value), which for a scalar
+                # input produces e.g. numpy.float32 rather than an
+                # ndarray). array_types only lists true ndarray types, so
+                # without this such a value would be silently skipped
+                # below and never updated on the destination object
+                # across a device boundary. Scalars are immutable, so
+                # this always replaces the attribute rather than copying
+                # in-place. (A *0-d array* scalar -- e.g. BaseValue.value
+                # built via set_value() on a BaseValue that started with
+                # value=None -- is a different case, handled in the DtD/
+                # HtH branches below: it IS in array_types, but a 0-d
+                # array can't be sliced with `[:]`.)
+                if isinstance(self_attr, np.generic) or (cp is not None and isinstance(self_attr, cp.generic)):
+                    setattr(destobj, attr, self_attr)
                 continue
 
             dest_attr = getattr(destobj, attr)
@@ -76,8 +92,17 @@ class BaseDataObj(BaseTimeObj):
                             warnings.simplefilter("ignore", category=self.PerformanceWarning)
                         try:
                             dest_attr[:] = self_attr
-                        except:
-                            dest_attr = self_attr
+                        except Exception:
+                            # dest_attr[:] = ... raises IndexError for 0-d
+                            # arrays ("too many indices"), e.g. a scalar
+                            # BaseValue.value built via to_xp() the first
+                            # time set_value() runs. The previous fallback
+                            # here ("dest_attr = self_attr") only rebound
+                            # the local variable, never actually updating
+                            # destobj -- so destobj.value silently stayed
+                            # frozen at whatever it was on the very first
+                            # transfer, forever, with no error anywhere.
+                            setattr(destobj, attr, self_attr)
                 elif DtH:
                     # Do not set blocking=True for cupy 12.x compatibility.
                     # Blocking is True by default in later versions anyway
@@ -85,7 +110,11 @@ class BaseDataObj(BaseTimeObj):
                 elif HtD:
                     dest_attr.set(self_attr)
                 elif HtH:
-                    dest_attr[:] = self_attr
+                    try:
+                        dest_attr[:] = self_attr
+                    except Exception:
+                        # Same 0-d-array case as DtD above.
+                        setattr(destobj, attr, self_attr)
                 else:
                     self.logger.warning(f'mismatch between target_device_idx and array allocation, forcing reallocation ({destobj}.{attr})')
                     force_reallocation = True

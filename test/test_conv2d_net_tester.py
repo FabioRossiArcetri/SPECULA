@@ -34,7 +34,7 @@ def save_checkpoint(net_path, stats_path, nmodes=NMODES, channels=CHANNELS, dept
                      input_channels=1):
     model = UNetRegressor(
         input_channels=input_channels, output_size=nmodes, base_channels=channels,
-        input_size=(160, 160), dropout_level=0.0, conv_block_type=0, depth=depth,
+        dropout_level=0.0, conv_block_type=0, depth=depth,
     )
     torch.save(model.state_dict(), net_path)
     stats = {
@@ -75,6 +75,23 @@ def feed_batch(tester, batch=BATCH, nmodes=NMODES, h=H, w=W, seed=0):
     tester.check_ready(1)
 
 
+def feed_batch_with_gain_mod(tester, gain_mod, batch=BATCH, nmodes=NMODES, h=H, w=W, seed=0):
+    """Like feed_batch(), but with an explicit 'gain_mod' input (shape
+    (batch,) or (batch, 1)) connected alongside input_2d_batch/labels."""
+    rng = np.random.default_rng(seed)
+    x_val = BaseValue(value=rng.standard_normal((batch, 2, h, w)).astype(np.float32))
+    y_val = BaseValue(value=rng.standard_normal((batch, nmodes + 1)).astype(np.float32))
+    g_val = BaseValue(value=np.asarray(gain_mod, dtype=np.float32).reshape(batch, 1))
+    t = x_val.seconds_to_t(1)
+    x_val.generation_time = t
+    y_val.generation_time = t
+    g_val.generation_time = t
+    tester.inputs['input_2d_batch'].set(x_val)
+    tester.inputs['labels'].set(y_val)
+    tester.inputs['gain_mod'].set(g_val)
+    tester.check_ready(1)
+
+
 def feed_batch_with_baseline(tester, labels, baseline, batch=BATCH, h=H, w=W, seed=0):
     rng = np.random.default_rng(seed)
     x_val = BaseValue(value=rng.standard_normal((batch, 2, h, w)).astype(np.float32))
@@ -104,38 +121,12 @@ class TestConv2dNetTesterConstruction(unittest.TestCase):
             net_path = os.path.join(d, 'net.pth')
             model = UNetRegressor(
                 input_channels=1, output_size=NMODES, base_channels=CHANNELS,
-                input_size=(160, 160), dropout_level=0.0, conv_block_type=0, depth=DEPTH,
+                dropout_level=0.0, conv_block_type=0, depth=DEPTH,
             )
             torch.save(model.state_dict(), net_path)
             with self.assertRaises(FileNotFoundError):
                 Conv2dNetTester(network_filename=net_path,
                                  nmodes=NMODES, channels=CHANNELS, depth=DEPTH)
-
-    def test_full_model_checkpoint_is_loaded(self):
-        # torch.save(model, path) (a full model object, not a state_dict) is
-        # handled by a dedicated branch in the source. torch.load(...,
-        # map_location='cpu') is called with weights_only=False so this
-        # actually gets loaded instead of raising.
-        with tempfile.TemporaryDirectory() as d:
-            net_path = os.path.join(d, 'net.pth')
-            stats_path = net_path.replace('.pth', '_stats.json')
-            source_model = UNetRegressor(
-                input_channels=1, output_size=NMODES, base_channels=CHANNELS,
-                input_size=(160, 160), dropout_level=0.0, conv_block_type=0, depth=DEPTH,
-            )
-            torch.save(source_model, net_path)
-            with open(stats_path, 'w') as f:
-                json.dump({'meanp': 0.0, 'stdp': 1.0,
-                           'meanmodes': [0.0] * NMODES, 'stdmodes': [1.0] * NMODES,
-                           'nmodes': NMODES}, f)
-
-            tester = Conv2dNetTester(network_filename=net_path, nmodes=NMODES,
-                                      channels=CHANNELS, depth=DEPTH, target_device_idx=-1)
-
-            loaded_state = tester.model.state_dict()
-            source_state = source_model.state_dict()
-            for key in source_state:
-                torch.testing.assert_close(loaded_state[key].cpu(), source_state[key].cpu())
 
     def test_successful_construction_loads_stats_and_outputs(self):
         with tempfile.TemporaryDirectory() as d:
@@ -146,7 +137,7 @@ class TestConv2dNetTesterConstruction(unittest.TestCase):
             np.testing.assert_allclose(tester.stdmodes, [1.0] * NMODES)
             self.assertEqual(
                 set(tester.outputs.keys()),
-                {'loss', 'prediction', 'targets', 'error'})
+                {'loss', 'prediction'})
             self.assertTrue(tester.model.training is False)  # eval() was called
 
 
@@ -160,7 +151,25 @@ class TestConv2dNetTesterTrigger(unittest.TestCase):
 
             feed_batch(tester)
             tester.trigger()
-            self.assertEqual(tester.outputs['prediction'].shape, (BATCH, NMODES))
+            self.assertEqual(tester.outputs['prediction'].value.shape, (BATCH, NMODES))
+
+    def test_input_channels_one_uses_a_single_map_per_frame_as_is(self):
+        # Slopes2D on slopes-from-intensity slopes buffers one map per frame,
+        # with no channel axis; the two-channel product convention must not
+        # kick in (see Conv2dNetTrainer.network_input).
+        with tempfile.TemporaryDirectory() as d:
+            tester, _, _ = build_tester(d, input_channels=1)
+            rng = np.random.default_rng(0)
+            x_val = BaseValue(value=rng.standard_normal((BATCH, H, W)).astype(np.float32))
+            y_val = BaseValue(value=rng.standard_normal((BATCH, NMODES + 1)).astype(np.float32))
+            x_val.generation_time = y_val.generation_time = x_val.seconds_to_t(1)
+            tester.inputs['input_2d_batch'].set(x_val)
+            tester.inputs['labels'].set(y_val)
+            tester.check_ready(1)
+            tester.trigger()
+
+            self.assertEqual(tester.count, BATCH)
+            self.assertEqual(tester.outputs['prediction'].value.shape, (BATCH, NMODES))
 
     def test_trigger_computes_predictions_and_updates_stats(self):
         with tempfile.TemporaryDirectory() as d:
@@ -170,9 +179,9 @@ class TestConv2dNetTesterTrigger(unittest.TestCase):
 
             self.assertEqual(tester.count, BATCH)
             self.assertEqual(len(tester.all_errors), 1)
-            self.assertEqual(tester.outputs['prediction'].shape, (BATCH, NMODES))
-            self.assertIsNotNone(tester.total_abs_error)
-            self.assertIsNotNone(tester.total_squared_error)
+            self.assertEqual(tester.outputs['prediction'].value.shape, (BATCH, NMODES))
+            np.testing.assert_allclose(tester.outputs['loss'].value,
+                                       np.mean(tester.all_errors[0] ** 2), rtol=1e-5)
 
     def test_denormalization_uses_correct_affine_formula(self):
         """Regression test: predictions must be denormalized as
@@ -192,7 +201,7 @@ class TestConv2dNetTesterTrigger(unittest.TestCase):
             tester.trigger()
 
             expected = np.tile(tester.meanmodes, (BATCH, 1))  # pred_norm == 0
-            np.testing.assert_allclose(tester.outputs['prediction'], expected)
+            np.testing.assert_allclose(tester.outputs['prediction'].value, expected)
 
     def test_trigger_noop_when_inputs_missing(self):
         with tempfile.TemporaryDirectory() as d:
@@ -201,6 +210,46 @@ class TestConv2dNetTesterTrigger(unittest.TestCase):
             tester.local_inputs['labels'] = None
             tester.trigger()
             self.assertEqual(tester.count, 0)
+
+    def test_gain_mod_filters_out_below_threshold_samples(self):
+        with tempfile.TemporaryDirectory() as d:
+            tester, _, _ = build_tester(d)
+            feed_batch_with_gain_mod(tester, gain_mod=[1.0, 1.0, 0.0, 0.5])
+            tester.trigger()
+
+            # Default gain_mod_threshold=1.0: only the two full-gain samples
+            # (indices 0, 1) are kept; the zero and the partial-gain one are
+            # dropped.
+            self.assertEqual(tester.count, 2)
+            self.assertEqual(tester.outputs['prediction'].value.shape, (2, NMODES))
+
+    def test_gain_mod_all_below_threshold_skips_trigger(self):
+        with tempfile.TemporaryDirectory() as d:
+            tester, _, _ = build_tester(d)
+            feed_batch_with_gain_mod(tester, gain_mod=[0.0, 0.0, 0.0, 0.0])
+            tester.trigger()
+
+            self.assertEqual(tester.count, 0)
+            self.assertEqual(len(tester.all_errors), 0)
+
+    def test_gain_mod_unconnected_keeps_all_samples(self):
+        # gain_mod is optional: with nothing wired to it, behavior is
+        # unchanged from before this feature existed.
+        with tempfile.TemporaryDirectory() as d:
+            tester, _, _ = build_tester(d)
+            feed_batch(tester)
+            tester.trigger()
+
+            self.assertEqual(tester.count, BATCH)
+
+    def test_gain_mod_custom_threshold(self):
+        with tempfile.TemporaryDirectory() as d:
+            tester, _, _ = build_tester(d)
+            tester.gain_mod_threshold = 0.5
+            feed_batch_with_gain_mod(tester, gain_mod=[1.0, 0.5, 0.4, 0.0])
+            tester.trigger()
+
+            self.assertEqual(tester.count, 2)  # 1.0 and 0.5 both pass >= 0.5
 
     def test_multiple_triggers_accumulate_count_and_errors(self):
         with tempfile.TemporaryDirectory() as d:
@@ -240,7 +289,7 @@ class TestResidualLearning(unittest.TestCase):
             tester.trigger()
 
             expected = np.tile(tester.meanmodes, (BATCH, 1)) + baseline
-            np.testing.assert_allclose(tester.outputs['prediction'], expected, atol=1e-5)
+            np.testing.assert_allclose(tester.outputs['prediction'].value, expected, atol=1e-5)
 
     def test_error_is_computed_against_full_labels_not_residual(self):
         with tempfile.TemporaryDirectory() as d:
@@ -259,7 +308,7 @@ class TestResidualLearning(unittest.TestCase):
             tester.trigger()
 
             np.testing.assert_allclose(
-                tester.outputs['prediction'], labels[:, 1:NMODES + 1], atol=1e-5)
+                tester.outputs['prediction'].value, labels[:, 1:NMODES + 1], atol=1e-5)
 
 
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
@@ -282,28 +331,19 @@ class TestConv2dNetTesterFinalize(unittest.TestCase):
             # Ground truth, derived directly from the per-sample error that
             # trigger() recorded, independent of the accumulator internals.
             error = tester.all_errors[0]
-            expected_mae = np.mean(np.abs(error), axis=0, keepdims=True)
-            expected_rmse = np.sqrt(np.mean(error**2, axis=0, keepdims=True))
+            expected_mae = np.mean(np.abs(error), axis=0)
+            expected_rmse = np.sqrt(np.mean(error**2, axis=0))
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 tester.finalize()
 
             self.assertIn('FINAL TEST STATISTICS', buf.getvalue())
-            self.assertEqual(tester.outputs['mean_absolute_error'].shape, (1, NMODES))
-            self.assertEqual(tester.outputs['root_mean_squared_error'].shape, (1, NMODES))
-            self.assertEqual(tester.outputs['smape'].shape, (NMODES,))
-            self.assertTrue(np.isscalar(tester.outputs['overall_smape'])
-                             or tester.outputs['overall_smape'].shape == ())
-            np.testing.assert_allclose(
-                tester.outputs['mean_absolute_error'], expected_mae, rtol=1e-5)
-            np.testing.assert_allclose(
-                tester.outputs['root_mean_squared_error'], expected_rmse, rtol=1e-5)
+            self.assertEqual(tester.smape.shape, (NMODES,))
+            np.testing.assert_allclose(tester.mean_absolute_error, expected_mae, rtol=1e-5)
+            np.testing.assert_allclose(tester.root_mean_squared_error, expected_rmse, rtol=1e-5)
 
     def test_finalize_handles_varying_batch_sizes_across_triggers(self):
-        # Regression check: total_abs_error/total_squared_error used to keep
-        # the shape of whichever batch created them, so a second trigger()
-        # with a different batch size would fail to broadcast into it.
         with tempfile.TemporaryDirectory() as d:
             tester, _, _ = build_tester(d)
             feed_batch(tester, batch=4, seed=1)
@@ -316,16 +356,14 @@ class TestConv2dNetTesterFinalize(unittest.TestCase):
                 tester.finalize()
 
             self.assertEqual(tester.count, 11)
-            self.assertEqual(tester.outputs['mean_absolute_error'].shape, (1, NMODES))
+            self.assertEqual(tester.mean_absolute_error.shape, (NMODES,))
 
             # all_targets must accumulate across triggers just like
             # all_errors, matching each trigger's batch size.
             self.assertEqual([t.shape[0] for t in tester.all_targets], [4, 7])
 
-            expected_mae = np.mean(
-                np.abs(np.concatenate(tester.all_errors, axis=0)), axis=0, keepdims=True)
-            np.testing.assert_allclose(
-                tester.outputs['mean_absolute_error'], expected_mae, rtol=1e-5)
+            expected_mae = np.mean(np.abs(np.concatenate(tester.all_errors, axis=0)), axis=0)
+            np.testing.assert_allclose(tester.mean_absolute_error, expected_mae, rtol=1e-5)
 
 
 if __name__ == '__main__':
