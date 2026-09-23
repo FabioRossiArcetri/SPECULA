@@ -219,9 +219,10 @@ control_override:
   # Caveat seen there: the low-order residual (modes 0-4) roughly doubled
   # with these gains (~450 vs ~250 nm RMS), possibly because the recmat was
   # calibrated for a modulated pyramid.
-  int_gain:          [0.45, 0.35, 0.18, 0.08, 0]
-  n_modes:           [30,     70,       100,      300, 130]
-  ff:                [1.0,    0.999996, 0.999365, 0.977895, 1]
+  #                 0-29    30-99     100-199   200-499   500-629
+  n_modes:           [30,     70,       100,      300,      130]
+  int_gain:          [0.45,   0.35,     0.18,     0.08,     0.05]
+  ff:                [1.0,    0.999996, 0.999365, 0.977895, 0.99]
 
   inputs:
     delta_comm:      'rec.out_modes'
@@ -255,13 +256,15 @@ nn_trainer:
   # control_override above), the extra normalized loss term
   # (norm_loss_weight below) and a head that keeps the spatial detail
   # (head_type / depth below), predicting modes 0-499.
-  network_filename:  './trained_models/soul_cnn_rec_4f_spatial_m500_g60.pth'
+  network_filename:  './trained_models/soul_cnn_rec_4f_spatial_m630_g60.pth'
   load_from_file:    true   # resume from network_filename if it already exists
-  nmodes:            500     # modes 0-499 (modal_analysis gives 630): the same
-                             # modes the linear loop corrects here (control's
-                             # groups add up to 500), so the residual left in
-                             # modes >= 500 is the same here as in closed loop
-                             # with the CNN. Must match Conv2dNetTester's /
+  nmodes:            630     # every mode modal_analysis gives, and every mode
+                             # the loop corrects (control's groups add up to
+                             # 630 with a small gain on 500-629, see above).
+                             # At 500 the closed loop left modes 500-629
+                             # uncorrected, worth ~26-35 nm RMS -- a floor the
+                             # linear reconstructor, which outputs all 630,
+                             # does not have. Must match Conv2dNetTester's and
                              # Conv2dNetRec's nmodes.
   channels:          64
   depth:             4      # 120x120 maps -> 7x7 bottleneck
@@ -284,7 +287,7 @@ nn_trainer:
                              # slopec has slopes_from_intensity, so Slopes.get2d()
                              # returns one intensity map instead of the two x/y
                              # slope maps (which would be input_channels 2)
-  n_frames:          4      # the current map plus the 3 before it, stacked as 4
+  n_frames:          1      # the current map plus the 3 before it, stacked as 4
                              # channels: noise is independent frame to frame while
                              # the turbulence is strongly correlated over ~2 ms
   conv_block_type:   1
@@ -294,7 +297,7 @@ nn_trainer:
                              # well below the loss on each new batch (2-6), i.e.
                              # the network was fitting the replay buffer
   label_offset:      0      # modal_analysis.out_modes has no leading placeholder
-  max_label_rms:     150    # [nm] drop samples whose residual (modes 0-499, in
+  max_label_rms:     400    # [nm] drop samples whose residual (modes 0-629, in
                              # quadrature) is above this. In the windows where the
                              # residual was ~100-112 nm RMS, neither the CNN nor a
                              # linear map fitted on the past could predict the next
@@ -304,6 +307,13 @@ nn_trainer:
                              # diverging loop from filling the replay buffer with
                              # useless samples. Retune from the diagnostics'
                              # "labels this window" line.
+                             # Raised from 150: at 150 it also removed every
+                             # large-residual sample, which is exactly what the
+                             # network needs in order to pull the loop in from
+                             # open loop. With it the CNN-driven loop took
+                             # ~0.4 s to close against the linear loop's 0.2 s.
+                             # 400 still catches a diverging loop (its batch
+                             # medians run into the thousands).
   freeze_norm:       true   # normalization estimated once, then fixed: with an
                              # EMA it moved by 27-100% per step, so the network's
                              # target kept shifting. norm_alpha is unused.
@@ -318,10 +328,21 @@ nn_trainer:
   # minibatch steps over everything collected so far.
   replay_size:       30000  # max samples kept (~1.7 GB of CPU RAM at 120x120); a
                              # 100 s run adds ~80/trigger x ~170 triggers
-  replay_subsample:  10     # keep every 10th frame (6 ms apart): consecutive
-                             # 0.6 ms frames are nearly identical
-  replay_steps:      100    # minibatch steps per trigger (training time per
-                             # trigger scales with this)
+  replay_subsample:  4      # keep every 4th frame (2.4 ms apart): consecutive
+                             # 0.6 ms frames are nearly identical, but at 10 the
+                             # buffer grew by only 80 rows per trigger while
+                             # training drew 6400 -- four passes over the same
+                             # samples every trigger, and a training loss 37x
+                             # below the loss on each new batch. At 4 the buffer
+                             # gains 200 rows per trigger and still fills
+                             # (30000) well before the end of a 100 s run.
+  replay_steps:      60     # minibatch steps per trigger (training time per
+                             # trigger scales with this). Lowered from 100 for
+                             # the same reason as replay_subsample: fewer passes
+                             # over a buffer that is small early on. It also
+                             # shortens a trigger from ~13 s to ~8 s, so a run
+                             # of a given wall-clock length covers more of the
+                             # simulation.
   replay_batch:      64
   grad_clip_value:   20     # loose: the median gradient norm is ~2, so this only
                              # catches spikes (one of 347 was seen right after a
@@ -359,7 +380,15 @@ nn_trainer:
                              # transient table: the residual at frames 11-50 is
                              # already close to the settled one), so only those
                              # count as transient
-  transient_weight:  0.1
+  transient_weight:  0.1    # those frames carry 3-10x the residual of a settled
+                             # one, and in the Huber loss a large sample counts
+                             # far more than a small one, so at 0.3 they
+                             # dominated the gradient and the settled regime --
+                             # where the loop actually runs -- got worse
+                             # (validation FVU 0.36-0.49 against 0.11-0.30 at
+                             # the same step with 0.1). They are still in the
+                             # data at this weight, which is what the network
+                             # needs to acquire the loop from far away.
   # Extra loss term: mean squared error per mode normalized by the mode's
   # std, added to the nm Huber loss. In the nm loss, modes 20-99 (~3-5 nm per
   # mode) weigh ~30x less than modes 0-4 (~130 nm per mode) in the gradient,

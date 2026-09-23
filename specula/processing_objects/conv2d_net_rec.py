@@ -6,7 +6,7 @@ from specula.base_processing_obj import InputDesc
 from specula.processing_objects.base_modalrec import BaseModalrec
 from specula.connections import InputValue
 from specula.base_value import BaseValue
-from specula.lib.cnn_checkpoint import load_trained_network
+from specula.lib.cnn_checkpoint import calibration_factor, load_trained_network
 from specula.lib.frame_stacker import FrameStacker
 
 
@@ -46,6 +46,7 @@ class Conv2dNetRec(BaseModalrec):
                  n_frames=1,
                  head_type='pooled',
                  head_grid=32,
+                 calibrate_gain=False,
                  target_device_idx: int = None,
                  precision: int = None):
         """
@@ -68,6 +69,14 @@ class Conv2dNetRec(BaseModalrec):
             network was trained with (see Conv2dNetTrainer; it is checked
             against the checkpoint's stats file). Until n_frames maps have
             arrived, the missing ones repeat the first.
+        calibrate_gain : bool, optional
+            Undo the shrinkage of the network's predictions towards the mean,
+            using the per-mode gain measured during training and saved in the
+            checkpoint (see cnn_checkpoint.calibration_factor). The loop gains
+            in a config then mean what they say: without it, a retrained
+            network that shrinks less silently raises the effective loop gain.
+            Modes the network barely predicts are left uncorrected, since
+            amplifying them would mostly amplify noise.
         head_type : str, optional
             'pooled' (default) or 'spatial': the network's regression head
             (see UNetRegressor); must match the value the network was
@@ -88,6 +97,11 @@ class Conv2dNetRec(BaseModalrec):
         self.stdp = stats['stdp']
         self.meanmodes = np.asarray(stats['meanmodes'], dtype=float)
         self.stdmodes = np.asarray(stats['stdmodes'], dtype=float)
+        self.calibration = calibration_factor(stats, nmodes) if calibrate_gain else None
+        if calibrate_gain and self.calibration is None:
+            raise ValueError(f'calibrate_gain is set, but {network_filename} has no per-mode gain '
+                             f'measurement (it was trained before this existed): retrain, or set '
+                             f'calibrate_gain to false and fold the shrinkage into the loop gains')
 
         self.inputs['baseline'] = InputValue(type=BaseValue, optional=True)
         self.modes.value = self.xp.zeros(nmodes, dtype=self.dtype)
@@ -115,6 +129,8 @@ class Conv2dNetRec(BaseModalrec):
             preds_normalized = self.model(inputs)
 
         preds = preds_normalized.cpu().numpy()[0] * self.stdmodes + self.meanmodes
+        if self.calibration is not None:
+            preds = (preds - self.meanmodes) * self.calibration + self.meanmodes
 
         baseline_in = self.local_inputs['baseline']
         if baseline_in is not None:

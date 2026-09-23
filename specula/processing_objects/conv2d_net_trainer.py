@@ -336,6 +336,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
         self.replay_count = 0
         self._replay_pos = 0
         self.step_count = 0
+        self.mode_gain = None
         self.loss = self.val_loss = None
         self.min_loss = float('inf')
 
@@ -392,6 +393,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
             'n_frames': self.n_frames,
             'head_type': self.head_type,
             'head_grid': self.head_grid,
+            'mode_gain': self.mode_gain.tolist() if self.mode_gain is not None else None,
             'min_loss': val_loss,   # this save's validation loss (not the best ever)
         })
         print(f'[{self.name}] Model saved to {self.network_filename}', flush=True)
@@ -680,6 +682,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
         with torch.no_grad():
             preds = self.model(self.val_inputs) * std_t + mean_t
             self.val_loss = self.loss_fn(preds, self.val_targets).item()
+        self._update_mode_gain(preds, self.val_targets)
         if self.lr_decay is None:
             self.plateau_scheduler.step(self.val_loss)
         self.min_loss = min(self.min_loss, self.val_loss)
@@ -705,6 +708,23 @@ class Conv2dNetTrainer(BaseProcessingObj):
         if self.early_stopping(self.val_loss):
             self.should_stop = True
             print(f'[{self.name}] Early stopping triggered at step {self.step_count}', flush=True)
+
+    def _update_mode_gain(self, preds, targets):
+        """Per-mode prediction gain cov(pred, true) / var(true) on the
+        validation set: how much the network shrinks each mode towards the
+        mean, which in a loop acts exactly like a lower gain on that mode. It
+        is saved in the stats file so Conv2dNetRec / Conv2dNetTester can undo
+        it (see cnn_checkpoint.calibration_factor), which keeps the loop gains
+        in a config meaningful across retrains -- a network that shrinks less
+        after a retrain otherwise silently raises the effective loop gain.
+        Smoothed over saves, since one validation window is noisy."""
+        p = preds.detach().to(torch.float64)
+        t = targets.to(torch.float64)
+        centred = t - t.mean(0)
+        gain = ((centred * (p - p.mean(0))).mean(0)
+                / centred.pow(2).mean(0).clamp_min(1e-30)).cpu().numpy()
+        alpha = 0.3
+        self.mode_gain = gain if self.mode_gain is None else (1 - alpha) * self.mode_gain + alpha * gain
 
     # ------------------------------------------------------------------
     #   Diagnostics (observe only; must never break training)

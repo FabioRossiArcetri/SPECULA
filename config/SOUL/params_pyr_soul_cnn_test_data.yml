@@ -46,8 +46,8 @@ seeing:
   class:             'PeriodicRandomGenerator'
   update_interval:   2.0                    # [s] prime period
   distribution:      'UNIFORM'
-  constant:          [0.7]                  # ["] centered on the base config's value
-  amp:               [0.4]                  # ["] -> range [0.4, 1.2]
+  constant:          [0.9]                  # ["] same range as the training config
+  amp:               [0.6]                  # ["] -> range [0.6, 1.2]
   output_size:       1
 
 wind_speed:
@@ -87,11 +87,16 @@ gain_mod_wave:
   outputs: ['output']
 
 control_override:
-  # Same loop gains as the training-data config (the base config has 0 on
-  # modes 100-499): the residual on the modes the loop corrects, and the one
+  # The same loop as the training-data config, minus its per-mode gain
+  # randomization: the residual on the modes the loop corrects, and the one
   # left in modes >= 500 that aliases into the slopes, then have the same
-  # statistics as the data the network was trained on.
-  int_gain:          [0.55, 0.45, 0.40, 0.35]
+  # statistics as the data the network was trained on. The groups add up to
+  # 630 because that is what the linear reconstructor outputs, and an
+  # Integrator needs one filter per input mode.
+  #                 0-29    30-99     100-199   200-499   500-629
+  n_modes:           [30,     70,       100,      300,      130]
+  int_gain:          [0.45,   0.35,     0.18,     0.08,     0.05]
+  ff:                [1.0,    0.999996, 0.999365, 0.977895, 0.99]
   inputs:
     delta_comm:      'rec.out_modes'
     gain_mod:        'gain_mod_wave.output'
@@ -122,16 +127,19 @@ data_buffer:
   inputs:
     input_list: ['input_2d-slopes2d.out_value',
                  'modes-modal_analysis.out_modes',
-                 'gain_mod-gain_mod_wave.output']
+                 'gain_mod-gain_mod_wave.output',
+                 # the linear reconstructor's own estimate of the same modes,
+                 # scored by nn_tester on exactly the same frames
+                 'reference-rec.out_modes']
 
 nn_tester:
   class:             'Conv2dNetTester'
   # The checkpoint params_pyr_soul_cnn_train_data.yml saves (its
   # nn_trainer.network_filename).
-  network_filename:  './trained_models/soul_cnn_rec_4f_spatial_m500_g60.pth'
-  nmodes:            500     # must match nn_trainer's nmodes: the checkpoint's regression head is sized for it
+  network_filename:  './trained_models/soul_cnn_rec_4f_spatial_m630_g60.pth'
+  nmodes:            630     # must match nn_trainer's nmodes: the checkpoint's regression head is sized for it
   channels:          64     # must match nn_trainer's channels: the checkpoint's conv layers are sized for it
-  depth:             4      # must match nn_trainer's depth: the checkpoint's encoder/decoder stack is sized for it
+  depth:             1      # must match nn_trainer's depth: the checkpoint's encoder/decoder stack is sized for it
   head_type:         'spatial'  # must match nn_trainer's head_type (checked against the stats file)
   head_grid:         60     # must match nn_trainer's head_grid (checked against the stats file)
   n_frames:          4      # must match nn_trainer's n_frames (checked against the stats file)
@@ -139,7 +147,7 @@ nn_tester:
                              # single intensity map per frame (slopec has slopes_from_intensity)
   conv_block_type:   1      # must match nn_trainer's conv_block_type: selects which conv block class is built
   label_offset:      0      # modal_analysis.out_modes has no leading placeholder
-  gain_mod_threshold: 0.0   # drop buffered samples where the loop wasn't at
+  gain_mod_threshold: 1.0   # drop buffered samples where the loop wasn't at
                              # full gain (see gain_mod_wave below) from the
                              # test statistics -- they aren't representative
                              # closed-loop operation
@@ -147,6 +155,7 @@ nn_tester:
     input_2d_batch: 'data_buffer.input_2d_buffered'
     labels:         'data_buffer.modes_buffered'
     gain_mod:       'data_buffer.gain_mod_buffered'
+    reference:      'data_buffer.reference_buffered'
   outputs: ['loss', 'prediction']
   target_device_idx: 1      # pin to a specific GPU on this shared machine; check nvidia-smi and adjust as needed
 

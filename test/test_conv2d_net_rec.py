@@ -189,6 +189,39 @@ class TestConv2dNetRecConstruction(unittest.TestCase):
                              depth=2, input_channels=2, target_device_idx=-1)
 
     @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
+    def test_calibrate_gain_scales_the_prediction_per_mode(self):
+        with tempfile.TemporaryDirectory() as d:
+            net_path = os.path.join(d, 'net.pth')
+            stats_path = net_path.replace('.pth', '_stats.json')
+            save_checkpoint(net_path, stats_path)
+            with open(stats_path) as f:
+                stats = json.load(f)
+            stats['meanmodes'] = [1.0] * NMODES
+            stats['mode_gain'] = [1.0, 0.5, 0.25, 0.1, 1.0]   # last two: not correctable / no shrink
+            with open(stats_path, 'w') as f:
+                json.dump(stats, f)
+
+            rec = Conv2dNetRec(network_filename=net_path, nmodes=NMODES, channels=CHANNELS,
+                               depth=DEPTH, input_channels=2, calibrate_gain=True,
+                               target_device_idx=-1)
+            rec.meanmodes = np.ones(NMODES)
+            rec.stdmodes = np.ones(NMODES)
+            rec.model = lambda x: torch.full((1, NMODES), 2.0)   # -> 3.0 before calibration
+            out = run_once(rec, build_slopes(-1), -1)
+            # the deviation from meanmodes (2.0) is multiplied by 1/gain, capped at 3
+            np.testing.assert_allclose(out, 1.0 + np.array([2.0, 4.0, 6.0, 2.0, 2.0]), atol=1e-5)
+
+    @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
+    def test_calibrate_gain_without_a_measurement_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            net_path = os.path.join(d, 'net.pth')
+            save_checkpoint(net_path, net_path.replace('.pth', '_stats.json'))
+            with self.assertRaisesRegex(ValueError, 'no per-mode gain'):
+                Conv2dNetRec(network_filename=net_path, nmodes=NMODES, channels=CHANNELS,
+                             depth=DEPTH, input_channels=2, calibrate_gain=True,
+                             target_device_idx=-1)
+
+    @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
     def test_sanity_check_passes_without_baseline_wired(self):
         with tempfile.TemporaryDirectory() as d:
             rec, _, _ = build_rec(d)

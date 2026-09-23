@@ -1,0 +1,77 @@
+---
+# Second training round: the CNN drives the loop *and* keeps training on the
+# data that loop produces.
+#
+# Third file on top of the closed-loop pair:
+#   specula params_pyr_soul.yml params_pyr_soul_cnn_closed_loop.yml params_pyr_soul_cnn_selftrain.yml
+#
+# Why: every network so far learned the residual statistics of a loop driven
+# by the *linear* reconstructor, and was then asked to work in a loop driven by
+# itself, whose residual looks different -- different spectrum, different
+# excursions, and errors that feed back into the next measurement. That
+# mismatch is what made the first closed-loop attempts wander. Here the
+# training data comes from the regime the network will actually work in.
+#
+# How it iterates: Conv2dNetRec loads the checkpoint once, at construction, and
+# drives the loop with those fixed weights for the whole run, while
+# nn_trainer keeps training a copy and overwrites the checkpoint every 10
+# steps. So one run = one improvement step: the network that *drove* is the one
+# you started with, the network you end up with has learned from its data. Run
+# it again to iterate. Keep the earlier checkpoint if you want to compare.
+#
+# The loop is not opened here (no gain_mod wave) and the per-mode gains are not
+# randomized: this is the deployment regime, on purpose. settle_frames and
+# transient_weight are therefore switched off -- without a gain_mod input there
+# are no re-close transients to weight -- and validation still comes from the
+# ordinary val_split of every batch.
+
+slopes2d:
+  class:                'Slopes2D'
+  inputs:
+    # the same slope computer Conv2dNetRec is fed from, and the same one the
+    # first training round used: no slope-null subtraction
+    in_slopes: 'slopecNOSN.out_slopes'
+  outputs: ['out_value']
+
+data_buffer:
+  class:             'DataBuffer'
+  buffer_size:       1000
+  inputs:
+    input_list: ['input_2d-slopes2d.out_value',
+                 'modes-modal_analysis.out_modes']
+
+nn_trainer:
+  class:             'Conv2dNetTrainer'
+  # The same file modalrec loaded: this run refines it in place.
+  network_filename:  './trained_models/soul_cnn_rec_4f_spatial_m630_g60.pth'
+  load_from_file:    true
+  nmodes:            630
+  channels:          64
+  depth:             4
+  head_type:         'spatial'
+  head_grid:         60
+  input_channels:    1
+  n_frames:          1
+  conv_block_type:   1
+  label_offset:      0
+  val_split:         0.2
+  dropout:           0.1
+  freeze_norm:       true   # the normalization must stay the one modalrec is
+  init_samples:      0      # using, so it is restored from the stats file and
+                            # never re-estimated (init_samples is then unused)
+  replay_size:       30000
+  replay_subsample:  10
+  replay_steps:      100
+  replay_batch:      64
+  grad_clip_value:   20
+  lr_decay:          0.999
+  loss_delta:        10.0
+  norm_loss_weight:  5.0
+  max_label_rms:     400    # same guard as the first round: also stops a loop
+                            # that goes bad from filling the replay buffer
+  settle_frames:     0      # no gain_mod input here, so no re-close transients
+  transient_weight:  1.0
+  inputs:
+    input_2d_batch: 'data_buffer.input_2d_buffered'
+    labels:         'data_buffer.modes_buffered'
+  outputs: ['loss', 'val_loss']

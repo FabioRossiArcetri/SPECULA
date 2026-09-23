@@ -12,6 +12,7 @@ A checkpoint is two files:
 import json
 import os
 
+import numpy as np
 import torch
 
 from specula.lib.efficient_u_net import UNetRegressor
@@ -20,6 +21,27 @@ from specula.lib.efficient_u_net import UNetRegressor
 # Settings saved in the stats file that the code loading the network must
 # match, with the value implied by stats files written before they existed.
 TRAINED_SETTINGS = {'n_frames': 1, 'head_type': 'pooled', 'head_grid': 32}
+
+
+# A network's predictions are shrunk towards the mean, by a factor that differs
+# per mode (see Conv2dNetTrainer's mode_gain). Dividing it out restores the
+# amplitude, but on modes the network barely predicts that would mostly amplify
+# noise, so the correction is bounded on both ends.
+MIN_CALIBRATED_GAIN = 0.2
+MAX_CALIBRATION = 3.0
+
+
+def calibration_factor(stats, nmodes):
+    """Per-mode factor that undoes the shrinkage measured during training, to
+    multiply the predictions' deviation from meanmodes by. None if the
+    checkpoint has no measurement (trained before this existed)."""
+    gain = np.asarray(stats.get('mode_gain') or [], dtype=float)
+    if gain.size != nmodes:
+        return None
+    factor = np.ones(nmodes)
+    correctable = gain > MIN_CALIBRATED_GAIN
+    factor[correctable] = np.minimum(1.0 / gain[correctable], MAX_CALIBRATION)
+    return factor
 
 
 def stats_filename(network_filename):

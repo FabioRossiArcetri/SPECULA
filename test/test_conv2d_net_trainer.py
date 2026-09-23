@@ -497,6 +497,38 @@ class TestConv2dNetTrainerTrigger(unittest.TestCase):
             self.assertAlmostEqual(float(trainer.meanp), float(np.mean(value)), places=4)
             self.assertEqual(trainer.val_inputs.shape[1:], (1, H, W))
 
+    def test_mode_gain_is_measured_and_saved(self):
+        # A model whose output is a known fraction of the target must come out
+        # with that fraction as its per-mode gain in the stats file.
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, epoch_len=1, diag_interval=0)
+            for i in range(10):     # first periodic save at step 10
+                feed_batch(trainer, seed=i)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    trainer.trigger()
+            shrink = 0.5
+            targets = trainer.val_targets
+            mean_t = to_torch(trainer.meanmodes, targets.device)
+            std_t = to_torch(trainer.stdmodes, targets.device)
+
+            class Shrinking(torch.nn.Module):
+                """Predicts the targets, shrunk towards their mean by `shrink`,
+                in the normalized space the trainer denormalizes from."""
+                def forward(self, x):
+                    return shrink * (targets - mean_t) / std_t
+
+            trainer.model = Shrinking()
+            trainer.mode_gain = None
+            with contextlib.redirect_stdout(io.StringIO()):
+                trainer._validate(mean_t, std_t)
+            np.testing.assert_allclose(trainer.mode_gain, np.full(NMODES, shrink), atol=1e-4)
+
+            trainer.step_count = 10
+            with contextlib.redirect_stdout(io.StringIO()):
+                trainer._save(1.0)
+            with open(trainer.stats_filename) as f:
+                np.testing.assert_allclose(json.load(f)['mode_gain'], np.full(NMODES, shrink), atol=1e-4)
+
     def test_trigger_runs_one_training_step(self):
         with tempfile.TemporaryDirectory() as d:
             trainer = build_trainer(d, epoch_len=1)

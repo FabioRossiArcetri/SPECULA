@@ -1,0 +1,68 @@
+---
+# Closed loop with the LINEAR reconstructor, in the same conditions as
+# params_pyr_soul_cnn_closed_loop.yml: the reference to compare the CNN
+# reconstructor against.
+#
+#   specula params_pyr_soul.yml params_pyr_soul_linear_closed_loop.yml
+#
+# Everything the two configs share is deliberately left to the base file, so
+# the two runs see the *same* atmosphere (the base config's constant 0.8"
+# seeing and fixed wind, same seed), the same non-modulated pyramid, the same
+# 500 corrected modes and the same DM. The only difference is what computes
+# the modes from the slopes:
+#
+#   this file:                         rec (Modalrec, the 630-mode linear
+#                                      reconstructor of the base config)
+#   params_pyr_soul_cnn_closed_loop:   modalrec (Conv2dNetRec)
+#
+# Neither file redefines the atmosphere as the training-data config does (no
+# PeriodicRandomGenerator, no loop opening, no per-mode gain randomization):
+# those exist to diversify *training* data, not to measure performance.
+#
+# data_store is removed for the same reason as in the other SOUL CNN configs:
+# its store_dir is an absolute path under someone else's home directory in the
+# base config, and fails at finalize() with a PermissionError for anyone else.
+
+remove: ['data_store']
+
+pyramid_override:
+  mod_amp: 0.0   # non-modulated pyramid, as in the CNN configs
+
+control_override:
+  # The linear reconstructor outputs all 630 modes, and an Integrator requires
+  # exactly one filter per input mode, so the groups add up to 630 -- unlike
+  # the CNN config, where Conv2dNetRec outputs 500. The last group (modes
+  # 500-629) is left at gain 0, so the *corrected* modes are the same 500 in
+  # both runs, and modes 500-629 are uncorrected in both.
+  #
+  # These gains are the ones the training-data config uses for its own linear
+  # loop (its control_override), i.e. the tuning this reconstructor was run
+  # with while the CNN's training data was collected: that loop holds a Strehl
+  # of 0.76-0.85 in the varying-seeing conditions of a training run.
+  #
+  # Each reconstructor is given its own tuning on purpose: the CNN's
+  # predictions are shrunk towards the mean (prediction gain ~0.7-0.8), which
+  # acts like a lower loop gain, so forcing identical numbers on both would
+  # handicap it. For a strict identical-gain test instead, override them on
+  # the command line, e.g.
+  #   --overrides "{control.int_gain: [0.25, 0.25, 0.22, 0.20, 0.15, 0.12, 0],
+  #                 control.n_modes: [5, 15, 30, 50, 100, 300, 130]}"
+  #                 0-29    30-99     100-199   200-499   500-629
+  n_modes:           [30,     70,       100,      300,      130]
+  int_gain:          [0.45,   0.35,     0.18,     0.08,     0.]
+  ff:                [1.0,    0.999996, 0.999365, 0.977895, 1.]
+
+dm_override:
+  nmodes: 500   # same as the CNN closed loop: the DM uses only the first 500
+                # entries of the command, so modes 500-629 stay uncorrected
+
+# No display is wired up here (nor in the CNN closed-loop config's intent):
+# the Strehl is logged by psf every step, which is what the comparison is made
+# from, and a PlotDisplay over X11 has taken a whole run down with it. To watch
+# it live, add:
+#
+# sr_disp:
+#   class:            'PlotDisplay'
+#   inputs:
+#     value:       'psf.out_sr'
+#   title:            'SR (linear closed loop)'

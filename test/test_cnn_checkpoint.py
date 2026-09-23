@@ -88,6 +88,17 @@ class TestCnnCheckpoint(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'n_frames=1'):
                 check_trained_settings(path, n_frames=4)
 
+    def test_calibration_factor_undoes_the_measured_shrinkage(self):
+        from specula.lib.cnn_checkpoint import calibration_factor
+        stats = dict(STATS, mode_gain=[1.0, 0.5, 0.25, 0.1, -0.3])
+        f = calibration_factor(stats, NMODES)
+        # 1/gain where the network predicts the mode, capped at 3, and left
+        # alone where it barely does (gain <= 0.2): amplifying those would
+        # mostly amplify noise
+        self.assertEqual(list(f), [1.0, 2.0, 3.0, 1.0, 1.0])
+        self.assertIsNone(calibration_factor(STATS, NMODES))            # no measurement
+        self.assertIsNone(calibration_factor(dict(STATS, mode_gain=[1.0]), NMODES))   # wrong length
+
     def test_missing_stats_file_is_not_checked(self):
         check_trained_settings('/nonexistent/net.pth', n_frames=4)
 

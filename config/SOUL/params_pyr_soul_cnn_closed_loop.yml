@@ -8,15 +8,11 @@
 # network_filename below must be the checkpoint that training config saves
 # (its nn_trainer.network_filename).
 #
-# Reduced-order loop, not a full 630-mode correction: the trained network
-# predicts the first nmodes=500 modes (it was not trained with a baseline
+# The network predicts all nmodes=630 modes (it was not trained with a baseline
 # connected, so its output is the direct mode estimate, not a residual).
 # The other modes have no CNN estimate, so control and dm are both cut
-# down to those 500 modes below, with a separate gain per group of modes
-# (see control_override). If you want the full 630-mode
-# correction (CNN for low-order, modalrec for the rest), that needs a way
-# to concatenate two mode vectors into one -- there's no such object in
-# the codebase yet, so that's a bigger change than this file.
+# that the linear reconstructor also outputs, so control and dm cover the
+# same 630 modes, with a separate gain per group (see control_override).
 #
 # Unlike params_pyr_soul_cnn_train_data.yml/_test_data.yml, this file
 # does NOT reintroduce their PeriodicRandomGenerator atmosphere swaps or
@@ -40,16 +36,26 @@ remove: ['rec', 'data_store']
 
 modalrec:
   class:              'Conv2dNetRec'
-  network_filename:   './trained_models/soul_cnn_rec_4f_spatial_m500_g60.pth'
-  nmodes:             500     # must match nn_trainer's nmodes: the checkpoint's regression head is sized for it
+  network_filename:   './trained_models/soul_cnn_rec_4f_spatial_m630_g60.pth'
+  nmodes:             630     # must match nn_trainer's nmodes: the checkpoint's regression head is sized for it
   channels:           64     # must match nn_trainer's channels: the checkpoint's conv layers are sized for it
   depth:              4      # must match nn_trainer's depth: the checkpoint's encoder/decoder stack is sized for it
   head_type:          'spatial'  # must match nn_trainer's head_type (checked against the stats file)
   head_grid:          60     # must match nn_trainer's head_grid (checked against the stats file)
-  n_frames:           4      # must match nn_trainer's n_frames (checked against the stats file)
+  n_frames:           1      # must match nn_trainer's n_frames (checked against the stats file)
   input_channels:     1      # must match nn_trainer's input_channels: Slopes.get2d() returns a
                              # single intensity map here (slopec has slopes_from_intensity)
   conv_block_type:    1      # must match nn_trainer's conv_block_type: selects which conv block class is built
+  calibrate_gain:     true   # the network's predictions are shrunk towards the
+                             # mean, per mode; this undoes it with the
+                             # measurement the trainer saves in the stats file,
+                             # so int_gain below means the *effective* loop gain
+                             # and stays valid across retrains. Requires a
+                             # checkpoint trained after that measurement
+                             # existed -- it raises a clear error otherwise, in
+                             # which case set it to false and divide the gains
+                             # below by the per-group cnn_gain the training
+                             # diagnostics report.
   inputs:
     # slopecNOSN, not slopec: the network must see the same input it was
     # trained on, and the training config feeds it from slopecNOSN -- the
@@ -89,17 +95,33 @@ control_override:
   # and wandered between 0.02 and 0.73 without ever settling -- and each
   # excursion took the residual outside the regime the network was trained
   # on, which made its estimates worse in turn.
-  #              0-4    5-19   20-49  50-99  100-199 200-499
-  n_modes:   [5,     15,    30,    50,    100,    300]
-  int_gain:  [0.25,  0.25,  0.22,  0.20,  0.15,   0.12]
-  ff:        [1,   1,   0.99,  0.99,  0.99,   0.99]
+  # These are the gains the *linear* loop runs each mode range at (see the
+  # training config's control_override), which is a tuning known to be stable
+  # at this delay. With modalrec.calibrate_gain on, the network's predictions
+  # come out at full amplitude, so these are also the effective loop gains and
+  # they do not have to be redone after a retrain.
+  #
+  # With calibrate_gain off they would have to be divided by the network's
+  # per-group prediction gain, and that division is easy to get wrong: gains
+  # left over from a network that shrank harder (0.70 / 0.68 / 0.54 / 0.47 /
+  # 0.52 / 0.57) drove the effective gain to 0.56-0.59 after a retrain that
+  # shrank less (0.87 / 0.86 / 0.80 / 0.75 / 0.78 / 0.83 / 0.73) -- past what an
+  # integrator with two frames of delay tolerates -- and the Strehl fell to
+  # 0.387, against 0.874 once the division was redone. A better network made
+  # the loop worse, purely through stale gains.
+  #
+  # If the loop oscillates, scale the whole row by 0.7 before anything else.
+  #              0-4    5-19   20-49  50-99  100-199 200-499 500-629
+  n_modes:   [5,     15,    30,    50,    100,    300,    130]
+  int_gain:  [0.45,  0.45,  0.40,  0.35,  0.18,   0.08,   0.05]
+  ff:        [1,   1,   0.99,  0.99,  0.99,   0.99,   0.99]
   inputs:
     delta_comm: 'modalrec.out_modes'   # re-wire: remove+redefine above drops this wire, so restate it here
     # no gain_mod wired (it's optional and defaults to a constant 1.0
     # when unconnected -- i.e. always fully closed, no modulation)
 
 dm_override:
-  nmodes: 500   # same 500 modes as control: the DM uses only the first nmodes
+  nmodes: 630   # same 630 modes as control: the DM uses only the first nmodes
                 # entries of the command and drops the rest. Which modes are
                 # corrected, and how strongly, is set by the per-group gains above.
 
