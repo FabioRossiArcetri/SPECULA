@@ -33,11 +33,7 @@ remove: ['rec']
 
 rec:
   class:              'Conv2dNetRec'
-  network_filename:   './trained_models/scao_pyr_nonlin_cnn.pth'
-  nmodes:             10
-  channels:           16
-  depth:              2
-  input_channels:     2
+  network_filename:   './trained_models/scao_pyr_nonlin_cnn.pth'   # the network is read from it
   inputs:
     in_slopes: 'slopec.out_slopes'
     baseline: 'nonlinear_rec.out_modes'

@@ -17,11 +17,9 @@ class Conv2dNetTester(BaseProcessingObj):
     output, and the batch's mean squared error as 'loss') and, at the end
     of the simulation, per-mode error statistics.
 
-    The network parameters (nmodes, channels, dropout, conv_block_type,
-    depth, head_type, input_channels, n_frames) and label_offset /
-    baseline_offset must match the ones used for training (see
-    Conv2dNetTrainer); n_frames and head_type are checked against the
-    checkpoint's stats file.
+    The network -- its architecture, nmodes, input_channels and n_frames --
+    is read from the checkpoint; label_offset / baseline_offset must match
+    the ones used for training (see Conv2dNetTrainer).
 
     With the optional 'baseline' input connected, the network output is a
     residual: the baseline is added back to it before comparing with the
@@ -39,16 +37,7 @@ class Conv2dNetTester(BaseProcessingObj):
 
     def __init__(self,
                  network_filename,
-                 nmodes=20,
-                 channels=32,
-                 dropout=0.01,
-                 conv_block_type=0,
-                 depth=5,
-                 head_type='pooled',
-                 head_grid=32,
                  calibrate_gain=False,
-                 input_channels=1,
-                 n_frames=1,
                  label_offset=1,
                  baseline_offset=0,
                  reference_offset=0,
@@ -57,18 +46,15 @@ class Conv2dNetTester(BaseProcessingObj):
                  precision: int = None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
-        self.nmodes = nmodes
-        self.input_channels = input_channels
+        self.model, stats = load_trained_network(network_filename)
+        network = stats['network']
+        self.nmodes = nmodes = network['nmodes']
+        self.input_channels = network['input_channels']
         self.label_offset = label_offset
         self.baseline_offset = baseline_offset
         self.reference_offset = reference_offset
         self.gain_mod_threshold = gain_mod_threshold
-        self.stacker = FrameStacker(n_frames, self.xp)
-
-        self.model, stats = load_trained_network(
-            network_filename, nmodes=nmodes, input_channels=input_channels, n_frames=n_frames,
-            channels=channels, depth=depth, dropout=dropout, conv_block_type=conv_block_type,
-            head_type=head_type, head_grid=head_grid)
+        self.stacker = FrameStacker(network['n_frames'], self.xp)
         self.meanp = stats['meanp']
         self.stdp = stats['stdp']
         self.meanmodes = self.xp.array(stats['meanmodes'])

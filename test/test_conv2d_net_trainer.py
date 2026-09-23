@@ -19,6 +19,8 @@ from specula.base_value import BaseValue
 try:
     import torch
     from specula.lib.efficient_u_net import UNetRegressor, SpatialRegressionHead
+    from specula.lib import cnn_checkpoint
+    from specula.lib.cnn_checkpoint import build_network
     from specula.processing_objects.conv2d_net_trainer import (
         Conv2dNetTrainer,
         EarlyStopping,
@@ -44,7 +46,7 @@ BATCH = 8
 def build_trainer(tmp_dir, network_name='testnet.pth', nmodes=NMODES, channels=CHANNELS,
                    depth=DEPTH, epoch_len=1, patience=600, val_split=0.25,
                    load_from_file=False, conv_block_type=0, input_channels=1,
-                   norm_alpha=0.001, loss_delta=20.0, diag_interval=10, target_device_idx=-1,
+                   loss_delta=20.0, diag_interval=10, target_device_idx=-1,
                    **kwargs):
     network_filename = os.path.join(tmp_dir, network_name)
     return Conv2dNetTrainer(
@@ -58,7 +60,6 @@ def build_trainer(tmp_dir, network_name='testnet.pth', nmodes=NMODES, channels=C
         load_from_file=load_from_file,
         conv_block_type=conv_block_type,
         input_channels=input_channels,
-        norm_alpha=norm_alpha,
         loss_delta=loss_delta,
         diag_interval=diag_interval,
         target_device_idx=target_device_idx,
@@ -129,19 +130,16 @@ class TestNetworkFilenameHandling(unittest.TestCase):
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestConv2dNetTrainerLoading(unittest.TestCase):
 
-    def _save_checkpoint(self, path, stats_path, nmodes=NMODES, channels=CHANNELS, depth=DEPTH):
-        model = UNetRegressor(
-            input_channels=1, output_size=nmodes, base_channels=channels,
-            dropout_level=0.01, conv_block_type=0, depth=depth,
-        )
-        torch.save(model.state_dict(), path)
-        stats = {
-            'meanp': 0.5, 'stdp': 1.5,
-            'meanmodes': [0.1] * nmodes, 'stdmodes': [1.1] * nmodes,
-            'nmodes': nmodes,
-        }
-        with open(stats_path, 'w') as f:
-            json.dump(stats, f)
+    def _save_checkpoint(self, path, stats_path=None, nmodes=NMODES, channels=CHANNELS, depth=DEPTH):
+        """A checkpoint matching build_trainer's defaults (stats_path is where
+        its stats land, derived from path)."""
+        network = dict(nmodes=nmodes, input_channels=1, n_frames=1, channels=channels,
+                       depth=depth, conv_block_type=0, head_type='pooled', head_grid=32,
+                       dropout=0.01)
+        model = build_network(network)
+        cnn_checkpoint.save_checkpoint(model, path, {
+            'network': network, 'meanp': 0.5, 'stdp': 1.5,
+            'meanmodes': [0.1] * nmodes, 'stdmodes': [1.1] * nmodes})
         return model
 
     def test_missing_checkpoint_falls_back_to_new_model(self):
@@ -180,9 +178,10 @@ class TestConv2dNetTrainerLoading(unittest.TestCase):
                 torch.testing.assert_close(loaded_state[key].cpu(), source_state[key].cpu())
 
     def test_successful_load_preserves_stats_across_first_trigger(self):
-        # The loaded normalization stats must be updated via the same
-        # slow EMA (alpha=0.001) as any other trigger(), not silently
-        # replaced by a fresh from-scratch computation on just this batch.
+        # The loaded normalization must carry on from where it was, not be
+        # re-estimated from scratch on this one batch. The first batch after
+        # resuming has no time interval to weigh an update by, so it leaves
+        # the statistics exactly as loaded.
         with tempfile.TemporaryDirectory() as d:
             net_path = os.path.join(d, 'existing_m20_ch4_dp0.010.pth')
             stats_path = net_path.replace('.pth', '_stats.json')
@@ -195,18 +194,13 @@ class TestConv2dNetTrainerLoading(unittest.TestCase):
             feed_batch(trainer, seed=7)
             trainer.trigger()
 
-            # alpha=0.001 per trigger: one step can only nudge the mean by a
-            # tiny amount, nowhere near a full from-scratch recompute (which,
-            # for a standard-normal batch, would land near 0, i.e. a jump of
-            # ~0.1 away from the loaded value -- two orders of magnitude
-            # bigger than what one EMA step can produce).
-            np.testing.assert_allclose(trainer.meanmodes, loaded_meanmodes, atol=0.01)
+            np.testing.assert_allclose(trainer.meanmodes, loaded_meanmodes)
 
     def test_checkpoint_of_a_different_network_raises_instead_of_being_replaced(self):
         with tempfile.TemporaryDirectory() as d:
             net_path = os.path.join(d, 'existing.pth')
-            self._save_checkpoint(net_path, net_path.replace('.pth', '_stats.json'), depth=DEPTH + 1)
-            with self.assertRaises(RuntimeError):
+            self._save_checkpoint(net_path, depth=DEPTH + 1)
+            with self.assertRaisesRegex(ValueError, f'depth={DEPTH} \\(checkpoint: {DEPTH + 1}\\)'):
                 build_trainer(d, network_name='existing.pth', load_from_file=True)
 
     def test_checkpoint_without_stats_file_warns_and_sets_none(self):
@@ -238,72 +232,73 @@ class TestConv2dNetTrainerDevice(unittest.TestCase):
 
 
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
-class TestNormAlpha(unittest.TestCase):
-    """norm_alpha controls how fast meanp/stdp/meanmodes/stdmodes adapt on
-    every trigger() after the first; it must default to the historical
-    hardcoded 0.001, be validated, and actually be used in the EMA update."""
+class TestNormalization(unittest.TestCase):
+    """The input normalization is set from the first batch and kept; the
+    per-mode output normalization follows a moving average over simulated
+    time, and every update rescales the output layers so the denormalized
+    predictions don't move."""
 
-    def test_default_matches_historical_value(self):
+    def _feed(self, trainer, labels_scale=1.0, labels_offset=0.0, t_seconds=1, seed=0):
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal((BATCH, 2, H, W)).astype(np.float32)
+        labels = (rng.standard_normal((BATCH, NMODES + 1)) * labels_scale + labels_offset).astype(np.float32)
+        feed_arrays(trainer, x, labels, t_seconds=t_seconds)
+        with contextlib.redirect_stdout(io.StringIO()):
+            trainer.trigger()
+        return x, labels[:, 1:NMODES + 1]
+
+    def test_norm_timescale_must_be_positive(self):
         with tempfile.TemporaryDirectory() as d:
-            trainer = build_trainer(d)
-            self.assertEqual(trainer.norm_alpha, 0.001)
+            for bad in (0.0, -1.0):
+                with self.assertRaises(ValueError):
+                    build_trainer(d, norm_timescale=bad)
 
-    def test_rejects_out_of_range_values(self):
+    def test_input_normalization_is_set_from_the_first_batch_and_kept(self):
         with tempfile.TemporaryDirectory() as d:
-            with self.assertRaises(ValueError):
-                build_trainer(d, norm_alpha=0.0)
-            with self.assertRaises(ValueError):
-                build_trainer(d, norm_alpha=1.5)
-            with self.assertRaises(ValueError):
-                build_trainer(d, norm_alpha=-0.1)
+            # input_channels=2: the buffered maps are the network input as is
+            trainer = build_trainer(d, epoch_len=1, diag_interval=0, input_channels=2)
+            x, _ = self._feed(trainer, t_seconds=1)
+            self.assertAlmostEqual(trainer.meanp, float(np.mean(x)), places=5)
+            self.assertAlmostEqual(trainer.stdp, float(np.std(x)), places=4)
+            first = (trainer.meanp, trainer.stdp)
+            self._feed(trainer, labels_scale=5.0, t_seconds=5, seed=1)
+            self.assertEqual((trainer.meanp, trainer.stdp), first)
 
-    def test_accepts_boundary_value_one(self):
+    def test_output_statistics_follow_a_moving_average_over_simulated_time(self):
         with tempfile.TemporaryDirectory() as d:
-            trainer = build_trainer(d, norm_alpha=1.0)
-            self.assertEqual(trainer.norm_alpha, 1.0)
+            trainer = build_trainer(d, epoch_len=1, diag_interval=0, norm_timescale=2.0)
+            _, y1 = self._feed(trainer, t_seconds=1)
+            np.testing.assert_allclose(cpuArray(trainer.meanmodes), y1.mean(0), atol=1e-5)
+            _, y2 = self._feed(trainer, labels_offset=10.0, t_seconds=3, seed=1)
+            alpha = 1 - np.exp(-2.0 / 2.0)          # 2 s elapsed, 2 s time constant
+            m1 = (1 - alpha) * y1.mean(0) + alpha * y2.mean(0)
+            m2 = (1 - alpha) * (y1.astype(np.float64) ** 2).mean(0) + alpha * (y2.astype(np.float64) ** 2).mean(0)
+            np.testing.assert_allclose(cpuArray(trainer.meanmodes), m1, rtol=1e-4)
+            np.testing.assert_allclose(cpuArray(trainer.stdmodes), np.sqrt(m2 - m1 ** 2), rtol=1e-4)
 
-    def test_custom_alpha_is_used_in_ema_update(self):
-        with tempfile.TemporaryDirectory() as d:
-            trainer = build_trainer(d, norm_alpha=0.5)
-            feed_batch(trainer, seed=1)
-            trainer.trigger()  # first trigger: initializes stats directly
-            meanmodes_after_first = np.array(trainer.meanmodes, copy=True)
+    def test_updates_leave_the_denormalized_predictions_unchanged(self):
+        # The point of the rescaling: the statistics move, the predictions
+        # don't. Checked for both heads (one output layer, and two summed).
+        for head in ('pooled', 'spatial'):
+            with self.subTest(head=head), tempfile.TemporaryDirectory() as d:
+                trainer = build_trainer(d, epoch_len=1, diag_interval=0, head_type=head,
+                                        input_channels=2, norm_timescale=1.0)
+                x, _ = self._feed(trainer, t_seconds=1)
+                model = trainer._inner_model().eval()
+                inp = to_torch((x - trainer.meanp) / trainer.stdp, trainer.device)
 
-            feed_batch(trainer, seed=2)
-            trainer.trigger()  # second trigger: EMA update with alpha=0.5
+                def predict():
+                    with torch.no_grad():
+                        return (model(inp) * to_torch(trainer.stdmodes, trainer.device)
+                                + to_torch(trainer.meanmodes, trainer.device)).cpu().numpy()
 
-            # Recompute the expected post-update value independently, using
-            # the exact same batch the trainer just saw. feed_batch() draws
-            # input_2d_batch before labels from the same RNG, so that draw
-            # must be replicated here too to land on the same labels.
-            rng = np.random.default_rng(2)
-            _ = rng.standard_normal((BATCH, 2, H, W))
-            labels = rng.standard_normal((BATCH, NMODES + 1)).astype(np.float32)
-            fresh_batch_mean = np.mean(labels[:, 1:NMODES + 1], axis=0)
-            expected = 0.5 * meanmodes_after_first + 0.5 * fresh_batch_mean
-
-            np.testing.assert_allclose(trainer.meanmodes, expected, rtol=1e-4)
-
-    def test_higher_alpha_adapts_faster_than_lower_alpha(self):
-        with tempfile.TemporaryDirectory() as d:
-            slow = build_trainer(d, network_name='slow.pth', norm_alpha=0.001)
-            fast = build_trainer(d, network_name='fast.pth', norm_alpha=0.5)
-
-            feed_batch(slow, seed=1)
-            slow.trigger()
-            feed_batch(fast, seed=1)
-            fast.trigger()
-            initial = np.array(slow.meanmodes, copy=True)
-            np.testing.assert_allclose(slow.meanmodes, fast.meanmodes)  # same first batch
-
-            feed_batch(slow, seed=2)
-            slow.trigger()
-            feed_batch(fast, seed=2)
-            fast.trigger()
-
-            slow_shift = np.abs(slow.meanmodes - initial).sum()
-            fast_shift = np.abs(fast.meanmodes - initial).sum()
-            self.assertGreater(fast_shift, slow_shift)
+                before = predict()
+                old_std = cpuArray(trainer.stdmodes).copy()
+                trainer.current_time = trainer.seconds_to_t(4)      # 3 s later: a big update
+                rng = np.random.default_rng(2)
+                trainer._update_output_normalization(rng.standard_normal((BATCH, NMODES)) * 7 + 20)
+                self.assertGreater(np.abs(cpuArray(trainer.stdmodes) / old_std - 1).max(), 0.5)
+                np.testing.assert_allclose(predict(), before, rtol=1e-4, atol=1e-4)
 
 
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
@@ -896,69 +891,17 @@ def feed_arrays(trainer, x, labels, t_seconds=1):
 
 
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
-class TestInitSamplesAndFrozenNorm(unittest.TestCase):
-
-    def _build(self, d, **kwargs):
-        opts = dict(input_channels=2, freeze_norm=True, init_samples=400, diag_interval=0)
-        opts.update(kwargs)
-        return build_trainer(d, **opts)
+class TestResume(unittest.TestCase):
 
     def _pupil_weights(self, rng, side=8):
         yy, xx = np.mgrid[:side, :side] - (side - 1) / 2
         n_pix = 2 * int(((xx ** 2 + yy ** 2) < (side / 2) ** 2).sum())
         return rng.standard_normal((n_pix, NMODES)) * 10
 
-    def test_init_phase_collects_samples_without_training(self):
-        with tempfile.TemporaryDirectory() as d:
-            trainer = self._build(d)
-            rng = np.random.default_rng(0)
-            w = self._pupil_weights(rng)
-            with contextlib.redirect_stdout(io.StringIO()):
-                for i in range(3):
-                    feed_arrays(trainer, *linear_batch(rng, w, 100), t_seconds=i + 1)
-                    trainer.trigger()
-                    self.assertEqual(trainer.step_count, 0)
-                    self.assertIsNone(trainer.meanmodes)
-                feed_arrays(trainer, *linear_batch(rng, w, 100), t_seconds=4)
-                trainer.trigger()
-            self.assertEqual(trainer.step_count, 1)
-            self.assertIsNotNone(trainer.meanmodes)
-
-    def test_norm_is_estimated_from_all_init_samples(self):
-        with tempfile.TemporaryDirectory() as d:
-            trainer = self._build(d)
-            rng = np.random.default_rng(1)
-            w = self._pupil_weights(rng)
-            all_labels = []
-            with contextlib.redirect_stdout(io.StringIO()):
-                for i in range(4):
-                    x, labels = linear_batch(rng, w, 100)
-                    labels[:, 1:] += 50.0 * i  # every batch has a different mean
-                    all_labels.append(labels[:, 1:NMODES + 1])
-                    feed_arrays(trainer, x, labels, t_seconds=i + 1)
-                    trainer.trigger()
-            np.testing.assert_allclose(cpuArray(trainer.meanmodes),
-                                       np.concatenate(all_labels).mean(axis=0), rtol=1e-4)
-
-    def test_freeze_norm_keeps_stats_fixed(self):
-        with tempfile.TemporaryDirectory() as d:
-            trainer = self._build(d, init_samples=0, norm_alpha=0.5)
-            rng = np.random.default_rng(2)
-            w = self._pupil_weights(rng)
-            with contextlib.redirect_stdout(io.StringIO()):
-                feed_arrays(trainer, *linear_batch(rng, w, 100), t_seconds=1)
-                trainer.trigger()
-                frozen = (float(trainer.meanp), cpuArray(trainer.stdmodes).copy())
-                for i in range(3):
-                    x, labels = linear_batch(rng, w, 100)
-                    feed_arrays(trainer, x * 5, labels * 5, t_seconds=i + 2)
-                    trainer.trigger()
-            self.assertEqual(float(trainer.meanp), frozen[0])
-            np.testing.assert_array_equal(cpuArray(trainer.stdmodes), frozen[1])
-
     def test_checkpoint_resumes_with_its_stats_and_loads_in_tester(self):
         with tempfile.TemporaryDirectory() as d:
-            trainer = self._build(d, network_name='net.pth')
+            opts = dict(network_name='net.pth', input_channels=2, diag_interval=0)
+            trainer = build_trainer(d, **opts)
             rng = np.random.default_rng(4)
             w = self._pupil_weights(rng)
             with contextlib.redirect_stdout(io.StringIO()):
@@ -967,17 +910,17 @@ class TestInitSamplesAndFrozenNorm(unittest.TestCase):
                     t += 1
                     feed_arrays(trainer, *linear_batch(rng, w, 100), t_seconds=t)
                     trainer.trigger()
-                resumed = self._build(d, network_name='net.pth', load_from_file=True)
-            # frozen stats restored: no new initialization phase
-            np.testing.assert_allclose(cpuArray(resumed.meanmodes), cpuArray(trainer.meanmodes))
-            self.assertEqual(resumed.stdp, trainer.stdp)
+                resumed = build_trainer(d, load_from_file=True, **opts)
+            with open(trainer.stats_filename) as f:
+                saved_stats = json.load(f)
+            np.testing.assert_allclose(cpuArray(resumed.meanmodes), saved_stats['meanmodes'], rtol=1e-6)
+            self.assertEqual(resumed.stdp, saved_stats['stdp'])
 
-            tester = Conv2dNetTester(network_filename=trainer.network_filename, nmodes=NMODES,
-                                     channels=CHANNELS, depth=DEPTH, input_channels=2,
-                                     target_device_idx=-1)
-            saved = trainer._inner_model().state_dict()
+            # the tester needs nothing but the file name
+            tester = Conv2dNetTester(network_filename=trainer.network_filename, target_device_idx=-1)
+            saved = torch.load(trainer.network_filename, map_location='cpu')
             for k, v in tester.model.state_dict().items():
-                torch.testing.assert_close(v, saved[k].cpu())
+                torch.testing.assert_close(v, saved[k])
 
 
 def time_tagged_batch(n, offset=0, h=H, w=W, seed=0):
@@ -1039,17 +982,6 @@ class TestReplayAndGradClip(unittest.TestCase):
                                             wraps=trainer.optimizer.step) as step:
                 self._feed(trainer)
             self.assertEqual(step.call_count, 7)
-
-    def test_init_samples_seed_the_buffer(self):
-        with tempfile.TemporaryDirectory() as d:
-            trainer = self._build(d, init_samples=64, freeze_norm=True)
-            self._feed(trainer, offset=0, t_seconds=1)
-            self.assertEqual(trainer.replay_count, 0)      # still collecting
-            self._feed(trainer, offset=100, t_seconds=2)
-            # First batch (32 rows, all of it) every 2nd -> 16, plus the
-            # current batch's 24 training rows every 2nd -> 12.
-            self.assertEqual(trainer.replay_count, 28)
-            self.assertEqual(trainer.step_count, 1)
 
     def test_single_channel_legacy_input_works_with_replay(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1244,17 +1176,16 @@ class TestFrameStackingAndNormLoss(unittest.TestCase):
             self.assertIn(2.0, t.tolist() + trainer.val_targets[:, 0].cpu().tolist())
             self.assertIn(32.0, t.tolist() + trainer.val_targets[:, 0].cpu().tolist())
 
-    def test_n_frames_is_saved_and_the_tester_uses_and_checks_it(self):
+    def test_n_frames_is_saved_and_the_tester_takes_it_from_the_checkpoint(self):
         with tempfile.TemporaryDirectory() as d:
             trainer = self._build(d, network_name='stack.pth')
             for k in range(10):   # first periodic save at step 10
                 self._feed_time_frames(trainer, [1.0] * 32, first=32 * k, t_seconds=k + 1)
             with open(trainer.stats_filename) as f:
-                self.assertEqual(json.load(f)['n_frames'], 4)
+                self.assertEqual(json.load(f)['network']['n_frames'], 4)
 
-            tester = Conv2dNetTester(network_filename=trainer.network_filename, nmodes=NMODES,
-                                     channels=CHANNELS, depth=DEPTH, input_channels=2,
-                                     n_frames=4, target_device_idx=-1)
+            tester = Conv2dNetTester(network_filename=trainer.network_filename, target_device_idx=-1)
+            self.assertEqual(tester.stacker.n_frames, 4)
             x = BaseValue(value=np.random.default_rng(0).standard_normal((8, 2, H, W)).astype(np.float32))
             y = BaseValue(value=np.random.default_rng(1).standard_normal((8, NMODES + 1)).astype(np.float32))
             x.generation_time = y.generation_time = x.seconds_to_t(1)
@@ -1263,11 +1194,6 @@ class TestFrameStackingAndNormLoss(unittest.TestCase):
             tester.check_ready(1)
             tester.trigger()
             self.assertEqual(tester.count, 8)
-
-            with self.assertRaisesRegex(ValueError, 'n_frames=4'):
-                Conv2dNetTester(network_filename=trainer.network_filename, nmodes=NMODES,
-                                channels=CHANNELS, depth=DEPTH, input_channels=2,
-                                n_frames=1, target_device_idx=-1)
 
     def test_norm_loss_adds_the_per_mode_normalized_mse(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1327,10 +1253,9 @@ class TestSpatialHeadTrainerRoundTrip(unittest.TestCase):
                 trainer.trigger()
 
     def _tester(self, filename, head_type):
-        return Conv2dNetTester(network_filename=filename, nmodes=NMODES, channels=CHANNELS,
-                               depth=3, input_channels=2, head_type=head_type, target_device_idx=-1)
+        return Conv2dNetTester(network_filename=filename, target_device_idx=-1)
 
-    def test_head_type_is_saved_checked_and_reloaded(self):
+    def test_head_type_is_saved_and_reloaded_and_resuming_checks_it(self):
         with tempfile.TemporaryDirectory() as d:
             trainer = build_trainer(d, network_name='spatial.pth', input_channels=2, depth=3,
                                     head_type='spatial', diag_interval=0)
@@ -1338,19 +1263,17 @@ class TestSpatialHeadTrainerRoundTrip(unittest.TestCase):
             self.assertIsInstance(inner.regressor, SpatialRegressionHead)
             self._train(trainer)   # first periodic save at step 10
             with open(trainer.stats_filename) as f:
-                self.assertEqual(json.load(f)['head_type'], 'spatial')
+                self.assertEqual(json.load(f)['network']['head_type'], 'spatial')
 
             tester = self._tester(trainer.network_filename, 'spatial')
+            self.assertIsInstance(tester.model.regressor, SpatialRegressionHead)
             saved = torch.load(trainer.network_filename, map_location='cpu')
             for k, v in tester.model.state_dict().items():
                 torch.testing.assert_close(v, saved[k])
 
-            with self.assertRaisesRegex(ValueError, "head_type='pooled'"):
-                self._tester(trainer.network_filename, 'pooled')
-
             # Resuming with the other head must stop, not silently start a
             # new model that would overwrite the checkpoint.
-            with self.assertRaisesRegex(ValueError, 'head_type'):
+            with self.assertRaisesRegex(ValueError, "head_type='pooled' \\(checkpoint: 'spatial'\\)"):
                 build_trainer(d, network_name='spatial.pth', input_channels=2, depth=3,
                               load_from_file=True, diag_interval=0)
             resumed = build_trainer(d, network_name='spatial.pth', input_channels=2, depth=3,

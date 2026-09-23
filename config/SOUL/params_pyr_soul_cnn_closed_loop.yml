@@ -36,16 +36,9 @@ remove: ['rec', 'data_store']
 
 modalrec:
   class:              'Conv2dNetRec'
-  network_filename:   './trained_models/soul_cnn_rec_4f_spatial_m630_g60.pth'
-  nmodes:             630     # must match nn_trainer's nmodes: the checkpoint's regression head is sized for it
-  channels:           64     # must match nn_trainer's channels: the checkpoint's conv layers are sized for it
-  depth:              4      # must match nn_trainer's depth: the checkpoint's encoder/decoder stack is sized for it
-  head_type:          'spatial'  # must match nn_trainer's head_type (checked against the stats file)
-  head_grid:          60     # must match nn_trainer's head_grid (checked against the stats file)
-  n_frames:           1      # must match nn_trainer's n_frames (checked against the stats file)
-  input_channels:     1      # must match nn_trainer's input_channels: Slopes.get2d() returns a
-                             # single intensity map here (slopec has slopes_from_intensity)
-  conv_block_type:    1      # must match nn_trainer's conv_block_type: selects which conv block class is built
+  # The network itself (architecture, nmodes, input_channels, n_frames) is
+  # read from the checkpoint, so nothing here can disagree with the weights.
+  network_filename:   './trained_models/soul_cnn_rec_1f_spatial_m630_g60.pth'
   calibrate_gain:     true   # the network's predictions are shrunk towards the
                              # mean, per mode; this undoes it with the
                              # measurement the trainer saves in the stats file,

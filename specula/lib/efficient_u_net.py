@@ -360,6 +360,15 @@ class UNetRegressor(nn.Module):
 
         return bottleneck, decoder_outputs
 
+    def output_layers(self):
+        """The final linear layers whose outputs are summed into the result.
+        Rescaling their weights and biases together rescales the output
+        exactly, which is how Conv2dNetTrainer keeps the predictions unchanged
+        when it updates the output normalization."""
+        if self.head_type == 'spatial':
+            return [self.regressor.out, self.regressor.direct]
+        return [self.regressor.fc[-1]]
+
     def forward(self, x):
         bottleneck, decoder_outputs = self._trunk(x)
         if self.head_type == 'spatial':

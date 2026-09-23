@@ -17,6 +17,8 @@ from specula.base_value import BaseValue
 try:
     import torch
     from specula.lib.efficient_u_net import UNetRegressor
+    from specula.lib import cnn_checkpoint
+    from specula.lib.cnn_checkpoint import build_network
     from specula.processing_objects.conv2d_net_tester import Conv2dNetTester
     TORCH_AVAILABLE = True
 except ImportError:
@@ -30,37 +32,28 @@ H = W = 32
 BATCH = 4
 
 
-def save_checkpoint(net_path, stats_path, nmodes=NMODES, channels=CHANNELS, depth=DEPTH,
-                     input_channels=1):
-    model = UNetRegressor(
-        input_channels=input_channels, output_size=nmodes, base_channels=channels,
-        dropout_level=0.0, conv_block_type=0, depth=depth,
-    )
-    torch.save(model.state_dict(), net_path)
-    stats = {
-        'meanp': 0.0, 'stdp': 1.0,
-        'meanmodes': [0.0] * nmodes, 'stdmodes': [1.0] * nmodes,
-        'nmodes': nmodes,
-    }
-    with open(stats_path, 'w') as f:
-        json.dump(stats, f)
+def save_checkpoint(net_path, stats_path=None, nmodes=NMODES, channels=CHANNELS, depth=DEPTH,
+                    input_channels=1, n_frames=1, head_type='pooled', head_grid=32, **stats):
+    """A checkpoint as Conv2dNetTrainer writes it: weights plus a stats file
+    recording the network, zero-mean / unit-std normalization, and any extra
+    stats given. stats_path is where that file lands (derived from net_path)."""
+    network = dict(nmodes=nmodes, input_channels=input_channels, n_frames=n_frames,
+                   channels=channels, depth=depth, conv_block_type=0, head_type=head_type,
+                   head_grid=head_grid, dropout=0.0)
+    model = build_network(network)
+    cnn_checkpoint.save_checkpoint(model, net_path, dict(
+        {'network': network, 'meanp': 0.0, 'stdp': 1.0,
+          'meanmodes': [0.0] * nmodes, 'stdmodes': [1.0] * nmodes}, **stats))
     return model
 
 
 def build_tester(tmp_dir, network_name='net.pth', nmodes=NMODES, channels=CHANNELS,
-                  depth=DEPTH, input_channels=1, target_device_idx=-1):
+                  depth=DEPTH, input_channels=1, target_device_idx=-1, **kwargs):
     net_path = os.path.join(tmp_dir, network_name)
     stats_path = net_path.replace('.pth', '_stats.json')
     save_checkpoint(net_path, stats_path, nmodes=nmodes, channels=channels, depth=depth,
                     input_channels=input_channels)
-    tester = Conv2dNetTester(
-        network_filename=net_path,
-        nmodes=nmodes,
-        channels=channels,
-        depth=depth,
-        input_channels=input_channels,
-        target_device_idx=target_device_idx,
-    )
+    tester = Conv2dNetTester(network_filename=net_path, target_device_idx=target_device_idx, **kwargs)
     return tester, net_path, stats_path
 
 
@@ -113,8 +106,7 @@ class TestConv2dNetTesterConstruction(unittest.TestCase):
     def test_missing_model_file_raises(self):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaises(FileNotFoundError):
-                Conv2dNetTester(network_filename=os.path.join(d, 'nope.pth'),
-                                 nmodes=NMODES, channels=CHANNELS, depth=DEPTH)
+                Conv2dNetTester(network_filename=os.path.join(d, 'nope.pth'))
 
     def test_missing_stats_file_raises(self):
         with tempfile.TemporaryDirectory() as d:
@@ -125,8 +117,7 @@ class TestConv2dNetTesterConstruction(unittest.TestCase):
             )
             torch.save(model.state_dict(), net_path)
             with self.assertRaises(FileNotFoundError):
-                Conv2dNetTester(network_filename=net_path,
-                                 nmodes=NMODES, channels=CHANNELS, depth=DEPTH)
+                Conv2dNetTester(network_filename=net_path)
 
     def test_successful_construction_loads_stats_and_outputs(self):
         with tempfile.TemporaryDirectory() as d:

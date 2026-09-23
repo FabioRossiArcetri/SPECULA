@@ -9,9 +9,8 @@ from specula import cpuArray
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
 from specula.connections import InputValue
-from specula.lib.cnn_checkpoint import (check_trained_settings, load_stats, load_weights,
-                                        save_checkpoint, stats_filename)
-from specula.lib.efficient_u_net import UNetRegressor
+from specula.lib.cnn_checkpoint import (build_network, check_same_network, load_stats,
+                                        load_weights, save_checkpoint, stats_filename)
 from specula.lib.frame_stacker import FrameStacker
 from specula.lib.nn_training_diagnostics import TrainingDiagnostics
 
@@ -63,9 +62,8 @@ class Conv2dNetTrainer(BaseProcessingObj):
        predict), with the frames stacked over time (n_frames) and the
        samples taken while the loop wasn't at full gain dropped (optional
        ``gain_mod`` input);
-    2. used to set the normalization (from the first batch, or from the
-       first init_samples samples), or to update it (EMA, unless
-       freeze_norm);
+    2. used to set the normalization (from the first batch) or to update the
+       output normalization (a slow moving average, see norm_timescale);
     3. split into training and validation samples; the validation ones join
        a validation set of the most recent 1000;
     4. trained on: epoch_len steps on the whole batch or, with a replay
@@ -92,7 +90,8 @@ class Conv2dNetTrainer(BaseProcessingObj):
 
     Network: channels, depth, conv_block_type, head_type, head_grid, dropout
     -- see UNetRegressor (channels = base_channels, dropout = dropout_level).
-    Conv2dNetTester/Conv2dNetRec must use the same values.
+    They are saved in the checkpoint together with nmodes, input_channels and
+    n_frames, and Conv2dNetTester/Conv2dNetRec read them from there.
 
     input_channels : int
         Channels of the network input, per frame: 2 for the x/y slope maps
@@ -134,18 +133,23 @@ class Conv2dNetTrainer(BaseProcessingObj):
         Loss weight, in [0, 1], of those transient frames (1: same as the
         others; 0: dropped).
 
-    Normalization (inputs: one mean/std over all pixels; outputs: per mode):
+    Normalization. The input is normalized by one mean/std over all pixels,
+    taken from the first batch and then kept: the network's first block ends
+    in a GroupNorm, which rescales every sample itself, so the network is
+    insensitive to that choice and nothing is gained by tracking it. The
+    output is normalized per mode, and those statistics do matter -- the
+    network predicts in that space -- but a few seconds of data don't
+    represent an atmosphere that keeps changing. So they follow a slow moving
+    average, and every update rescales the network's output layers so that
+    its denormalized predictions stay exactly the same: the statistics can
+    move at any rate without the network having to chase them.
 
-    freeze_norm : bool
-        If True, estimated once (or restored from the stats file when
-        resuming) and never updated; otherwise updated on every batch by an
-        exponential moving average with rate norm_alpha.
-    norm_alpha : float
-        EMA rate, in (0, 1]; a time constant of ~1/norm_alpha triggers.
-    init_samples : int
-        If > 0, collect this many samples (over as many triggers as needed,
-        without training) to estimate the normalization; with a replay
-        buffer they also seed it. 0: estimate it from the first batch.
+    norm_timescale : float
+        Time constant, in seconds of simulated time, of the output
+        statistics' moving average. It should span several independent
+        draws of the conditions; getting it somewhat wrong costs little,
+        since the loss is in physical units and the predictions are kept
+        unchanged by each update.
 
     Training:
 
@@ -214,9 +218,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
                  gain_mod_threshold=1.0,
                  settle_frames=0,
                  transient_weight=1.0,
-                 freeze_norm=False,
-                 norm_alpha=0.001,
-                 init_samples=0,
+                 norm_timescale=30.0,
                  val_split=0.2,
                  epoch_len=20,
                  replay_size=0,
@@ -234,12 +236,10 @@ class Conv2dNetTrainer(BaseProcessingObj):
                  precision=None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
-        if not 0 < norm_alpha <= 1:
-            raise ValueError(f'norm_alpha must be in (0, 1], got {norm_alpha}')
+        if not norm_timescale > 0:
+            raise ValueError(f'norm_timescale must be > 0, got {norm_timescale}')
         if not loss_delta > 0:
             raise ValueError(f'loss_delta must be > 0, got {loss_delta}')
-        if init_samples < 0:
-            raise ValueError(f'init_samples must be >= 0, got {init_samples}')
         if replay_size < 0 or replay_subsample < 1 or replay_steps < 1 or replay_batch < 1:
             raise ValueError('replay_size must be >= 0, and replay_subsample, replay_steps '
                              'and replay_batch >= 1')
@@ -256,19 +256,19 @@ class Conv2dNetTrainer(BaseProcessingObj):
         self.stats_filename = stats_filename(network_filename)
 
         self.nmodes = nmodes
-        self.head_type = head_type
-        self.head_grid = head_grid
         self.input_channels = input_channels
         self.n_frames = n_frames
+        # everything needed to rebuild the network, saved in the checkpoint
+        self.network = dict(nmodes=nmodes, input_channels=input_channels, n_frames=n_frames,
+                            channels=channels, depth=depth, conv_block_type=conv_block_type,
+                            head_type=head_type, head_grid=head_grid, dropout=dropout)
         self.label_offset = label_offset
         self.baseline_offset = baseline_offset
         self.max_label_rms = max_label_rms
         self.gain_mod_threshold = gain_mod_threshold
         self.settle_frames = settle_frames
         self.transient_weight = transient_weight
-        self.freeze_norm = freeze_norm
-        self.norm_alpha = norm_alpha
-        self.init_samples = init_samples
+        self.norm_timescale = norm_timescale
         self.val_split = val_split
         self.epoch_len = epoch_len
         self.replay_size = replay_size
@@ -286,22 +286,17 @@ class Conv2dNetTrainer(BaseProcessingObj):
         self._frames_at_full_gain = 0
         self._warned_no_gain_mod = False
         self._empty_batches = 0
-        self._init_batches = []     # (inputs, modes, weights) collected before training starts
 
-        # Normalization: restored from the stats file when resuming,
-        # otherwise estimated from the first data (see trigger()).
+        # Normalization: restored from the stats file when resuming, otherwise
+        # set from the first batch (see trigger()). The output statistics are
+        # kept as first and second moments, which is what a moving average of
+        # a variance has to average.
         self.meanp = self.stdp = self.meanmodes = self.stdmodes = None
+        self._out_m1 = self._out_m2 = None
+        self._norm_time = None
+        self.mode_gain = None       # per-mode prediction gain, see _update_mode_gain
 
-        model = UNetRegressor(
-            input_channels=input_channels * n_frames,
-            output_size=nmodes,
-            base_channels=channels,
-            dropout_level=dropout,
-            depth=depth,
-            conv_block_type=conv_block_type,
-            head_type=head_type,
-            head_grid=head_grid,
-        )
+        model = build_network(self.network)
         if load_from_file:
             self._load(model)
 
@@ -336,7 +331,6 @@ class Conv2dNetTrainer(BaseProcessingObj):
         self.replay_count = 0
         self._replay_pos = 0
         self.step_count = 0
-        self.mode_gain = None
         self.loss = self.val_loss = None
         self.min_loss = float('inf')
 
@@ -365,8 +359,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
             return
         # Checked before loading: a mismatch must stop here, not end with a
         # new network overwriting the checkpoint.
-        check_trained_settings(self.network_filename, n_frames=self.n_frames,
-                               head_type=self.head_type, head_grid=self.head_grid)
+        check_same_network(self.network_filename, self.network)
         load_weights(model, self.network_filename)
         print(f'[{self.name}] Model loaded from {self.network_filename}', flush=True)
         try:
@@ -377,22 +370,21 @@ class Conv2dNetTrainer(BaseProcessingObj):
             return
         self.meanp = stats['meanp']
         self.stdp = stats['stdp']
-        self.meanmodes = self.xp.array(stats['meanmodes'], dtype=self.dtype)
-        self.stdmodes = self.xp.array(stats['stdmodes'], dtype=self.dtype)
+        self._set_output_moments(np.asarray(stats['meanmodes'], dtype=np.float64),
+                                 np.asarray(stats['stdmodes'], dtype=np.float64) ** 2
+                                 + np.asarray(stats['meanmodes'], dtype=np.float64) ** 2)
+        self.mode_gain = np.asarray(stats['mode_gain']) if stats.get('mode_gain') else None
 
     def _inner_model(self):
         return self.model.module if isinstance(self.model, nn.DataParallel) else self.model
 
     def _save(self, val_loss):
         save_checkpoint(self._inner_model(), self.network_filename, {
+            'network': self.network,
             'meanp': float(self.meanp),
             'stdp': float(self.stdp),
             'meanmodes': cpuArray(self.meanmodes).tolist(),
             'stdmodes': cpuArray(self.stdmodes).tolist(),
-            'nmodes': self.nmodes,
-            'n_frames': self.n_frames,
-            'head_type': self.head_type,
-            'head_grid': self.head_grid,
             'mode_gain': self.mode_gain.tolist() if self.mode_gain is not None else None,
             'min_loss': val_loss,   # this save's validation loss (not the best ever)
         })
@@ -494,48 +486,58 @@ class Conv2dNetTrainer(BaseProcessingObj):
     #   Normalization
     # ------------------------------------------------------------------
 
-    def _collect_init_samples(self, x, modes, weights):
-        """Collect samples until init_samples are available, then set the
-        normalization from all of them and seed the replay buffer with the
-        ones from earlier batches. True once done (the current batch then
-        goes on to training)."""
-        self._init_batches.append((to_torch(x), to_torch(modes),
-                                   torch.from_numpy(weights) if weights is not None
-                                   else torch.ones(x.shape[0])))
-        n = sum(b[0].shape[0] for b in self._init_batches)
-        if n < self.init_samples:
-            print(f'[{self.name}] Collecting initialization samples: {n}/{self.init_samples}', flush=True)
-            return False
-        earlier, self._init_batches = self._init_batches[:-1], []
-        all_x = torch.cat([b[0] for b in earlier] + [to_torch(x)])
-        all_y = torch.cat([b[1] for b in earlier] + [to_torch(modes)])
-        self._set_normalization(all_x, all_y)
-        if self.replay_size > 0 and earlier:
-            self._replay_add(*(torch.cat(parts) for parts in zip(*earlier)))
-        return True
+    def _init_normalization(self, x, modes):
+        """From the first batch: the input normalization, kept from then on,
+        and the starting point of the output's moving average."""
+        xx = to_torch(x).to(torch.float64)
+        self.meanp = float(xx.mean())
+        self.stdp = float(xx.std(unbiased=False)) + 1e-8
+        y = cpuArray(modes).astype(np.float64)
+        self._set_output_moments(y.mean(0), (y ** 2).mean(0))
+        self._norm_time = self.t_to_seconds(self.current_time)
+        print(f'[{self.name}] Normalization initialized from the first {x.shape[0]} samples; the '
+              f'output statistics follow a {self.norm_timescale:g} s moving average from here.',
+              flush=True)
 
-    def _set_normalization(self, x, y):
-        """From CPU torch tensors: inputs and modes (physical units)."""
-        x = x.to(torch.float64)
-        y = y.to(torch.float64)
-        self.meanp = float(x.mean())
-        self.stdp = float(x.std(unbiased=False)) + 1e-8
-        self.meanmodes = self.xp.asarray(y.mean(0).numpy(), dtype=self.dtype)
-        self.stdmodes = self.xp.asarray(y.std(0, unbiased=False).numpy() + 1e-8, dtype=self.dtype)
-        frozen = ', frozen from now on' if self.freeze_norm else ''
-        print(f'[{self.name}] Normalization initialized from {x.shape[0]} samples{frozen}.', flush=True)
+    def _set_output_moments(self, m1, m2):
+        self._out_m1, self._out_m2 = m1, m2
+        std = np.sqrt(np.maximum(m2 - m1 ** 2, 0.0)) + 1e-8
+        self.meanmodes = self.xp.asarray(m1, dtype=self.dtype)
+        self.stdmodes = self.xp.asarray(std, dtype=self.dtype)
 
-    def _update_normalization(self, x, modes):
-        """Exponential moving average with rate norm_alpha."""
-        old_mean, old_std = cpuArray(self.meanmodes).copy(), cpuArray(self.stdmodes).copy()
-        a = self.norm_alpha
-        self.meanp = (1 - a) * self.meanp + a * float(self.xp.mean(x))
-        self.stdp = (1 - a) * self.stdp + a * (float(self.xp.std(x)) + 1e-8)
-        self.meanmodes = (1 - a) * self.meanmodes + a * self.xp.mean(modes, axis=0)
-        self.stdmodes = (1 - a) * self.stdmodes + a * (self.xp.std(modes, axis=0) + 1e-8)
-        if self.diag is not None:
-            self._diag_safe(self.diag.record_normalization_drift, old_mean, old_std,
-                            cpuArray(self.meanmodes), cpuArray(self.stdmodes))
+    def _update_output_normalization(self, modes):
+        """Move the output statistics towards this batch's, with the weight a
+        norm_timescale moving average gives the simulated time since the
+        last update, and rescale the output layers to match."""
+        now = self.t_to_seconds(self.current_time)
+        if self._norm_time is None:      # first batch after resuming: no interval yet
+            self._norm_time = now
+            return
+        alpha = 1.0 - np.exp(-max(now - self._norm_time, 0.0) / self.norm_timescale)
+        self._norm_time = now
+        y = cpuArray(modes).astype(np.float64)
+        old_mean = cpuArray(self.meanmodes).astype(np.float64)
+        old_std = cpuArray(self.stdmodes).astype(np.float64)
+        self._set_output_moments((1 - alpha) * self._out_m1 + alpha * y.mean(0),
+                                 (1 - alpha) * self._out_m2 + alpha * (y ** 2).mean(0))
+        self._preserve_outputs(old_mean, old_std, cpuArray(self.meanmodes).astype(np.float64),
+                               cpuArray(self.stdmodes).astype(np.float64))
+
+    def _preserve_outputs(self, old_mean, old_std, new_mean, new_std):
+        """Rescale the network's output layers so that its denormalized
+        predictions are unchanged by a new output normalization. A
+        prediction is std * o + mean, with o a sum of linear layers, so
+        o' = (std / std') * o + (mean - mean') / std' is exact: scale every
+        output layer's weights and bias by std / std', and add the shift to
+        one bias."""
+        scale = to_torch(old_std / new_std, self.device)
+        shift = to_torch((old_mean - new_mean) / new_std, self.device)
+        with torch.no_grad():
+            for i, layer in enumerate(self._inner_model().output_layers()):
+                layer.weight.mul_(scale[:, None])
+                layer.bias.mul_(scale)
+                if i == 0:
+                    layer.bias.add_(shift)
 
     # ------------------------------------------------------------------
     #   Replay buffer
@@ -585,13 +587,9 @@ class Conv2dNetTrainer(BaseProcessingObj):
         x, modes, out_of_band, fsr, weights = batch
 
         if self.meanmodes is None:
-            if self.init_samples > 0:
-                if not self._collect_init_samples(x, modes, weights):
-                    return
-            else:
-                self._set_normalization(to_torch(x), to_torch(modes))
-        elif not self.freeze_norm:
-            self._update_normalization(x, modes)
+            self._init_normalization(x, modes)
+        else:
+            self._update_output_normalization(modes)
 
         x_norm = (x - self.meanp) / self.stdp
         if x_norm.ndim == 3:    # single-channel frames: add the channel axis

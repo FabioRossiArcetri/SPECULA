@@ -4,9 +4,14 @@ Saving and loading the networks trained by Conv2dNetTrainer.
 A checkpoint is two files:
 
 - ``<name>.pth``: the network weights (a state_dict);
-- ``<name>_stats.json``: the normalization statistics (meanp/stdp for the
-  input, meanmodes/stdmodes for the output) plus the settings the network
-  was trained with that the code loading it must match (TRAINED_SETTINGS).
+- ``<name>_stats.json``: everything else needed to use them -- the network's
+  architecture (``network``, the arguments it was built with, see
+  NETWORK_KEYS), the input and output normalization (meanp/stdp,
+  meanmodes/stdmodes) and the per-mode prediction gain (``mode_gain``, see
+  calibration_factor).
+
+Code that uses a trained network reads all of this from the file, so its own
+configuration cannot disagree with the weights.
 """
 
 import json
@@ -18,10 +23,9 @@ import torch
 from specula.lib.efficient_u_net import UNetRegressor
 
 
-# Settings saved in the stats file that the code loading the network must
-# match, with the value implied by stats files written before they existed.
-TRAINED_SETTINGS = {'n_frames': 1, 'head_type': 'pooled', 'head_grid': 32}
-
+# The arguments a network is built with, as saved in the stats file.
+NETWORK_KEYS = ('nmodes', 'input_channels', 'n_frames', 'channels', 'depth',
+                'conv_block_type', 'head_type', 'head_grid', 'dropout')
 
 # A network's predictions are shrunk towards the mean, by a factor that differs
 # per mode (see Conv2dNetTrainer's mode_gain). Dividing it out restores the
@@ -31,10 +35,24 @@ MIN_CALIBRATED_GAIN = 0.2
 MAX_CALIBRATION = 3.0
 
 
+def build_network(network):
+    """A UNetRegressor from a ``network`` dict (keys: NETWORK_KEYS)."""
+    return UNetRegressor(
+        input_channels=network['input_channels'] * network['n_frames'],
+        output_size=network['nmodes'],
+        base_channels=network['channels'],
+        dropout_level=network['dropout'],
+        depth=network['depth'],
+        conv_block_type=network['conv_block_type'],
+        head_type=network['head_type'],
+        head_grid=network['head_grid'],
+    )
+
+
 def calibration_factor(stats, nmodes):
     """Per-mode factor that undoes the shrinkage measured during training, to
     multiply the predictions' deviation from meanmodes by. None if the
-    checkpoint has no measurement (trained before this existed)."""
+    checkpoint has no measurement."""
     gain = np.asarray(stats.get('mode_gain') or [], dtype=float)
     if gain.size != nmodes:
         return None
@@ -48,24 +66,6 @@ def stats_filename(network_filename):
     return os.path.splitext(network_filename)[0] + '_stats.json'
 
 
-def check_trained_settings(network_filename, **settings):
-    """Raise a clear error if the stats file saved with the checkpoint says
-    the network was trained with different settings (e.g. n_frames=4,
-    head_type='spatial') than the ones given -- otherwise the mismatch shows
-    up only as an obscure tensor-shape error when loading the weights. Does
-    nothing if there is no stats file."""
-    filename = stats_filename(network_filename)
-    if not os.path.isfile(filename):
-        return
-    with open(filename, 'r') as f:
-        stats = json.load(f)
-    for key, value in settings.items():
-        trained = stats.get(key, TRAINED_SETTINGS[key])
-        if trained != value:
-            raise ValueError(f'{key}={value!r}, but the network in {filename} was trained '
-                             f'with {key}={trained!r}: set {key} to {trained!r}')
-
-
 def load_stats(network_filename):
     filename = stats_filename(network_filename)
     if not os.path.isfile(filename):
@@ -73,6 +73,29 @@ def load_stats(network_filename):
                                 f'Make sure to train the model first!')
     with open(filename, 'r') as f:
         return json.load(f)
+
+
+def _saved_network(network_filename, stats):
+    network = stats.get('network')
+    if network is None:
+        raise ValueError(f'{stats_filename(network_filename)} does not record the network '
+                         f'architecture: the checkpoint predates that, retrain it')
+    return network
+
+
+def check_same_network(network_filename, network):
+    """Raise a clear error if the checkpoint at network_filename was trained
+    with a different network than ``network`` -- for a trainer resuming from
+    it. Does nothing if there is no checkpoint yet."""
+    if not os.path.isfile(stats_filename(network_filename)):
+        return
+    trained = _saved_network(network_filename, load_stats(network_filename))
+    diffs = [f'{k}={network[k]!r} (checkpoint: {trained.get(k)!r})'
+             for k in NETWORK_KEYS if network[k] != trained.get(k)]
+    if diffs:
+        raise ValueError(f'the network configured does not match the one in {network_filename}: '
+                         + ', '.join(diffs) + '. Use the checkpoint\'s values, or a new network_filename '
+                         'to train a different network')
 
 
 def load_weights(model, network_filename):
@@ -86,25 +109,13 @@ def save_checkpoint(model, network_filename, stats):
         json.dump(stats, f, indent=2)
 
 
-def load_trained_network(network_filename, nmodes, input_channels, n_frames, channels,
-                         depth, dropout, conv_block_type, head_type, head_grid=32):
-    """Build the network, load its weights and return it in eval mode, on
-    the CPU, together with its stats (a dict). The arguments must match
-    the ones it was trained with (see Conv2dNetTrainer)."""
+def load_trained_network(network_filename):
+    """Build the network recorded in the checkpoint, load its weights and
+    return it in eval mode, on the CPU, together with its stats (a dict; the
+    architecture is in stats['network'])."""
     if not os.path.isfile(network_filename):
         raise FileNotFoundError(f'Model file not found at {network_filename}')
     stats = load_stats(network_filename)
-    check_trained_settings(network_filename, n_frames=n_frames, head_type=head_type,
-                           head_grid=head_grid)
-    model = UNetRegressor(
-        input_channels=input_channels * n_frames,
-        output_size=nmodes,
-        base_channels=channels,
-        dropout_level=dropout,
-        depth=depth,
-        conv_block_type=conv_block_type,
-        head_type=head_type,
-        head_grid=head_grid,
-    )
+    model = build_network(_saved_network(network_filename, stats))
     load_weights(model, network_filename)
     return model.eval(), stats

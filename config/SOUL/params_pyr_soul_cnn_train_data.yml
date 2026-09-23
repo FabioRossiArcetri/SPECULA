@@ -35,24 +35,10 @@ pyramid_override:
 # (here, atmo's seeing/wind_speed/wind_direction inputs), so those are
 # reconnected explicitly in atmo_override below.
 #
-# Periods are distinct primes (in seconds) chosen so that *no two* of
-# them ever redraw on the same simulation step within one run: the
-# smallest pairwise period, lcm(5,7)=35s, already exceeds
-# main.total_time (30.9956s), as do lcm(5,11)=55s and lcm(7,11)=77s.
-#
-# This matters more than the earlier "all three realign only every
-# lcm=30s" reasoning suggested. With the previous 2s/3s/5s periods, the
-# *pairs* realigned constantly inside a single run -- seeing+wind_speed
-# every 6s (5 times over 31s), seeing+wind_direction every 10s (3
-# times), wind_speed+wind_direction every 15s (2 times). A simultaneous
-# two-parameter jump is a much bigger shock to a fixed-gain loop than
-# either parameter moving alone, and those compounded transients showed
-# up as large, recurring spikes in the training loss roughly every ~10
-# triggers (6s / ~0.59s-per-trigger).
-#
-# Each parameter still gets several draws over the run (5s: ~6 draws,
-# 7s: ~4, 11s: ~2), and the combined state now repeats only every
-# lcm(5,7,11)=385s -- far beyond any run of this length.
+# The conditions are redrawn every 2 s (seeing), 3 s (wind speed) and 5 s
+# (wind direction), all on integer seconds. Pairs of them change together
+# every 6, 10 and 15 s, which a closed loop absorbs; what it must never meet
+# is a change of conditions while it is open -- see gain_mod_wave below.
 #
 # data_store is also removed: it dumps the full residual EF to
 # store_dir every step (an absolute path under someone else's home
@@ -93,12 +79,19 @@ atmo_override:
     wind_direction:   'wind_direction.output'
 
 # --- gain_mod: SQUARE wave, period 1s, duty_cycle 0.95, values in {0, 1} --
-# amp=0.5/constant=0.5 remap the wave's usual +-1 into {0, 1}. duty_cycle
-# is fixed to 0.95 (95% at 1, 5% at 0), and vi offset=0.95*2*pi shifts the
-# waveform's own cycle boundary so that its high->low (down) transition
-# lands exactly on every integer second (verified against WaveGenerator:
-# with the same time_step as this config, the falling edge is always the
-# very first sample at or after each integer second, never later).
+# amp=0.5/constant=0.5 remap the wave's usual +-1 into {0, 1}; duty_cycle 0.95
+# keeps the loop closed 95% of each second and open for the other 50 ms.
+#
+# When it opens matters. The offset (0.70 * 2*pi) places the opening at a
+# quarter past each second, 0.25-0.30 s, and the re-convergence right after
+# it, away from every redraw: the atmosphere changes on integer seconds (see
+# above) and the per-mode gains every half second (see below). With the
+# opening on integer seconds instead, 41 of 56 openings in a run coincided
+# with a change of the conditions, and in one of them -- new seeing and new
+# wind direction at t = 40 s -- the loop re-closed into conditions far worse
+# than the ones it had left, with a residual outside the non-modulated
+# pyramid's linear range, and never recovered: the Strehl fell from 0.82 to
+# 0.007 in 5 s and every later batch was unusable.
 gain_mod_wave:
   class:             'WaveGenerator'
   wave_type:         'SQUARE'
@@ -106,7 +99,7 @@ gain_mod_wave:
   amp:               [0.5]
   constant:          [0.5]
   duty_cycle:        [0.95]
-  offset:            [5.969026041820607]   # 0.95 * 2*pi
+  offset:            [4.39822971502571]   # 0.70 * 2*pi: opens at k + 0.25 s
   outputs: ['output']
 
 # --- Randomized loop gain on modes 50 and up -----------------------------
@@ -189,14 +182,14 @@ mode_gain_factor:                          # the 630 factors, all clamped to at 
     in_value2:       'mode_gain_random_high.output'
   outputs: ['out_value']
 
-gain_mod_wave_modes:                       # gain_mod_wave, repeated for each of the 500 modes
+gain_mod_wave_modes:                       # gain_mod_wave, repeated for each of the 630 modes
   class:             'WaveGenerator'
   wave_type:         'SQUARE'
   freq:              [1.0]
   amp:               [0.5]
   constant:          [0.5]
   duty_cycle:        [0.95]
-  offset:            [5.969026041820607]
+  offset:            [4.39822971502571]   # must stay identical to gain_mod_wave's
   output_size:       630
   outputs: ['output']
 
@@ -256,7 +249,7 @@ nn_trainer:
   # control_override above), the extra normalized loss term
   # (norm_loss_weight below) and a head that keeps the spatial detail
   # (head_type / depth below), predicting modes 0-499.
-  network_filename:  './trained_models/soul_cnn_rec_4f_spatial_m630_g60.pth'
+  network_filename:  './trained_models/soul_cnn_rec_1f_spatial_m630_g60.pth'
   load_from_file:    true   # resume from network_filename if it already exists
   nmodes:            630     # every mode modal_analysis gives, and every mode
                              # the loop corrects (control's groups add up to
@@ -314,13 +307,17 @@ nn_trainer:
                              # ~0.4 s to close against the linear loop's 0.2 s.
                              # 400 still catches a diverging loop (its batch
                              # medians run into the thousands).
-  freeze_norm:       true   # normalization estimated once, then fixed: with an
-                             # EMA it moved by 27-100% per step, so the network's
-                             # target kept shifting. norm_alpha is unused.
-  init_samples:      4000   # samples collected (~5 triggers, no training) to
-                             # estimate the frozen normalization; they also seed
-                             # the replay buffer
-  norm_alpha:        0.1   # unused while freeze_norm is true
+  norm_timescale:    30.0   # [s] of simulated time. The input normalization is
+                             # set from the first batch and kept (the network's
+                             # first block ends in a GroupNorm, which makes it
+                             # insensitive to that choice). The per-mode output
+                             # statistics follow a moving average with this time
+                             # constant -- a few seconds of data don't represent
+                             # an atmosphere that keeps changing -- and every
+                             # update rescales the output layers so the
+                             # predictions stay exactly the same: the network
+                             # never chases them, whatever the rate. 30 s spans
+                             # ~15 seeing draws and several wind draws.
   # Replay buffer: before, each trigger took 3 full-batch steps on its own
   # ~0.6 s chunk (60 gradient steps in 20 triggers, one atmospheric
   # condition at a time, forgotten when the next arrived). Now every

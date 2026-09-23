@@ -42,8 +42,9 @@ data_buffer:
 
 nn_trainer:
   class:             'Conv2dNetTrainer'
-  # The same file modalrec loaded: this run refines it in place.
-  network_filename:  './trained_models/soul_cnn_rec_4f_spatial_m630_g60.pth'
+  # The same file modalrec loaded: this run refines it in place. The
+  # architecture below must match the one saved in it (checked on load).
+  network_filename:  './trained_models/soul_cnn_rec_1f_spatial_m630_g60.pth'
   load_from_file:    true
   nmodes:            630
   channels:          64
@@ -56,9 +57,10 @@ nn_trainer:
   label_offset:      0
   val_split:         0.2
   dropout:           0.1
-  freeze_norm:       true   # the normalization must stay the one modalrec is
-  init_samples:      0      # using, so it is restored from the stats file and
-                            # never re-estimated (init_samples is then unused)
+  norm_timescale:    30.0   # [s] the output statistics continue their moving
+                            # average from the stats file; each update rescales
+                            # the output layers, so the network the trainer saves
+                            # stays consistent with its statistics
   replay_size:       30000
   replay_subsample:  10
   replay_steps:      100

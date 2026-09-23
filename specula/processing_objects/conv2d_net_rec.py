@@ -36,26 +36,17 @@ class Conv2dNetRec(BaseModalrec):
 
     def __init__(self,
                  network_filename,
-                 nmodes=20,
-                 channels=32,
-                 dropout=0.01,
-                 conv_block_type=0,
-                 depth=5,
-                 input_channels=2,
                  baseline_offset=0,
-                 n_frames=1,
-                 head_type='pooled',
-                 head_grid=32,
                  calibrate_gain=False,
                  target_device_idx: int = None,
                  precision: int = None):
         """
-        input_channels : int, optional
-            Must match the value used to train the loaded network (see
-            Conv2dNetTrainer). Default 2, matching the two channels
-            (x slopes, y slopes) returned by Slopes.get2d() for an
-            ordinary (non slopes-from-intensity) slope map; use 1 for a
-            slopes-from-intensity map.
+        network_filename : str
+            A checkpoint written by Conv2dNetTrainer. The network -- its
+            architecture, nmodes, input_channels and n_frames -- is read from
+            it, so nothing in the config can disagree with the weights.
+            Until n_frames slope maps have arrived, the missing ones repeat
+            the first.
         baseline_offset : int, optional
             Index of the first mode within the connected optional
             'baseline' input, if any. When connected, the network's
@@ -63,12 +54,6 @@ class Conv2dNetRec(BaseModalrec):
             baseline is added back to it to form the final out_modes --
             the closed-loop counterpart of Conv2dNetTrainer/Tester's
             residual-learning mode.
-        n_frames : int, optional
-            Consecutive slope maps stacked as the network input (the current
-            one and the n_frames - 1 before it); must match the value the
-            network was trained with (see Conv2dNetTrainer; it is checked
-            against the checkpoint's stats file). Until n_frames maps have
-            arrived, the missing ones repeat the first.
         calibrate_gain : bool, optional
             Undo the shrinkage of the network's predictions towards the mean,
             using the per-mode gain measured during training and saved in the
@@ -77,22 +62,16 @@ class Conv2dNetRec(BaseModalrec):
             network that shrinks less silently raises the effective loop gain.
             Modes the network barely predicts are left uncorrected, since
             amplifying them would mostly amplify noise.
-        head_type : str, optional
-            'pooled' (default) or 'spatial': the network's regression head
-            (see UNetRegressor); must match the value the network was
-            trained with (it is checked against the checkpoint's stats file).
         """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
-        self.nmodes = nmodes
-        self.input_channels = input_channels
+        self.model, stats = load_trained_network(network_filename)
+        network = stats['network']
+        self.nmodes = nmodes = network['nmodes']
+        self.input_channels = network['input_channels']
+        self.n_frames = network['n_frames']
         self.baseline_offset = baseline_offset
-        self.n_frames = n_frames
-        self.stacker = FrameStacker(n_frames, np)
-        self.model, stats = load_trained_network(
-            network_filename, nmodes=nmodes, input_channels=input_channels, n_frames=n_frames,
-            channels=channels, depth=depth, dropout=dropout, conv_block_type=conv_block_type,
-            head_type=head_type, head_grid=head_grid)
+        self.stacker = FrameStacker(self.n_frames, np)
         self.meanp = stats['meanp']
         self.stdp = stats['stdp']
         self.meanmodes = np.asarray(stats['meanmodes'], dtype=float)
