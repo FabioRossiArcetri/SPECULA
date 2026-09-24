@@ -1,69 +1,49 @@
 ---
-# Closed-loop evaluation of a Conv2dNetRec-style CNN reconstructor
-# (trained by params_pyr_soul_cnn_train_data.yml) on SOUL, using 2D
-# slopes from a NON-modulated pyramid as CNN input.
+# Evaluation of the CNN reconstructor trained by
+# params_pyr_soul_cnn_train_data.yml, on data it has not seen:
 #
-# To be used together with the base config, on its own (not combined
-# with params_pyr_soul_cnn_train_data.yml -- run that one first to
-# produce the checkpoint this one loads):
 #   specula params_pyr_soul.yml params_pyr_soul_cnn_test_data.yml
 #
-# Mirrors params_pyr_soul_cnn_train_data.yml's loop tap (slopes2d /
-# modal_analysis / data_buffer) so the CNN sees the same kind of input it
-# was trained on, but swaps Conv2dNetTrainer for Conv2dNetTester: no
-# gradient updates, just per-batch loss/prediction against modal_analysis's
-# ground truth. As in the training-data config, the loop itself is still
-# closed with the existing linear `rec` (Modalrec) + `control`
-# (Integrator), unchanged; the tester only taps in, it doesn't drive it.
+# The same loop and tap as the training config -- the linear reconstructor
+# drives the loop, the network only watches -- with Conv2dNetTester in place
+# of the trainer: no gradient updates, just the network's error on each batch
+# against modal_analysis, next to the linear reconstructor's own error on the
+# same frames. The per-mode gains are not randomized here: the loop runs at its
+# nominal tuning, as it would in operation.
 #
-# The atmosphere generators below have no explicit `seed`, so this run
-# draws an independent random trajectory from the training run each time
-# it's launched -- i.e. this is already an unseen (not replayed) test
-# sequence, not a replay of the exact data the network was trained on.
-#
-# gain_mod_wave's periodic loop-opening (see below) exists to diversify
-# *training* data, not to reflect real operation -- so its buffered value
-# is also fed to nn_tester as 'gain_mod', which drops any sample where the
-# loop wasn't at full gain before computing statistics (via
-# gain_mod_threshold). Otherwise those atypical, not-really-closed-loop
-# samples would skew the reported test performance.
+# The atmosphere generators have no seed, so every run draws a new sequence.
 
 main_override:
-  total_time:         3.0   # [s] total simulation time for the test run
+  total_time:        3.0    # [s]
 
 pyramid_override:
-  mod_amp: 0.0   # non-modulated pyramid, matching the training-data config
+  mod_amp: 0.0   # non-modulated pyramid
 
-# --- Variable atmospheric conditions ---------------------------------
-# Same rationale as params_pyr_soul_cnn_train_data.yml: PeriodicRandomGenerator
-# class swap (not just an override, for the same remove-then-redefine
-# reason), pairwise-distinct prime periods, and data_store removed (fails
-# at finalize() with a PermissionError under someone else's home
-# directory, and this pipeline doesn't need it anyway).
+# --- Varying atmosphere: as in the training config (see there) -----------------
 remove: ['seeing', 'wind_speed', 'wind_direction', 'data_store']
 
 seeing:
   class:             'PeriodicRandomGenerator'
-  update_interval:   2.0                    # [s] prime period
+  update_interval:   2.0                    # [s]
   distribution:      'UNIFORM'
-  constant:          [0.9]                  # ["] same range as the training config
-  amp:               [0.6]                  # ["] -> range [0.6, 1.2]
+  constant:          [0.9]                  # ["]
+  amp:               [0.6]                  # ["] -> uniform in [0.6, 1.2]
   output_size:       1
 
 wind_speed:
   class:             'PeriodicRandomGenerator'
-  update_interval:   3.0                    # [s] prime period
+  update_interval:   3.0                    # [s]
   distribution:      'UNIFORM'
-  constant:          [2., 4., 6., 25.]      # [m/s] one per atmospheric layer, base config's values
-  amp:               [2., 4., 6., 25.]      # [m/s] -> range [0, 2x nominal] per layer
+  constant:          [2., 4., 6., 25.]      # [m/s] one per layer, the base config's values
+  amp:               [2., 4., 6., 25.]      # [m/s] -> uniform in [0, 2x nominal]
   output_size:       4
 
 wind_direction:
   class:             'PeriodicRandomGenerator'
-  update_interval:   5.0                    # [s] prime period
+  update_interval:   5.0                    # [s]
   distribution:      'UNIFORM'
-  constant:          [0., 30., -30., 45.]   # [deg] one per atmospheric layer, base config's values
-  amp:               [180., 180., 180., 180.]  # [deg] -> +/-90 deg swing per layer
+  constant:          [0., 30., -30., 45.]   # [deg] one per layer, the base config's values
+  amp:               [180., 180., 180., 180.]  # [deg] -> +/-90 deg around them
   output_size:       4
 
 atmo_override:
@@ -72,10 +52,7 @@ atmo_override:
     wind_speed:       'wind_speed.output'
     wind_direction:   'wind_direction.output'
 
-# --- gain_mod: SQUARE wave, period 1s, duty_cycle 0.95, values in {0, 1} --
-# Same as the training-data config -- see there for the full rationale on
-# amp/constant/offset. Kept here so the loop dynamics the CNN is evaluated
-# against match what it was trained on.
+# --- Loop opening: as in the training config (see there) -----------------------
 gain_mod_wave:
   class:             'WaveGenerator'
   wave_type:         'SQUARE'
@@ -83,16 +60,11 @@ gain_mod_wave:
   amp:               [0.5]
   constant:          [0.5]
   duty_cycle:        [0.95]
-  offset:            [5.969026041820607]   # 0.95 * 2*pi
+  offset:            [4.39822971502571]     # 0.70 * 2*pi: opens at k + 0.25 s
   outputs: ['output']
 
 control_override:
-  # The same loop as the training-data config, minus its per-mode gain
-  # randomization: the residual on the modes the loop corrects, and the one
-  # left in modes >= 500 that aliases into the slopes, then have the same
-  # statistics as the data the network was trained on. The groups add up to
-  # 630 because that is what the linear reconstructor outputs, and an
-  # Integrator needs one filter per input mode.
+  # The training config's tuning (see there)
   #                 0-29    30-99     100-199   200-499   500-629
   n_modes:           [30,     70,       100,      300,      130]
   int_gain:          [0.45,   0.35,     0.18,     0.08,     0.05]
@@ -101,65 +73,44 @@ control_override:
     delta_comm:      'rec.out_modes'
     gain_mod:        'gain_mod_wave.output'
 
-# --- CNN evaluation (parallel tap, does not drive the loop) --
+# --- CNN evaluation tap (does not drive the loop) --------------------------------
 slopes2d:
-  class:                'Slopes2D'
+  class:             'Slopes2D'
   inputs:
-    # slopecNOSN, matching the training config: the network is fed the
-    # intensity map *without* the slope-null subtraction (see
-    # params_pyr_soul_cnn_closed_loop.yml's in_slopes comment).
-    in_slopes: 'slopecNOSN.out_slopes'
+    in_slopes:       'slopecNOSN.out_slopes'  # the same slope computer as in training (see there)
   outputs: ['out_value']
-
-# modal_analysis already exists in params_pyr_soul.yml; see
-# params_pyr_soul_cnn_train_data.yml's comment -- same 630-mode KL basis,
-# nn_tester's nmodes=500 below takes the same first 500 columns the network
-# was trained against.
 
 data_buffer:
   class:             'DataBuffer'
-  # Conv2dNetTester only runs a no_grad forward pass (no backward graph to
-  # keep in memory), so buffer_size isn't the peak-memory concern here that
-  # it was for Conv2dNetTrainer. Kept at the same value anyway so each
-  # evaluation trigger covers a comparable slice of loop time to a training
-  # trigger; raise it if you want fewer, larger evaluation batches instead.
-  buffer_size:       128    # ~0.12s of data per batch -> ~93 evaluation triggers over main.total_time
+  buffer_size:       128    # ~75 ms per evaluation batch
   inputs:
     input_list: ['input_2d-slopes2d.out_value',
                  'modes-modal_analysis.out_modes',
                  'gain_mod-gain_mod_wave.output',
-                 # the linear reconstructor's own estimate of the same modes,
-                 # scored by nn_tester on exactly the same frames
+                 # the linear reconstructor's estimate of the same modes, scored
+                 # by nn_tester on exactly the same frames
                  'reference-rec.out_modes']
 
 nn_tester:
   class:             'Conv2dNetTester'
-  # The checkpoint params_pyr_soul_cnn_train_data.yml saves (its
-  # nn_trainer.network_filename).
-  # The network itself (architecture, nmodes, input_channels, n_frames) is
-  # read from the checkpoint, so nothing here can disagree with the weights.
+  # The network (architecture, nmodes, input_channels, n_frames) is read from
+  # the checkpoint the training config saves.
   network_filename:  './trained_models/soul_cnn_rec_1f_spatial_m630_g60.pth'
   label_offset:      0      # modal_analysis.out_modes has no leading placeholder
-  gain_mod_threshold: 1.0   # drop buffered samples where the loop wasn't at
-                             # full gain (see gain_mod_wave below) from the
-                             # test statistics -- they aren't representative
-                             # closed-loop operation
+  gain_mod_threshold: 1.0   # leave out the frames while the loop is open
   inputs:
-    input_2d_batch: 'data_buffer.input_2d_buffered'
-    labels:         'data_buffer.modes_buffered'
-    gain_mod:       'data_buffer.gain_mod_buffered'
-    reference:      'data_buffer.reference_buffered'
+    input_2d_batch:  'data_buffer.input_2d_buffered'
+    labels:          'data_buffer.modes_buffered'
+    gain_mod:        'data_buffer.gain_mod_buffered'
+    reference:       'data_buffer.reference_buffered'
   outputs: ['loss', 'prediction']
-  target_device_idx: 1      # pin to a specific GPU on this shared machine; check nvidia-smi and adjust as needed
+  target_device_idx: 1      # a specific GPU on this shared machine; check nvidia-smi
 
-# Live SR plot of the linear loop actually driving the simulation here
-# (modalrec + control, unchanged by the CNN tap) -- context for what
-# conditions the CNN is being evaluated under, not a CNN performance
-# metric itself (see nn_tester's printed statistics for that). Requires
-# a display (e.g. X11 forwarding over ssh); see params_pyr_soul.yml's
-# commented-out sr_disp for the same block, disabled by default there.
-#sr_disp:
-#  class:            'PlotDisplay'
-#  inputs:
-#    value:       'psf.out_sr'
-#  title:            'SR'
+# The Strehl of the loop that runs here is the *linear* loop's, context for the
+# conditions only. To watch it live, add:
+#
+# sr_disp:
+#   class:             'PlotDisplay'
+#   inputs:
+#     value:           'psf.out_sr'
+#   title:             'SR (linear loop)'

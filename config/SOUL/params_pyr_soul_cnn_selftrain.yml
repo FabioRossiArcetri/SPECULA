@@ -1,36 +1,70 @@
 ---
-# Second training round: the CNN drives the loop *and* keeps training on the
-# data that loop produces.
+# Self-training: the CNN drives the loop and keeps training on the data that
+# loop produces.
 #
-# Third file on top of the closed-loop pair:
 #   specula params_pyr_soul.yml params_pyr_soul_cnn_closed_loop.yml params_pyr_soul_cnn_selftrain.yml
 #
-# Why: every network so far learned the residual statistics of a loop driven
-# by the *linear* reconstructor, and was then asked to work in a loop driven by
-# itself, whose residual looks different -- different spectrum, different
-# excursions, and errors that feed back into the next measurement. That
-# mismatch is what made the first closed-loop attempts wander. Here the
-# training data comes from the regime the network will actually work in.
+# The first training round learns the residual of a loop driven by the linear
+# reconstructor; a loop driven by the network itself has a different residual,
+# with its own errors fed back into the next measurement. Here the training
+# data come from the regime the network actually works in.
 #
-# How it iterates: Conv2dNetRec loads the checkpoint once, at construction, and
-# drives the loop with those fixed weights for the whole run, while
-# nn_trainer keeps training a copy and overwrites the checkpoint every 10
-# steps. So one run = one improvement step: the network that *drove* is the one
-# you started with, the network you end up with has learned from its data. Run
-# it again to iterate. Keep the earlier checkpoint if you want to compare.
+# Conv2dNetRec loads the checkpoint once, at construction, and drives the whole
+# run with those weights, while nn_trainer trains a copy and overwrites the
+# checkpoint every 10 steps. One run is therefore one iteration: run it again
+# to iterate, and keep a copy of the earlier checkpoint to compare.
 #
-# The loop is not opened here (no gain_mod wave) and the per-mode gains are not
-# randomized: this is the deployment regime, on purpose. settle_frames and
-# transient_weight are therefore switched off -- without a gain_mod input there
-# are no re-close transients to weight -- and validation still comes from the
-# ordinary val_split of every batch.
+# The loop is never opened and the gains are not randomized (this is the
+# operating regime), so there is no gain_mod input and no re-close transient to
+# weight.
+#
+# Copy the checkpoint before a run: this one overwrites it.
 
-slopes2d:
-  class:                'Slopes2D'
+# --- Conditions: not the evaluation's ------------------------------------------
+# The closed-loop config runs the base atmosphere (seed 1, fixed seeing and
+# wind), which is also where the CNN is compared with the linear reconstructor.
+# Training on it would teach the network the very phase screens it is scored
+# on, and a single condition. So here the atmosphere has its own seed and the
+# seeing and wind vary as in the training config (see there: the direction is
+# drawn once per run).
+remove: ['seeing', 'wind_speed', 'wind_direction']
+
+seeing:
+  class:             'PeriodicRandomGenerator'
+  update_interval:   2.0                    # [s]
+  distribution:      'UNIFORM'
+  constant:          [0.9]                  # ["]
+  amp:               [0.6]                  # ["] -> uniform in [0.6, 1.2]
+  output_size:       1
+
+wind_speed:
+  class:             'PeriodicRandomGenerator'
+  update_interval:   3.0                    # [s]
+  distribution:      'UNIFORM'
+  constant:          [2., 4., 6., 25.]      # [m/s] one per layer, the base config's values
+  amp:               [2., 4., 6., 25.]      # [m/s] -> uniform in [0, 2x nominal]
+  output_size:       4
+
+wind_direction:
+  class:             'PeriodicRandomGenerator'
+  update_interval:   1000000.0              # [s] longer than any run: one draw per run
+  distribution:      'UNIFORM'
+  constant:          [0., 30., -30., 45.]   # [deg] one per layer
+  amp:               [180., 180., 180., 180.]  # [deg] -> +/-90 deg around them
+  output_size:       4
+
+atmo_override:
+  seed:              2      # not the evaluation's seed (1)
   inputs:
-    # the same slope computer Conv2dNetRec is fed from, and the same one the
-    # first training round used: no slope-null subtraction
-    in_slopes: 'slopecNOSN.out_slopes'
+    seeing:          'seeing.output'
+    wind_speed:      'wind_speed.output'
+    wind_direction:  'wind_direction.output'
+
+# --- Training-data tap -----------------------------------------------------------
+slopes2d:
+  class:             'Slopes2D'
+  inputs:
+    in_slopes:       'slopecNOSN.out_slopes'  # what Conv2dNetRec is fed
   outputs: ['out_value']
 
 data_buffer:
@@ -42,8 +76,9 @@ data_buffer:
 
 nn_trainer:
   class:             'Conv2dNetTrainer'
-  # The same file modalrec loaded: this run refines it in place. The
-  # architecture below must match the one saved in it (checked on load).
+  # The file modalrec loaded, refined in place. The architecture must match
+  # the one saved in it (checked on load); the other parameters are the
+  # training config's (see there).
   network_filename:  './trained_models/soul_cnn_rec_1f_spatial_m630_g60.pth'
   load_from_file:    true
   nmodes:            630
@@ -54,26 +89,21 @@ nn_trainer:
   input_channels:    1
   n_frames:          1
   conv_block_type:   1
+  dropout:           0.1
   label_offset:      0
   val_split:         0.2
-  dropout:           0.1
-  norm_timescale:    30.0   # [s] the output statistics continue their moving
-                            # average from the stats file; each update rescales
-                            # the output layers, so the network the trainer saves
-                            # stays consistent with its statistics
+  val_size:          5000
+  max_label_rms:     400    # also keeps a loop that goes bad from filling the buffer
+  norm_timescale:    30.0   # continues the moving average saved in the stats file
   replay_size:       30000
-  replay_subsample:  10
-  replay_steps:      100
+  replay_subsample:  4
+  replay_ratio:      20
   replay_batch:      64
-  grad_clip_value:   20
-  lr_decay:          0.999
   loss_delta:        10.0
   norm_loss_weight:  5.0
-  max_label_rms:     400    # same guard as the first round: also stops a loop
-                            # that goes bad from filling the replay buffer
-  settle_frames:     0      # no gain_mod input here, so no re-close transients
-  transient_weight:  1.0
+  grad_clip_value:   20
+  lr_decay:          0.999
   inputs:
-    input_2d_batch: 'data_buffer.input_2d_buffered'
-    labels:         'data_buffer.modes_buffered'
+    input_2d_batch:  'data_buffer.input_2d_buffered'
+    labels:          'data_buffer.modes_buffered'
   outputs: ['loss', 'val_loss']

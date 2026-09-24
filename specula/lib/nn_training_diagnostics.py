@@ -4,15 +4,13 @@ Diagnostics for Conv2dNetTrainer.
 They are meant to tell apart the possible bottlenecks that stop the CNN from
 reaching a lower reconstruction error:
 
-- architecture/capacity (does a plain linear map from the same inputs do as
-  well or better? do the predictions span as many independent directions as
-  the labels need?)
-- optimization (gradient clipping, generalization to each new batch)
+- architecture/training (does a plain linear map from the same inputs do as
+  well or better, forward in time?)
+- generalization (loss on each new batch before training on it vs. the
+  training loss) and gradient clipping
 - loop transients (error vs. frames since the loop came back to full gain)
-- information content of the input (error vs. the residual in modes the
-  network doesn't predict, i.e. aliasing and pyramid nonlinearity; shrinkage
-  of the predictions towards the mean, typical of noise-limited modes)
-- a moving target (drift of the normalization statistics)
+- information content of the input (shrinkage of the predictions towards
+  the mean, typical of noise-limited modes)
 
 Everything here only observes: nothing feeds back into training.
 """
@@ -22,6 +20,7 @@ import json
 import numpy as np
 import torch
 
+from specula.lib.cnn_checkpoint import predict
 from specula.lib.ridge_regression import ridge_select_and_fit
 
 
@@ -45,33 +44,11 @@ def mode_groups(nmodes):
     return list(zip(edges[:-1], edges[1:]))
 
 
-def effective_dims(x, frac=0.99):
-    """Number of principal components carrying `frac` of the variance of x (N, K)."""
-    xc = x - x.mean(dim=0, keepdim=True)
-    energy = torch.linalg.svdvals(xc) ** 2
-    total = energy.sum()
-    if total <= 0:
-        return 0
-    cum = torch.cumsum(energy, 0) / total
-    return int((cum < frac).sum().item()) + 1
-
-
-def _pearson(a, b):
-    a = a - a.mean()
-    b = b - b.mean()
-    den = torch.sqrt((a ** 2).sum() * (b ** 2).sum())
-    return float((a * b).sum() / den) if den > 0 else float('nan')
-
-
 class TrainingDiagnostics:
 
     def __init__(self, name, nmodes, max_val, ridge_samples, jsonl_filename,
-                 clip_value, device, settled_after=200):
+                 clip_value, device):
         self.name = name
-        # Frames since the loop came back to full gain after which the loop
-        # is considered settled (for the settled-only ridge fit).
-        self.settled_after = settled_after
-        self.res_fsr = None
         self.nmodes = nmodes
         self.max_val = max_val
         self.ridge_samples = ridge_samples
@@ -83,7 +60,6 @@ class TrainingDiagnostics:
         self.res_x = None
         self.res_y = None
         self.val_x = None
-        self.val_oob = None
         self.last_n = None
         self.last_fresh = None
         self.last_run_step = None
@@ -94,8 +70,6 @@ class TrainingDiagnostics:
         self.win_fresh = []
         self.win_train = []
         self.win_grad = []
-        self.win_std_drift = []
-        self.win_mean_drift = []
         self.win_inband_rms = []
         self.win_oob_rms = []
         self.win_fwd_fvu = []
@@ -112,8 +86,7 @@ class TrainingDiagnostics:
     #   Per-trigger recording
     # ------------------------------------------------------------------
 
-    def add_batch(self, raw_train_x, train_y, raw_val_x, val_oob_rms,
-                  inband_rms, oob_rms, train_fsr=None):
+    def add_batch(self, raw_train_x, train_y, raw_val_x, inband_rms, oob_rms):
         """All arguments are CPU torch tensors. raw_*_x are the network inputs
         *before* normalization, one row per sample. The val rows must be
         appended in the same order (and trimmed to the same max_val) as the
@@ -132,25 +105,13 @@ class TrainingDiagnostics:
 
         self.res_x = _fifo(self.res_x, tx, self.ridge_samples)
         self.res_y = _fifo(self.res_y, train_y, self.ridge_samples)
-        if train_fsr is None:
-            train_fsr = torch.full((tx.shape[0],), -1, dtype=torch.int64)
-        self.res_fsr = _fifo(self.res_fsr, train_fsr.to(torch.int64), self.ridge_samples)
         self.last_n = min(tx.shape[0], self.res_x.shape[0])
         self.last_fresh = None
         self.val_x = _fifo(self.val_x, vx, self.max_val)
-        self.val_oob = _fifo(self.val_oob, val_oob_rms, self.max_val)
 
         self.win_inband_rms.append(float(torch.sqrt((inband_rms ** 2).mean())))
         if oob_rms.numel() > 0:
             self.win_oob_rms.append(float(torch.sqrt((oob_rms ** 2).mean())))
-
-    def record_normalization_drift(self, old_mean, old_std, new_mean, new_std):
-        old_mean = np.asarray(old_mean, dtype=np.float64)
-        old_std = np.asarray(old_std, dtype=np.float64)
-        new_mean = np.asarray(new_mean, dtype=np.float64)
-        new_std = np.asarray(new_std, dtype=np.float64)
-        self.win_std_drift.append(float(np.max(np.abs(new_std - old_std) / old_std)))
-        self.win_mean_drift.append(float(np.max(np.abs(new_mean - old_mean) / old_std)))
 
     def record_fresh_predictions(self, preds, targets, fsr=None):
         """Physical-unit CNN predictions on the newest batch's training
@@ -218,31 +179,9 @@ class TrainingDiagnostics:
         mse = ((predict(X[-n_last:]) - Y[-n_last:]) ** 2).mean(0)
         return mse.cpu(), self.res_y[-n_last:].to(torch.float64)
 
-    def _ridge_forward_settled(self):
-        """Like _ridge_forward(), restricted to settled frames (more than
-        settled_after frames since the loop came back to full gain), both in
-        the fit and in the test. Returns (per-mode MSE, test labels) or
-        (None, None)."""
-        n_last = self.last_n
-        if n_last is None or self.res_fsr is None or self._ridge_unavailable():
-            return None, None
-        settled = self.res_fsr > self.settled_after
-        fit, test = settled[:-n_last], settled[-n_last:]
-        if int(fit.sum()) < MIN_RIDGE_SAMPLES or int(test.sum()) < 20:
-            return None, None
-        dev = self.device
-        X = self.res_x.to(dev, torch.float64)
-        Y = self.res_y.to(dev, torch.float64)
-        fit_d, test_d = fit.to(dev), test.to(dev)
-        predict, _ = _ridge_predictor(X[:-n_last][fit_d], Y[:-n_last][fit_d])
-        T = Y[-n_last:][test_d]
-        mse = ((predict(X[-n_last:][test_d]) - T) ** 2).mean(0)
-        return mse.cpu(), T.cpu()
-
-    def _transient_report(self, K, fwd, rec):
+    def _transient_report(self, K, rec):
         """Residual and CNN error (on each new batch, before training on it)
-        by frames since the loop came back to full gain, plus the linear map
-        fitted and tested on settled frames only."""
+        by frames since the loop came back to full gain."""
         if not self.win_fresh_fsr:
             return
         P = torch.cat(self.win_fresh_P)
@@ -272,28 +211,13 @@ class TrainingDiagnostics:
                         + " | CNN error " + "/".join(f"{v:.0f}" for v in err))
         rec['transient_bins'] = bins
 
-        mse, T_settled = self._ridge_forward_settled()
-        if mse is not None:
-            var = T_settled.var(0, unbiased=False).clamp_min(1e-30)
-            settled_fvu = [float(mse[a:b].sum() / var[a:b].sum()) for a, b in groups]
-            rec['fwd_ridge_fvu_settled_by_group'] = settled_fvu
-            line = (f"linear ridge forward in time, settled frames only (> {self.settled_after} frames "
-                    f"after full gain), FVU per group {names}: "
-                    + "/".join(f"{v:.2f}" for v in settled_fvu))
-            if fwd is not None:
-                all_fvu = [float(fwd['ridge_mse'][a:b].sum() / fwd['var'][a:b].sum()) for a, b in groups]
-                line += " (all frames: " + "/".join(f"{v:.2f}" for v in all_fvu) + ")"
-            self._print(line)
-
     def run(self, model, val_inputs, val_targets, meanmodes_t, stdmodes_t, step):
         if val_inputs is None or val_targets is None or val_targets.shape[0] < 3:
             return
         self.last_run_step = step
 
-        model.eval()
-        with torch.no_grad():
-            preds = model(val_inputs) * stdmodes_t + meanmodes_t
-        P = preds.detach().to('cpu', torch.float64)
+        preds = predict(model, val_inputs, meanmodes_t, stdmodes_t)
+        P = preds.to('cpu', torch.float64)
         T = val_targets.detach().to('cpu', torch.float64)
         N, K = T.shape
 
@@ -403,31 +327,7 @@ class TrainingDiagnostics:
                         + (f" (window mean {rec['window_fwd_cnn_fvu_mean']:.3f})" if self.win_fwd_fvu else "")
                         + f" | ridge error {rec['fwd_ridge_err_rms']:.2f} RMS, FVU {rec['fwd_ridge_fvu_total']:.3f}")
 
-        self._transient_report(K, fwd, rec)
-
-        # --- Rank of predictions vs. labels ----------------------------------
-        rec['label_dims_99'] = effective_dims(T)
-        rec['cnn_pred_dims_99'] = effective_dims(P)
-        self._print(f"independent directions carrying 99% of the variance: labels {rec['label_dims_99']}, "
-                    f"CNN predictions {rec['cnn_pred_dims_99']}")
-
-        # --- Error vs. residual in modes outside the predicted range ---------
-        e_i = torch.sqrt((err ** 2).sum(1))
-        amp_i = torch.sqrt((T ** 2).sum(1))
-        rec['corr_err_vs_label_amplitude'] = _pearson(e_i, amp_i)
-        oob_line = f"per-sample error vs. label amplitude: corr {rec['corr_err_vs_label_amplitude']:.2f}"
-        if self.val_oob is not None and self.val_oob.shape[0] == N and float(self.val_oob.abs().sum()) > 0:
-            oob = self.val_oob.to(torch.float64)
-            rec['corr_err_vs_out_of_band'] = _pearson(e_i, oob)
-            order = torch.argsort(oob)
-            terciles = [order[i * N // 3:(i + 1) * N // 3] for i in range(3)]
-            rec['err_rms_by_out_of_band_tercile'] = [float(torch.sqrt((e_i[t] ** 2).mean())) for t in terciles]
-            rec['out_of_band_rms_by_tercile'] = [float(torch.sqrt((oob[t] ** 2).mean())) for t in terciles]
-            oob_line += (f" | vs. residual in modes >= {self.nmodes}: corr {rec['corr_err_vs_out_of_band']:.2f}, "
-                         f"CNN error by out-of-band tercile (low/mid/high "
-                         + "/".join(f"{v:.1f}" for v in rec['out_of_band_rms_by_tercile']) + "): "
-                         + "/".join(f"{v:.2f}" for v in rec['err_rms_by_out_of_band_tercile']))
-        self._print(oob_line)
+        self._transient_report(K, rec)
 
         # --- Data regime in this window ----------------------------------------
         if self.win_inband_rms:
@@ -460,13 +360,6 @@ class TrainingDiagnostics:
                              f"of steps")
             self._print(line)
 
-        if self.win_std_drift:
-            rec['norm_stdmodes_max_rel_change'] = float(np.max(self.win_std_drift))
-            rec['norm_meanmodes_max_shift_in_std'] = float(np.max(self.win_mean_drift))
-            self._print(f"normalization drift per step (max over window): stdmodes "
-                        f"{100 * rec['norm_stdmodes_max_rel_change']:.1f}%, meanmodes "
-                        f"{rec['norm_meanmodes_max_shift_in_std']:.3f} std")
-
         rec['hints'] = self._hints(rec)
         for hint in rec['hints']:
             self._print(f"hint: {hint}")
@@ -489,11 +382,6 @@ class TrainingDiagnostics:
             hints.append("even a linear map fitted on the recent past explains little of the next batch: "
                          "the input -> mode relation itself changes over time (non-stationary data), "
                          "so this is not only a network problem")
-        if rec.get('grad_clipped_fraction', 0) > 0.9:
-            hints.append(f"gradients are clipped on almost every step (median norm "
-                         f"{rec['grad_norm_median']:.3g} vs clip {self.clip_value:g}): with Adam this mostly "
-                         "makes every batch weigh the same regardless of its error, rather than shrinking "
-                         "the step -- the clip is always on, not just a guard against rare spikes")
         fresh, train = rec.get('window_fresh_loss'), rec.get('window_train_loss')
         if fresh and train and fresh > 1.5 * train:
             hints.append("loss on each new batch (before training on it) is much higher than the training "
@@ -503,13 +391,6 @@ class TrainingDiagnostics:
             names = ", ".join(f"{g['modes'][0]}-{g['modes'][1] - 1}" for g in low_gain)
             hints.append(f"predictions strongly shrunk towards the mean for modes {names}: typical of "
                          "modes whose signal is buried in noise/aliasing (or not learned yet)")
-        terc = rec.get('err_rms_by_out_of_band_tercile')
-        if terc and terc[0] > 0 and terc[2] > 1.5 * terc[0] and rec.get('corr_err_vs_out_of_band', 0) > 0.3:
-            hints.append(f"error grows markedly with the residual in modes >= {self.nmodes}: likely limited "
-                         "by aliasing / pyramid nonlinearity from the modes the loop doesn't correct")
-        if rec.get('norm_stdmodes_max_rel_change', 0) > 0.05:
-            hints.append("normalization statistics still moving by >5% per step: the network is chasing "
-                         "a moving target (consider a smaller norm_alpha, or freezing them)")
         return hints
 
     def _write(self, rec):

@@ -10,7 +10,7 @@ from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
 from specula.connections import InputValue
 from specula.lib.cnn_checkpoint import (build_network, check_same_network, load_stats,
-                                        load_weights, save_checkpoint, stats_filename)
+                                        load_weights, predict, save_checkpoint, stats_filename)
 from specula.lib.frame_stacker import FrameStacker
 from specula.lib.nn_training_diagnostics import TrainingDiagnostics
 
@@ -64,11 +64,12 @@ class Conv2dNetTrainer(BaseProcessingObj):
        ``gain_mod`` input);
     2. used to set the normalization (from the first batch) or to update the
        output normalization (a slow moving average, see norm_timescale);
-    3. split into training and validation samples; the validation ones join
-       a validation set of the most recent 1000;
+    3. split into training samples and validation samples (the most recent
+       frames, see val_split); the validation ones join a validation set of
+       the most recent val_size;
     4. trained on: epoch_len steps on the whole batch or, with a replay
-       buffer (replay_size > 0), replay_steps minibatches drawn from all the
-       training samples collected so far;
+       buffer (replay_size > 0), minibatches drawn from all the training
+       samples collected so far, as many as replay_ratio asks for;
     5. followed by a validation step; every 10 steps the checkpoint is
        saved (see specula/lib/cnn_checkpoint.py), every diag_interval steps
        the diagnostics are printed (specula/lib/nn_training_diagnostics.py).
@@ -154,20 +155,45 @@ class Conv2dNetTrainer(BaseProcessingObj):
     Training:
 
     val_split : float
-        Fraction of each batch used for validation.
+        Fraction of each batch used for validation: its most recent frames,
+        as one contiguous block. Frames a few ms apart are nearly identical,
+        so with a random split every validation frame would sit next to
+        training frames, and the validation loss would reward memorizing them
+        rather than predicting new data. The step line reports the loss and
+        the FVU (error variance / label variance) on them; the loss, in
+        physical units, follows the conditions of the last few batches, the
+        FVU much less, so progress, the best step and early stopping are
+        judged by the FVU.
+    val_size : int
+        Validation samples kept, the most recent ones. It sets how much of
+        the run the validation FVU averages over: with the conditions
+        changing every few seconds, a window of a few seconds makes it follow
+        the conditions rather than the network. It only affects what is
+        reported, not the training.
     epoch_len : int
         Full-batch steps per trigger, without a replay buffer.
     replay_size : int
         If > 0, keep up to this many training samples (a ring buffer in CPU
         RAM: replay_size x (input pixels + nmodes) x 4 bytes) and train on
-        replay_steps minibatches of replay_batch samples drawn from all of
-        them. Each batch covers a fraction of a second of one atmospheric
-        condition: trained on alone, the network forgets earlier conditions.
+        minibatches drawn from all of them. Each batch covers a fraction of a
+        second of one atmospheric condition: trained on alone, the network
+        forgets earlier conditions.
     replay_subsample : int
         Only every Nth training frame enters the replay buffer: consecutive
-        frames at kHz rates are nearly identical.
-    replay_steps, replay_batch : int
-        Minibatch steps per trigger and minibatch size, with replay.
+        frames at kHz rates are nearly identical, and a larger N makes the
+        buffer span more time for the same memory.
+    replay_ratio : float
+        Minibatch draws per new sample: every trigger takes
+        replay_ratio * (samples it added) / replay_batch minibatch steps,
+        drawn from the whole buffer. Once the buffer is full, each sample is
+        thus drawn replay_ratio times on average while it stays in it. Tying
+        the steps to the new data, rather than fixing them, bounds the passes
+        over the buffer: with a fixed number of steps, fewer samples per
+        trigger -- a larger replay_subsample, or a batch mostly filtered
+        out -- meant many more passes over the same samples, and the buffer
+        got memorized.
+    replay_batch : int
+        Minibatch size.
     loss_delta : float
         Huber loss transition point, in the labels' units: errors above it
         count linearly instead of quadratically, so occasional
@@ -183,8 +209,9 @@ class Conv2dNetTrainer(BaseProcessingObj):
     lr_decay : float
         If set, in (0, 1): the learning rate (initially 1e-3) is multiplied
         by it after every trigger (never below 5e-6). Default None: reduced
-        by 0.8 when the validation loss stops improving for patience // 10
-        triggers.
+        by 0.8 when the validation FVU stops improving for patience // 10
+        triggers. Either way the learning rate is saved in the checkpoint and
+        a resumed run continues from it, so the annealing spans runs.
     patience : int
         Training stops after this many triggers without improvement of the
         validation loss.
@@ -220,10 +247,11 @@ class Conv2dNetTrainer(BaseProcessingObj):
                  transient_weight=1.0,
                  norm_timescale=30.0,
                  val_split=0.2,
+                 val_size=1000,
                  epoch_len=20,
                  replay_size=0,
                  replay_subsample=1,
-                 replay_steps=100,
+                 replay_ratio=20.0,
                  replay_batch=64,
                  loss_delta=20.0,
                  norm_loss_weight=0.0,
@@ -240,13 +268,15 @@ class Conv2dNetTrainer(BaseProcessingObj):
             raise ValueError(f'norm_timescale must be > 0, got {norm_timescale}')
         if not loss_delta > 0:
             raise ValueError(f'loss_delta must be > 0, got {loss_delta}')
-        if replay_size < 0 or replay_subsample < 1 or replay_steps < 1 or replay_batch < 1:
-            raise ValueError('replay_size must be >= 0, and replay_subsample, replay_steps '
-                             'and replay_batch >= 1')
+        if replay_size < 0 or replay_subsample < 1 or replay_batch < 1 or not replay_ratio > 0:
+            raise ValueError('replay_size must be >= 0, replay_subsample and replay_batch >= 1, '
+                             'and replay_ratio > 0')
         if lr_decay is not None and not 0 < lr_decay < 1:
             raise ValueError(f'lr_decay must be in (0, 1) or None, got {lr_decay}')
         if settle_frames < 0 or not 0 <= transient_weight <= 1:
             raise ValueError('settle_frames must be >= 0 and transient_weight in [0, 1]')
+        if val_size < 1:
+            raise ValueError(f'val_size must be >= 1, got {val_size}')
         if n_frames < 1 or norm_loss_weight < 0:
             raise ValueError('n_frames must be >= 1 and norm_loss_weight >= 0')
 
@@ -273,7 +303,8 @@ class Conv2dNetTrainer(BaseProcessingObj):
         self.epoch_len = epoch_len
         self.replay_size = replay_size
         self.replay_subsample = replay_subsample
-        self.replay_steps = replay_steps
+        self.replay_ratio = replay_ratio
+        self._replay_new = 0        # samples the last _replay_add put in the buffer
         self.replay_batch = replay_batch
         self.loss_delta = loss_delta
         self.norm_loss_weight = norm_loss_weight
@@ -295,6 +326,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
         self._out_m1 = self._out_m2 = None
         self._norm_time = None
         self.mode_gain = None       # per-mode prediction gain, see _update_mode_gain
+        self._resume_lr = None      # learning rate saved in the checkpoint, if resuming
 
         model = build_network(self.network)
         if load_from_file:
@@ -312,7 +344,9 @@ class Conv2dNetTrainer(BaseProcessingObj):
         # Plain Huber loss in physical units, used for the reported losses;
         # training uses _loss(), which can add weights and the normalized term.
         self.loss_fn = nn.HuberLoss(delta=loss_delta)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self._resume_lr or 1e-3)
+        if self._resume_lr is not None:
+            print(f'[{self.name}] Learning rate resumed at {self._resume_lr:.2e}', flush=True)
         self.plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='min', factor=0.8, patience=patience // 10, min_lr=self.min_lr)
         self.early_stopping = EarlyStopping(patience=patience)
@@ -325,14 +359,15 @@ class Conv2dNetTrainer(BaseProcessingObj):
         self.outputs['loss'] = BaseValue(target_device_idx=target_device_idx)
         self.outputs['val_loss'] = BaseValue(target_device_idx=target_device_idx)
 
-        self.max_val = 1000
+        self.max_val = val_size
         self.val_inputs = self.val_targets = None
         self.replay_x = self.replay_y = self.replay_w = None
         self.replay_count = 0
         self._replay_pos = 0
         self.step_count = 0
         self.loss = self.val_loss = None
-        self.min_loss = float('inf')
+        self.val_fvu = None
+        self.best_val_fvu = float('inf')
 
         self.diag_interval = diag_interval
         self.diag = None
@@ -345,7 +380,6 @@ class Conv2dNetTrainer(BaseProcessingObj):
                 jsonl_filename=os.path.splitext(network_filename)[0] + '_diag.jsonl',
                 clip_value=self.grad_clip_value,
                 device=self.device,
-                settled_after=settle_frames if settle_frames > 0 else 200,
             )
 
     # ------------------------------------------------------------------
@@ -374,6 +408,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
                                  np.asarray(stats['stdmodes'], dtype=np.float64) ** 2
                                  + np.asarray(stats['meanmodes'], dtype=np.float64) ** 2)
         self.mode_gain = np.asarray(stats['mode_gain']) if stats.get('mode_gain') else None
+        self._resume_lr = stats.get('lr')
 
     def _inner_model(self):
         return self.model.module if isinstance(self.model, nn.DataParallel) else self.model
@@ -387,6 +422,8 @@ class Conv2dNetTrainer(BaseProcessingObj):
             'stdmodes': cpuArray(self.stdmodes).tolist(),
             'mode_gain': self.mode_gain.tolist() if self.mode_gain is not None else None,
             'min_loss': val_loss,   # this save's validation loss (not the best ever)
+            'val_fvu': self.val_fvu,
+            'lr': self.optimizer.param_groups[0]['lr'],
         })
         print(f'[{self.name}] Model saved to {self.network_filename}', flush=True)
 
@@ -551,6 +588,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
             w = torch.ones(x.shape[0])
         step = self.replay_subsample
         x, y, w = x[::step][-self.replay_size:], y[::step][-self.replay_size:], w[::step][-self.replay_size:]
+        self._replay_new = x.shape[0]
         if x.shape[0] == 0:
             return
         if self.replay_x is None:
@@ -564,6 +602,11 @@ class Conv2dNetTrainer(BaseProcessingObj):
         self.replay_w[idx] = w.to(torch.float32)
         self._replay_pos = (self._replay_pos + n) % self.replay_size
         self.replay_count = min(self.replay_count + n, self.replay_size)
+
+    def _replay_steps(self):
+        """Minibatch steps for this trigger: replay_ratio draws per sample the
+        trigger added, at least one."""
+        return max(1, int(round(self.replay_ratio * self._replay_new / self.replay_batch)))
 
     def _replay_minibatch(self):
         """A uniformly drawn minibatch, with the inputs normalized with the
@@ -595,10 +638,10 @@ class Conv2dNetTrainer(BaseProcessingObj):
         if x_norm.ndim == 3:    # single-channel frames: add the channel axis
             x_norm = x_norm[:, self.xp.newaxis]
 
+        # Validation: the batch's most recent frames, as one block (see val_split)
         n = x.shape[0]
         n_val = max(1, int(n * self.val_split))
-        perm = torch.randperm(n).numpy()
-        train_idx, val_idx = perm[:n - n_val], perm[n - n_val:]
+        train_idx, val_idx = np.arange(n - n_val), np.arange(n - n_val, n)
 
         dev = self.device
         inputs = to_torch(x_norm[train_idx], dev)
@@ -610,14 +653,13 @@ class Conv2dNetTrainer(BaseProcessingObj):
 
         fresh_loss = None
         if self.diag is not None:
-            self._diag_add_batch(x, modes, out_of_band, fsr, train_idx, val_idx, targets)
+            self._diag_add_batch(x, modes, out_of_band, train_idx, val_idx, targets)
             fresh_loss = self._fresh_loss(inputs, targets, mean_t, std_t,
                                           fsr[train_idx] if fsr is not None else None)
 
         if self.replay_size > 0:
-            in_time_order = np.sort(train_idx)
-            self._replay_add(to_torch(x[in_time_order]), to_torch(modes[in_time_order]),
-                             torch.from_numpy(weights[in_time_order]) if weights is not None else None)
+            self._replay_add(to_torch(x[train_idx]), to_torch(modes[train_idx]),
+                             torch.from_numpy(weights[train_idx]) if weights is not None else None)
 
         loss, grad_norms = self._train(inputs, targets, train_w, mean_t, std_t)
         if loss is None:
@@ -630,6 +672,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
         if self.diag is not None:
             self._diag_safe(self.diag.record_step, fresh_loss, self.loss, grad_norms)
 
+        self._measure_mode_gain(inputs, targets, mean_t, std_t)
         self._validate(mean_t, std_t)
 
     def _add_validation(self, inputs, targets):
@@ -653,15 +696,16 @@ class Conv2dNetTrainer(BaseProcessingObj):
         return (weights * per_sample).sum() / weights.sum()
 
     def _train(self, inputs, targets, weights, mean_t, std_t):
-        """This trigger's gradient steps: replay_steps minibatches from the
-        replay buffer or, without one, epoch_len steps on the new batch.
+        """This trigger's gradient steps: minibatches from the replay buffer
+        (see replay_ratio) or, without one, epoch_len steps on the new batch.
         Returns the training loss (plain Huber loss in physical units: the
         mean over the replay steps, or the last full-batch step) and the
         gradient norms, or (None, ...) if the loss is not finite."""
         self.model.train()
         use_replay = self.replay_size > 0
         losses, grad_norms = [], []
-        for _ in range(self.replay_steps if use_replay else self.epoch_len):
+        n_steps = self._replay_steps() if use_replay else self.epoch_len
+        for _ in range(n_steps):
             x, y, w = self._replay_minibatch() if use_replay else (inputs, targets, weights)
             self.optimizer.zero_grad()
             preds = self.model(x) * std_t + mean_t      # denormalized: physical units
@@ -676,14 +720,13 @@ class Conv2dNetTrainer(BaseProcessingObj):
         return (float(np.mean(losses)) if use_replay else losses[-1]), grad_norms
 
     def _validate(self, mean_t, std_t):
-        self.model.eval()
-        with torch.no_grad():
-            preds = self.model(self.val_inputs) * std_t + mean_t
-            self.val_loss = self.loss_fn(preds, self.val_targets).item()
-        self._update_mode_gain(preds, self.val_targets)
+        preds = predict(self.model, self.val_inputs, mean_t, std_t)
+        t = self.val_targets
+        self.val_loss = self.loss_fn(preds, t).item()
+        self.val_fvu = float(((preds - t) ** 2).sum() / ((t - t.mean(0)) ** 2).sum().clamp_min(1e-30))
         if self.lr_decay is None:
-            self.plateau_scheduler.step(self.val_loss)
-        self.min_loss = min(self.min_loss, self.val_loss)
+            self.plateau_scheduler.step(self.val_fvu)
+        self.best_val_fvu = min(self.best_val_fvu, self.val_fvu)
 
         # Periodic, not only on improvement: otherwise a run whose validation
         # loss never beats an early best step would save nothing to resume from.
@@ -692,7 +735,8 @@ class Conv2dNetTrainer(BaseProcessingObj):
 
         lr = self.optimizer.param_groups[0]['lr']
         print(f'[{self.name}] Step {self.step_count} | LR {lr:.2e} | Train {self.loss:.6f} | '
-              f'Val {self.val_loss:.6f} | Best {self.min_loss:.6f}', flush=True)
+              f'Val {self.val_loss:.6f} (FVU {self.val_fvu:.3f}) | Best FVU {self.best_val_fvu:.3f}',
+              flush=True)
 
         if self.diag is not None and self.step_count % self.diag_interval == 0:
             self._run_diagnostics(mean_t, std_t)
@@ -703,19 +747,29 @@ class Conv2dNetTrainer(BaseProcessingObj):
                 f'modal_analysis ground truth (unweighted Huber loss, physical units) -- '
                 f'train={self.loss:.6f}, val={self.val_loss:.6f}')
 
-        if self.early_stopping(self.val_loss):
+        if self.early_stopping(self.val_fvu):
             self.should_stop = True
             print(f'[{self.name}] Early stopping triggered at step {self.step_count}', flush=True)
 
+    def _measure_mode_gain(self, inputs, targets, mean_t, std_t):
+        """The prediction gain (see _update_mode_gain) on the newest batch's
+        training frames, after training on them. In-sample on purpose: on
+        held-out frames the network shrinks the modes it predicts poorly much
+        harder (gains of 0.2-0.4 early in training), and dividing by that
+        would mostly amplify noise -- at a gain of 0.3 and FVU 0.75, the
+        calibrated prediction's noise is ~1.7x the signal. The closed-loop
+        gains were tuned with this measurement."""
+        self._update_mode_gain(predict(self.model, inputs, mean_t, std_t), targets)
+
     def _update_mode_gain(self, preds, targets):
-        """Per-mode prediction gain cov(pred, true) / var(true) on the
-        validation set: how much the network shrinks each mode towards the
-        mean, which in a loop acts exactly like a lower gain on that mode. It
-        is saved in the stats file so Conv2dNetRec / Conv2dNetTester can undo
-        it (see cnn_checkpoint.calibration_factor), which keeps the loop gains
-        in a config meaningful across retrains -- a network that shrinks less
+        """Per-mode prediction gain cov(pred, true) / var(true): how much the
+        network shrinks each mode towards the mean, which in a loop acts
+        exactly like a lower gain on that mode. It is saved in the stats file
+        so Conv2dNetRec / Conv2dNetTester can undo it (see
+        cnn_checkpoint.calibration_factor), which keeps the loop gains in a
+        config meaningful across retrains -- a network that shrinks less
         after a retrain otherwise silently raises the effective loop gain.
-        Smoothed over saves, since one validation window is noisy."""
+        Smoothed over triggers, since one batch is noisy."""
         p = preds.detach().to(torch.float64)
         t = targets.to(torch.float64)
         centred = t - t.mean(0)
@@ -734,32 +788,26 @@ class Conv2dNetTrainer(BaseProcessingObj):
         except Exception as e:
             print(f'[{self.name}][diag] ERROR in {fn.__name__}: {e}', flush=True)
 
-    def _diag_add_batch(self, x, modes, out_of_band, fsr, train_idx, val_idx, train_targets):
+    def _diag_add_batch(self, x, modes, out_of_band, train_idx, val_idx, train_targets):
         xp = self.xp
         inband_rms = to_torch(xp.sqrt(xp.sum(modes ** 2, axis=1)))
         if out_of_band.shape[1] > 0:
             oob_rms = to_torch(xp.sqrt(xp.sum(out_of_band ** 2, axis=1)))
-            val_oob_rms = oob_rms[torch.as_tensor(val_idx)]
         else:
             oob_rms = torch.zeros(0)
-            val_oob_rms = torch.zeros(len(val_idx))
         self._diag_safe(
             self.diag.add_batch,
             raw_train_x=to_torch(x[train_idx]),
             train_y=train_targets.cpu(),
             raw_val_x=to_torch(x[val_idx]),
-            val_oob_rms=val_oob_rms,
             inband_rms=inband_rms,
             oob_rms=oob_rms,
-            train_fsr=torch.from_numpy(fsr[train_idx]) if fsr is not None else None,
         )
 
     def _fresh_loss(self, inputs, targets, mean_t, std_t, fsr):
         """Loss on the new batch *before* training on it: an out-of-sample
         number, to compare with the training loss."""
-        self.model.eval()
-        with torch.no_grad():
-            preds = self.model(inputs) * std_t + mean_t
+        preds = predict(self.model, inputs, mean_t, std_t)
         self._diag_safe(self.diag.record_fresh_predictions, preds.cpu(), targets.cpu(),
                         torch.from_numpy(fsr) if fsr is not None else None)
         return self.loss_fn(preds, targets).item()
@@ -786,7 +834,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
             self._run_diagnostics(to_torch(self.meanmodes, dev), to_torch(self.stdmodes, dev))
         print(f'[{self.name}] Training complete!', flush=True)
         print(f'  Steps: {self.step_count}', flush=True)
-        print(f'  Best loss: {self.min_loss:.6f}', flush=True)
+        print(f'  Best validation FVU: {self.best_val_fvu:.3f}', flush=True)
         print(f'  Stats saved: {self.stats_filename}', flush=True)
         if self.diag is not None:
             print(f'  Diagnostics: {self.diag.jsonl_filename}', flush=True)

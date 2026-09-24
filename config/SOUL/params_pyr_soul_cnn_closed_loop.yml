@@ -1,130 +1,57 @@
 ---
-# Closed-loop deployment/test of the CNN reconstructor trained by
-# params_pyr_soul_cnn_train_data.yml: swaps `modalrec` for Conv2dNetRec,
-# fed directly by slopec's slopes (Slopes.get2d() gives the 2-channel x/y
-# slope map the network was trained on -- no separate Slopes2D object
-# needed, Conv2dNetRec builds it internally).
-#
-# network_filename below must be the checkpoint that training config saves
-# (its nn_trainer.network_filename).
-#
-# The network predicts all nmodes=630 modes (it was not trained with a baseline
-# connected, so its output is the direct mode estimate, not a residual).
-# The other modes have no CNN estimate, so control and dm are both cut
-# that the linear reconstructor also outputs, so control and dm cover the
-# same 630 modes, with a separate gain per group (see control_override).
-#
-# Unlike params_pyr_soul_cnn_train_data.yml/_test_data.yml, this file
-# does NOT reintroduce their PeriodicRandomGenerator atmosphere swaps or
-# the gain_mod square wave: those existed to diversify *training* data by
-# deliberately perturbing/opening the loop, which is the opposite of what
-# you want when measuring actual closed-loop performance. Only mod_amp is
-# overridden here, to match the non-modulated regime the network was
-# trained on.
-#
-# data_store is removed for the same reason as in the other two SOUL CNN
-# configs: its store_dir is an absolute path under someone else's home
-# directory in the base config, and fails at finalize() with a
-# PermissionError for anyone else.
+# Closed loop driven by the CNN reconstructor trained by
+# params_pyr_soul_cnn_train_data.yml: Conv2dNetRec replaces the linear `rec`.
 #
 #   specula params_pyr_soul.yml params_pyr_soul_cnn_closed_loop.yml
+#
+# The conditions are the base config's (constant seeing and wind, no loop
+# opening, no gain randomization): those perturbations exist to diversify the
+# training data, not to measure performance. params_pyr_soul_linear_closed_loop.yml
+# runs the linear reconstructor in the same conditions, for comparison.
+#
+# data_store is not needed here, and its store_dir in the base config is not
+# writable for everyone.
 
 pyramid_override:
-  mod_amp: 0.0   # non-modulated pyramid, matching the training-data config
+  mod_amp: 0.0   # non-modulated pyramid
 
 remove: ['rec', 'data_store']
 
 modalrec:
-  class:              'Conv2dNetRec'
-  # The network itself (architecture, nmodes, input_channels, n_frames) is
-  # read from the checkpoint, so nothing here can disagree with the weights.
-  network_filename:   './trained_models/soul_cnn_rec_1f_spatial_m630_g60.pth'
-  calibrate_gain:     true   # the network's predictions are shrunk towards the
-                             # mean, per mode; this undoes it with the
-                             # measurement the trainer saves in the stats file,
-                             # so int_gain below means the *effective* loop gain
-                             # and stays valid across retrains. Requires a
-                             # checkpoint trained after that measurement
-                             # existed -- it raises a clear error otherwise, in
-                             # which case set it to false and divide the gains
-                             # below by the per-group cnn_gain the training
-                             # diagnostics report.
+  class:             'Conv2dNetRec'
+  # The network (architecture, nmodes, input_channels, n_frames) is read from
+  # the checkpoint, so nothing here can disagree with the weights.
+  network_filename:  './trained_models/soul_cnn_rec_1f_spatial_m630_g60.pth'
+  calibrate_gain:    true   # the predictions are shrunk towards the mean, by a
+                             # factor that varies per mode, and in the loop that acts
+                             # as a lower gain. This undoes it with the prediction
+                             # gain the trainer measured and saved, so int_gain below
+                             # is the effective loop gain, valid across retrains.
   inputs:
-    # slopecNOSN, not slopec: the network must see the same input it was
-    # trained on, and the training config feeds it from slopecNOSN -- the
-    # slope computer *without* the slope-null subtraction. That reference is
-    # the static illumination pattern (7424 values, mean 1.00, RMS 1.12), so
-    # subtracting it shifts every pixel by more than one standard deviation
-    # of the frozen input normalization (the checkpoint's meanp is 0.516, the
-    # mean of a raw intensity map; sn-subtracted maps have mean ~0).
-    in_slopes: 'slopecNOSN.out_slopes'
-    # no 'baseline' connected: nn_trainer had no baseline input either, so
-    # the network predicts modes directly rather than a residual on top
-    # of a separate baseline reconstructor.
+    in_slopes:       'slopecNOSN.out_slopes'  # the slope computer the network was trained on,
+                                              # without the slope-null subtraction (see the
+                                              # training config)
+  outputs: ['out_modes']
 
 control_override:
-  # One integrator gain (and forgetting factor) per group of modes; n_modes
-  # are the group *sizes* (they must add up to Conv2dNetRec's nmodes, 500).
-  # The groups are the ones the training diagnostics report per-group FVU /
-  # prediction gain for (0-4, 5-19, 20-49, 50-99, 100-199, 200-499): set each
-  # group's gain from how well the CNN reconstructs it there.
-  # Starting values, meant to be tuned: moderate gains where the CNN is
-  # reliable (the loop has ~3 frames of delay: 2 in control + 1 in the DM
-  # tap, so an integrator stays stable only below a gain of ~0.6); low gains
-  # where it isn't, with a slight leak (ff < 1) so that the CNN's small bias
-  # on those modes (0.1-1 nm) can't be integrated into a slow drift.
-  # A gain of 0 leaves a group uncorrected -- the same as cutting the DM
-  # there (dm_override.nmodes below), but per group.
-  # Measured, not guessed: with these the loop reaches a Strehl of 0.85 within
-  # 0.4 s and holds it, as well as the linear loop in the training run.
-  # They are of the same order as the training loop's gains (see
-  # params_pyr_soul_cnn_train_data.yml's control_override), which is the point:
-  # the network learned the residual statistics of a loop running that fast,
-  # and its predictions are shrunk towards the mean (prediction gain ~0.7-0.8
-  # per group), which acts exactly like a further reduction of the loop gain.
-  # The earlier, much lower values (0.12/0.1/0.1/0.1/0.06/0.04) left the
-  # effective loop gain at ~0.07 against the 0.25 the network was trained
-  # under: the loop crawled to a Strehl of 0.2 in 0.7 s, fell back to 0.02,
-  # and wandered between 0.02 and 0.73 without ever settling -- and each
-  # excursion took the residual outside the regime the network was trained
-  # on, which made its estimates worse in turn.
-  # These are the gains the *linear* loop runs each mode range at (see the
-  # training config's control_override), which is a tuning known to be stable
-  # at this delay. With modalrec.calibrate_gain on, the network's predictions
-  # come out at full amplitude, so these are also the effective loop gains and
-  # they do not have to be redone after a retrain.
-  #
-  # With calibrate_gain off they would have to be divided by the network's
-  # per-group prediction gain, and that division is easy to get wrong: gains
-  # left over from a network that shrank harder (0.70 / 0.68 / 0.54 / 0.47 /
-  # 0.52 / 0.57) drove the effective gain to 0.56-0.59 after a retrain that
-  # shrank less (0.87 / 0.86 / 0.80 / 0.75 / 0.78 / 0.83 / 0.73) -- past what an
-  # integrator with two frames of delay tolerates -- and the Strehl fell to
-  # 0.387, against 0.874 once the division was redone. A better network made
-  # the loop worse, purely through stale gains.
-  #
-  # If the loop oscillates, scale the whole row by 0.7 before anything else.
-  #              0-4    5-19   20-49  50-99  100-199 200-499 500-629
-  n_modes:   [5,     15,    30,    50,    100,    300,    130]
-  int_gain:  [0.45,  0.45,  0.40,  0.35,  0.18,   0.08,   0.05]
-  ff:        [1,   1,   0.99,  0.99,  0.99,   0.99,   0.99]
+  # The training loop's groups and gains (see the training config): the network
+  # learned the residual of a loop tuned this way, and with calibrate_gain on
+  # these are also its effective gains. If the loop oscillates, scale the whole
+  # row by 0.7 before anything else.
+  #                 0-29    30-99     100-199   200-499   500-629
+  n_modes:           [30,     70,       100,      300,      130]
+  int_gain:          [0.45,   0.35,     0.18,     0.08,     0.05]
+  ff:                [1.0,    0.999996, 0.999365, 0.977895, 0.99]
   inputs:
-    delta_comm: 'modalrec.out_modes'   # re-wire: remove+redefine above drops this wire, so restate it here
-    # no gain_mod wired (it's optional and defaults to a constant 1.0
-    # when unconnected -- i.e. always fully closed, no modulation)
+    delta_comm:      'modalrec.out_modes'   # rec was removed, and its wires with it
 
 dm_override:
-  nmodes: 630   # same 630 modes as control: the DM uses only the first nmodes
-                # entries of the command and drops the rest. Which modes are
-                # corrected, and how strongly, is set by the per-group gains above.
+  nmodes:            630    # the modes control corrects
 
-# Live SR plot of the actual CNN-driven closed loop -- this is the real
-# performance metric for this config (unlike _test_data.yml's sr_disp,
-# which only shows the unrelated linear loop it taps). Requires a display
-# (e.g. X11 forwarding over ssh); see params_pyr_soul.yml's commented-out
-# sr_disp for the same block, disabled by default there.
+# Live Strehl of the CNN-driven loop. Requires a display (e.g. X11 forwarding);
+# the Strehl is also logged by psf, so this can be removed.
 sr_disp:
-  class:            'PlotDisplay'
+  class:             'PlotDisplay'
   inputs:
-    value:       'psf.out_sr'
-  title:            'SR (CNN closed loop)'
+    value:           'psf.out_sr'
+  title:             'SR (CNN closed loop)'

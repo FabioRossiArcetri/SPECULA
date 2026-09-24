@@ -7,7 +7,7 @@ try:
     import torch
     from specula.lib.cnn_checkpoint import (NETWORK_KEYS, build_network, calibration_factor,
                                             check_same_network, load_stats, load_trained_network,
-                                            save_checkpoint, stats_filename)
+                                            predict, save_checkpoint, stats_filename)
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
@@ -77,6 +77,16 @@ class TestCnnCheckpoint(unittest.TestCase):
 
     def test_no_checkpoint_yet_is_not_checked(self):
         check_same_network('/nonexistent/net.pth', NETWORK)
+
+    def test_predict_in_chunks_matches_one_pass_and_denormalizes(self):
+        model = build_network(NETWORK).eval()
+        x = torch.randn(7, 2, 16, 16)
+        mean, std = torch.arange(NMODES) * 1.0, torch.full((NMODES,), 2.0)
+        with torch.no_grad():
+            expected = model(x) * std + mean
+        torch.testing.assert_close(predict(model, x, mean, std, chunk=3), expected)
+        self.assertFalse(predict(model.train(), x, mean, std).requires_grad)
+        self.assertFalse(model.training)      # left in eval mode
 
     def test_calibration_factor_undoes_the_measured_shrinkage(self):
         stats = dict(STATS, mode_gain=[1.0, 0.5, 0.25, 0.1, -0.3])

@@ -1,38 +1,32 @@
 ---
-# How much of the mid-order error comes from the conditions changing?
+# Diagnostic: how much of the mid-order error comes from the conditions
+# changing?
 #
-# Fourth file on top of the usual two:
 #   specula params_pyr_soul.yml params_pyr_soul_cnn_train_data.yml params_pyr_soul_cnn_fixed_seeing.yml
 #
-# In the training run (seeing redrawn in 0.4-1.2" every 2 s, loop gains
-# randomized per mode) modes 50-199 are unpredictable on new data: the CNN
-# reaches a forward-in-time FVU of ~0.65-1.05 there, and a linear ridge map
-# fitted on the same past samples reaches ~0.91-1.16. Two explanations fit
-# that equally well:
+# Where the modes are hard to predict on new data (forward-in-time FVU ~1),
+# two explanations fit equally well:
 #
-#   a) the input -> mode relation itself moves, because a non-modulated
-#      pyramid's optical gain follows the seeing, so a map fitted on the past
-#      no longer applies to the next batch;
-#   b) those modes are simply below the noise: at ~2 nm each there is nothing
-#      to measure, whatever the conditions.
+#   a) the input -> mode relation itself moves: a non-modulated pyramid's
+#      optical gain follows the seeing, so a map fitted on the past no longer
+#      applies to the next batch;
+#   b) the modes are below the noise: there is nothing to measure, whatever
+#      the conditions.
 #
-# This run holds the seeing fixed and leaves everything else alone. The number
-# that separates the two is the *linear ridge, forward in time* FVU per mode
-# group (the "fwd: ... ridge_FVU" column, and the "linear ridge forward in
-# time, settled frames only" line): if it drops well below the ~1 seen with
-# varying seeing, the limit is (a), the changing conditions, and the network
-# needs to be given them -- more frames, or an explicit conditioning input.
-# If it stays at ~1, the limit is (b), photon noise, and no reconstructor of
-# any kind will do better on those modes.
+# This run holds the seeing fixed and leaves everything else as in training.
+# The number that separates the two is the linear ridge's forward-in-time FVU
+# per mode group (the "fwd: ... ridge_FVU" column and the "forward in time"
+# line): if it drops well below what the training run shows, the limit is (a)
+# and the network needs to be given the conditions -- more frames, or an
+# explicit input. If it stays at ~1, the limit is (b), and no reconstructor
+# will do better on those modes.
 #
-# The CNN is barely trained here (1 minibatch step per trigger), so it says
-# nothing; only the ridge numbers matter, and they don't depend on it.
+# The CNN is barely trained here, and the ridge numbers don't depend on it.
 
 main_override:
-  total_time:        20.0   # ~34 triggers: enough for several diagnostics blocks
+  total_time:        20.0   # ~34 triggers: several diagnostics blocks
 
-# The train config redefines seeing as a PeriodicRandomGenerator; amp 0 makes
-# it constant at the value below, with the same object and wiring.
+# amp 0 makes the training config's seeing generator constant
 seeing_override:
   constant:          [0.8]
   amp:               [0.0]
@@ -40,5 +34,5 @@ seeing_override:
 nn_trainer_override:
   network_filename:  './trained_models/fixed_seeing_check.pth'   # keeps the real checkpoint untouched
   load_from_file:    false
-  replay_steps:      1      # the CNN is not what's being measured here
+  replay_ratio:      0.01   # one minibatch step per trigger, the minimum
   diag_interval:     5

@@ -49,6 +49,17 @@ def build_network(network):
     )
 
 
+def predict(model, inputs, mean, std, chunk=1000):
+    """Predictions of ``model`` in physical units (denormalized with the
+    per-mode mean/std tensors), in eval mode and without gradients, in
+    chunks of at most ``chunk`` samples so that memory doesn't grow with the
+    number of samples."""
+    model.eval()
+    with torch.no_grad():
+        out = torch.cat([model(inputs[i:i + chunk]) for i in range(0, inputs.shape[0], chunk)])
+    return out * std + mean
+
+
 def calibration_factor(stats, nmodes):
     """Per-mode factor that undoes the shrinkage measured during training, to
     multiply the predictions' deviation from meanmodes by. None if the

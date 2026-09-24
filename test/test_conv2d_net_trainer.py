@@ -26,10 +26,7 @@ try:
         EarlyStopping,
         to_torch,
     )
-    from specula.lib.nn_training_diagnostics import (
-        TrainingDiagnostics,
-        effective_dims,
-    )
+    from specula.lib.nn_training_diagnostics import TrainingDiagnostics
     from specula.processing_objects.conv2d_net_tester import Conv2dNetTester
     TORCH_AVAILABLE = True
 except ImportError:
@@ -391,13 +388,10 @@ class TestPhysicalSpaceLoss(unittest.TestCase):
             torch.manual_seed(1234)
             trainer.trigger()
 
-            # Reproduce the same train/val split trigger() computed, to
-            # know exactly which rows the training loss was taken over.
-            torch.manual_seed(1234)
-            perm = torch.randperm(BATCH).numpy()
+            # The training rows: all but the most recent val_split of them
             n_val = max(1, int(BATCH * 0.25))
             n_train = BATCH - n_val
-            train_idx = perm[:n_train]
+            train_idx = np.arange(n_train)
 
             # First trigger: meanmodes/stdmodes are computed directly from
             # the full physical-space batch of labels.
@@ -514,8 +508,7 @@ class TestConv2dNetTrainerTrigger(unittest.TestCase):
 
             trainer.model = Shrinking()
             trainer.mode_gain = None
-            with contextlib.redirect_stdout(io.StringIO()):
-                trainer._validate(mean_t, std_t)
+            trainer._measure_mode_gain(trainer.val_inputs, targets, mean_t, std_t)
             np.testing.assert_allclose(trainer.mode_gain, np.full(NMODES, shrink), atol=1e-4)
 
             trainer.step_count = 10
@@ -563,10 +556,10 @@ class TestConv2dNetTrainerTrigger(unittest.TestCase):
         # regression against a number these exact weights never produced.
         with tempfile.TemporaryDirectory() as d:
             trainer = build_trainer(d, epoch_len=1)
-            # Pretend an impossibly low loss was already seen (as if from
+            # Pretend an impossibly low FVU was already seen (as if from
             # a different, no-longer-current set of weights) -- it must
             # not leak into what gets saved for the weights saved here.
-            trainer.min_loss = -100.0
+            trainer.best_val_fvu = -100.0
 
             for i in range(10):
                 feed_batch(trainer, seed=i)
@@ -574,9 +567,11 @@ class TestConv2dNetTrainerTrigger(unittest.TestCase):
 
             with open(trainer.stats_filename) as f:
                 stats = json.load(f)
-            # A real eval_loss is an ordinary positive-ish number; -100
-            # would only appear if self.min_loss leaked into the save.
+            # Real values are ordinary positive numbers; -100 would only
+            # appear if the best-ever value leaked into the save.
             self.assertGreater(stats['min_loss'], -100.0)
+            self.assertGreater(stats['val_fvu'], 0.0)
+            self.assertEqual(trainer.best_val_fvu, -100.0)
 
     def test_trigger_creates_missing_parent_directory_before_saving(self):
         with tempfile.TemporaryDirectory() as d:
@@ -799,8 +794,8 @@ class TestTrainingDiagnostics(unittest.TestCase):
             rec = records[0]
             self.assertEqual(rec['step'], 10)
             self.assertEqual(len(rec['per_mode']['cnn_fvu']), NMODES)
-            for key in ('cnn_fvu_total', 'groups', 'label_dims_99', 'cnn_pred_dims_99',
-                        'grad_clipped_fraction', 'window_fresh_loss', 'hints'):
+            for key in ('cnn_fvu_total', 'groups', 'ridge_fvu_total', 'fwd_cnn_fvu_total',
+                        'fwd_ridge_fvu_total', 'grad_clipped_fraction', 'window_fresh_loss', 'hints'):
                 self.assertIn(key, rec)
 
     def test_diagnostics_do_not_change_training(self):
@@ -812,7 +807,10 @@ class TestTrainingDiagnostics(unittest.TestCase):
             for trainer in (with_diag, without_diag):
                 torch.manual_seed(1)
                 self._run_steps(trainer, 10)
-            self.assertAlmostEqual(with_diag.loss, without_diag.loss, places=5)
+            # Diagnostics that changed training (e.g. by drawing random
+            # numbers, hence different minibatches) would move the loss far
+            # more; on GPUs the same run already varies by ~1e-5.
+            self.assertAlmostEqual(with_diag.loss, without_diag.loss, delta=1e-4)
 
     def test_out_of_band_label_residual_is_tracked(self):
         with tempfile.TemporaryDirectory() as d:
@@ -829,10 +827,10 @@ class TestTrainingDiagnostics(unittest.TestCase):
             trainer.check_ready(1)
             trainer.trigger()
 
-            expected = np.sqrt(np.sum(cpuArray(y_val.value)[:, NMODES + 1:] ** 2, axis=1))
-            self.assertEqual(trainer.diag.val_oob.shape[0], trainer.val_targets.shape[0])
-            for v in trainer.diag.val_oob.numpy():
-                self.assertTrue(np.any(np.isclose(expected, v, rtol=1e-5)))
+            oob = cpuArray(y_val.value)[:, NMODES + 1:].astype(np.float64)
+            expected = np.sqrt(np.mean(np.sum(oob ** 2, axis=1)))
+            self.assertEqual(len(trainer.diag.win_oob_rms), 1)
+            self.assertAlmostEqual(trainer.diag.win_oob_rms[0] / expected, 1.0, places=5)
 
     def test_ridge_baseline_recovers_a_linear_map(self):
         rng = np.random.default_rng(0)
@@ -845,8 +843,7 @@ class TestTrainingDiagnostics(unittest.TestCase):
         x_val = torch.from_numpy(rng.standard_normal((100, d_in))).float()
         y_train = (x_train.double() @ w).float()
         y_val = (x_val.double() @ w).float()
-        diag.add_batch(x_train, y_train, x_val, torch.zeros(100),
-                       torch.ones(500), torch.zeros(0))
+        diag.add_batch(x_train, y_train, x_val, torch.ones(500), torch.zeros(0))
         mse, _ = diag._ridge_val(y_val)
         fvu = mse.sum() / y_val.double().var(0, unbiased=False).sum()
         self.assertLess(float(fvu), 1e-3)
@@ -855,17 +852,12 @@ class TestTrainingDiagnostics(unittest.TestCase):
         # second, later one.
         x_next = torch.from_numpy(rng.standard_normal((200, d_in))).float()
         y_next = (x_next.double() @ w).float()
-        diag.add_batch(x_next, y_next, x_val[:0], torch.zeros(0),
-                       torch.ones(200), torch.zeros(0))
+        diag.add_batch(x_next, y_next, x_val[:0], torch.ones(200), torch.zeros(0))
         fwd_mse, fwd_t = diag._ridge_forward()
         self.assertEqual(fwd_t.shape[0], 200)
         fwd_fvu = fwd_mse.sum() / fwd_t.var(0, unbiased=False).sum()
         self.assertLess(float(fwd_fvu), 1e-3)
 
-    def test_effective_dims_counts_rank(self):
-        rng = np.random.default_rng(0)
-        x = torch.from_numpy(rng.standard_normal((200, 3)) @ rng.standard_normal((3, 10)))
-        self.assertEqual(effective_dims(x), 3)
 
 def linear_batch(rng, w, n, side=8):
     """Batch whose labels (after a placeholder column, label_offset=1) are an
@@ -892,6 +884,20 @@ def feed_arrays(trainer, x, labels, t_seconds=1):
 
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestResume(unittest.TestCase):
+
+    def test_learning_rate_continues_across_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            opts = dict(network_name='net.pth', input_channels=2, diag_interval=0, lr_decay=0.9)
+            trainer = build_trainer(d, **opts)
+            with contextlib.redirect_stdout(io.StringIO()):
+                for i in range(10):     # saved at step 10
+                    feed_batch(trainer, seed=i)
+                    trainer.trigger()
+            lr = trainer.optimizer.param_groups[0]['lr']
+            self.assertAlmostEqual(lr, 1e-3 * 0.9 ** 10)
+            with contextlib.redirect_stdout(io.StringIO()):
+                resumed = build_trainer(d, load_from_file=True, **opts)
+            self.assertAlmostEqual(resumed.optimizer.param_groups[0]['lr'], lr)
 
     def _pupil_weights(self, rng, side=8):
         yy, xx = np.mgrid[:side, :side] - (side - 1) / 2
@@ -937,7 +943,7 @@ def time_tagged_batch(n, offset=0, h=H, w=W, seed=0):
 class TestReplayAndGradClip(unittest.TestCase):
 
     def _build(self, d, **kwargs):
-        opts = dict(input_channels=2, replay_size=100, replay_subsample=2, replay_steps=3,
+        opts = dict(input_channels=2, replay_size=100, replay_subsample=2, replay_ratio=1.0,
                     replay_batch=4, diag_interval=0)
         opts.update(kwargs)
         return build_trainer(d, **opts)
@@ -965,6 +971,45 @@ class TestReplayAndGradClip(unittest.TestCase):
             val_t = trainer.val_targets[:, 0].cpu().tolist()
             self.assertFalse(set(t.tolist()) & set(val_t))   # no validation rows
 
+    def test_validation_is_the_most_recent_block_of_the_batch(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = self._build(d)
+            self._feed(trainer)
+            # 32 rows in time order, val_split 0.25: the last 8 validate
+            np.testing.assert_array_equal(trainer.val_targets[:, 0].cpu().numpy(), np.arange(24, 32))
+
+    def test_validation_keeps_the_most_recent_val_size_samples(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = self._build(d, val_size=12)
+            for k in range(3):
+                self._feed(trainer, offset=100 * k, t_seconds=k + 1)
+            # 8 validation rows per batch (the last 8 of 32): batch 0's are
+            # gone, the last 4 of batch 1 and all of batch 2 remain
+            np.testing.assert_array_equal(trainer.val_targets[:, 0].cpu().numpy(),
+                                          np.r_[128:132, 224:232])
+            with self.assertRaises(ValueError):
+                self._build(d, val_size=0)
+
+    def test_mode_gain_is_measured_on_the_training_frames(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = self._build(d)
+            with unittest.mock.patch.object(trainer, '_update_mode_gain') as update:
+                self._feed(trainer)
+            targets = update.call_args.args[1]
+            # 32 rows in time order: the first 24 train, the last 8 validate
+            np.testing.assert_array_equal(targets[:, 0].cpu().numpy(), np.arange(24))
+
+    def test_step_line_reports_the_validation_fvu(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = self._build(d)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                feed_arrays(trainer, *time_tagged_batch(32))
+                trainer.trigger()
+            self.assertGreater(trainer.val_fvu, 0.0)
+            self.assertEqual(trainer.best_val_fvu, trainer.val_fvu)
+            self.assertIn(f'(FVU {trainer.val_fvu:.3f}) | Best FVU', out.getvalue())
+
     def test_ring_buffer_keeps_the_most_recent_samples(self):
         with tempfile.TemporaryDirectory() as d:
             trainer = self._build(d, replay_size=20)
@@ -975,13 +1020,27 @@ class TestReplayAndGradClip(unittest.TestCase):
             self.assertGreaterEqual(t.min(), 100)          # batch 0 fully overwritten
             self.assertEqual(int(np.sum(t >= 200)), 12)   # all of batch 2 kept
 
-    def test_each_trigger_takes_replay_steps_minibatch_steps(self):
+    def test_each_trigger_draws_replay_ratio_samples_per_new_sample(self):
         with tempfile.TemporaryDirectory() as d:
-            trainer = self._build(d, replay_steps=7)
+            trainer = self._build(d, replay_ratio=2.0)
             with unittest.mock.patch.object(trainer.optimizer, 'step',
                                             wraps=trainer.optimizer.step) as step:
                 self._feed(trainer)
-            self.assertEqual(step.call_count, 7)
+            # 12 new samples in the buffer, 2 draws each, 4 per minibatch
+            self.assertEqual(step.call_count, 6)
+
+    def test_at_least_one_step_per_trigger(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = self._build(d, replay_ratio=0.01)
+            with unittest.mock.patch.object(trainer.optimizer, 'step',
+                                            wraps=trainer.optimizer.step) as step:
+                self._feed(trainer)
+            self.assertEqual(step.call_count, 1)
+
+    def test_replay_ratio_must_be_positive(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError):
+                self._build(d, replay_ratio=0)
 
     def test_single_channel_legacy_input_works_with_replay(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1043,7 +1102,7 @@ def feed_with_gain(trainer, gain, offset=0, t_seconds=1):
 class TestTransientRegime(unittest.TestCase):
 
     def _build(self, d, **kwargs):
-        opts = dict(input_channels=2, replay_size=1000, replay_subsample=1, replay_steps=2,
+        opts = dict(input_channels=2, replay_size=1000, replay_subsample=1, replay_ratio=0.5,
                     replay_batch=4, diag_interval=0, gain_mod_threshold=1.0)
         opts.update(kwargs)
         return build_trainer(d, **opts)
@@ -1119,12 +1178,10 @@ class TestTransientRegime(unittest.TestCase):
                 out += feed_with_gain(trainer, gain, offset=100 * k, t_seconds=k + 1)
             self.assertNotIn('[diag] ERROR', out)
             self.assertIn('loop transient', out)
-            self.assertIn('settled frames only', out)
             with open(trainer.diag.jsonl_filename) as f:
                 rec = json.loads(f.readlines()[-1])
             bins = {tuple(b['frames']): b['n'] for b in rec['transient_bins']}
             self.assertGreater(bins[(1, 10)], 0)
-            self.assertEqual(len(rec['fwd_ridge_fvu_settled_by_group']), 2)   # mode groups 0-4, 5-19
 
 
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
@@ -1132,7 +1189,7 @@ class TestFrameStackingAndNormLoss(unittest.TestCase):
 
     def _build(self, d, **kwargs):
         opts = dict(input_channels=2, n_frames=4, replay_size=1000, replay_subsample=1,
-                    replay_steps=2, replay_batch=4, diag_interval=0)
+                    replay_ratio=0.5, replay_batch=4, diag_interval=0)
         opts.update(kwargs)
         return build_trainer(d, **opts)
 
