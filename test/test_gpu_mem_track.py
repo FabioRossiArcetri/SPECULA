@@ -1,11 +1,13 @@
 import pickle
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import specula
 specula.init(0)  # Default target device
 
 from specula import cp
+import specula.base_time_obj as bto
+from specula.base_time_obj import BaseTimeObj
 from specula.base_time_obj import gpu_mem_report, mem_registry_mark, top_level_objs
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_data_obj import BaseDataObj
@@ -67,9 +69,39 @@ class LazyTrigger(BaseProcessingObj):
             self.second = alloc(1 * MB)
 
 
+class DeviceNotHinted(BaseProcessingObj):
+    '''The device is not passed as target_device_idx keyword to __init__'''
+    def __init__(self, device_idx):
+        self.early = alloc(2 * MB, device_idx)
+        super().__init__(target_device_idx=device_idx)
+        self.late = alloc(1 * MB)
+
+
 class NeverTriggered(BaseProcessingObj):
     def checkInputTimes(self):
         return False
+
+
+class TestDevicesRead(unittest.TestCase):
+    '''Runs without a GPU: the memory pools are mocked'''
+
+    def test_reads_only_used_devices_before_init(self):
+        # Reading the memory pool of an unused GPU would create a CUDA context on it
+        read = MagicMock(return_value=0)
+        with patch.object(bto, 'cp', MagicMock()), \
+             patch.object(bto, '_pool_used_bytes', read), \
+             patch.object(bto, '_mem_count_stack', []), \
+             patch.object(bto, '_used_devices', {1}):
+
+            # Before __init__ the device is not known
+            with patch.object(bto, 'default_target_device_idx', 0):
+                BaseTimeObj.__new__(BaseTimeObj).startMemUsageCount(device_hint=3)
+            self.assertEqual({c.args[0] for c in read.call_args_list}, {0, 1, 3})
+
+            read.reset_mock()
+            with patch.object(bto, 'default_target_device_idx', -1):
+                BaseTimeObj.__new__(BaseTimeObj).startMemUsageCount(device_hint=-1)
+            self.assertEqual({c.args[0] for c in read.call_args_list}, {1})
 
 
 @unittest.skipIf(cp is None, 'GPU memory tracking needs cupy')
@@ -79,6 +111,13 @@ class TestGpuMemTrack(unittest.TestCase):
         obj = AllocBeforeSuper()
         self.assertEqual(obj.gpu_bytes_used, 3 * MB)
         self.assertEqual(obj.gpu_bytes_own, 3 * MB)
+
+    def test_device_not_read_is_counted_from_base_init(self):
+        # Device neither hinted nor used yet: counting starts in BaseTimeObj.__init__
+        with patch.object(bto, '_used_devices', set()), \
+             patch.object(bto, 'default_target_device_idx', -1):
+            obj = DeviceNotHinted(0)
+        self.assertEqual(obj.gpu_bytes_used, 1 * MB)
 
     def test_alloc_before_super_setup_is_counted(self):
         obj = AllocInSetup()

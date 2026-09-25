@@ -1,6 +1,6 @@
 
 import weakref
-from functools import wraps, lru_cache
+from functools import wraps
 from inspect import signature
 
 from specula import np, cp, to_xp
@@ -16,13 +16,10 @@ _mem_count_stack = []
 # Every other object is nested into one of these, which includes its memory.
 _top_level_objs = weakref.WeakValueDictionary()
 _top_level_counter = 0
+# GPUs used by some object, which therefore already have a CUDA context.
+_used_devices = set()
 
 MB = 1024 * 1024
-
-
-@lru_cache(maxsize=None)
-def _gpu_count():
-    return cp.cuda.runtime.getDeviceCount()
 
 
 def _pool_used_bytes(device_idx):
@@ -139,6 +136,13 @@ class BaseTimeObj:
             from cupyx.scipy.linalg import lu_factor, lu_solve
 
             self._target_device.use()
+            _used_devices.add(self.target_device_idx)
+            # If the count started before the device was known and could not
+            # read it (see startMemUsageCount), start it from here.
+            before = self.__dict__.get('_mem_before')
+            if self.__dict__.get('_mem_count_depth', 0) > 0 and before is not None \
+                    and self.target_device_idx not in before:
+                before[self.target_device_idx] = _pool_used_bytes(self.target_device_idx)
             from cupy._util import PerformanceWarning
             self.PerformanceWarning = PerformanceWarning
         else:
@@ -184,9 +188,11 @@ class BaseTimeObj:
         '''GPU memory allocated by this object, excluding the objects nested into it.'''
         return self.gpu_bytes_used - self.gpu_bytes_children
 
-    def startMemUsageCount(self):
+    def startMemUsageCount(self, device_hint=None):
         '''
         Start counting the GPU memory allocated by this object.
+        *device_hint* is the device the object is expected to use, if known
+        before BaseTimeObj.__init__ (the target_device_idx argument of __init__).
         Called around __init__() and setup() (see monitorMem), and by LoopControl
         around setup() and the calls up to the first trigger.
 
@@ -210,8 +216,14 @@ class BaseTimeObj:
         if cp is None or (device_idx is not None and device_idx < 0):
             self._mem_before = {}
         elif device_idx is None:
-            # Before BaseTimeObj.__init__ the device is not known: read all of them
-            self._mem_before = {d: _pool_used_bytes(d) for d in range(_gpu_count())}
+            # Before BaseTimeObj.__init__ the device is not known. Read only the GPUs
+            # already used or about to be: reading the memory pool of any other GPU
+            # would create a CUDA context (hundreds of MB) on it.
+            devices = set(_used_devices)
+            for d in (default_target_device_idx, device_hint):
+                if d is not None and d >= 0:
+                    devices.add(d)
+            self._mem_before = {d: _pool_used_bytes(d) for d in devices}
         else:
             self._mem_before = {device_idx: _pool_used_bytes(device_idx)}
 
@@ -303,7 +315,7 @@ class BaseTimeObj:
         @wraps(f)
         def monitorMem_wrapper(*args, **kwargs):
             self = args[0]
-            self.startMemUsageCount()
+            self.startMemUsageCount(device_hint=kwargs.get('target_device_idx'))
             try:
                 return f(*args, **kwargs)
             finally:
