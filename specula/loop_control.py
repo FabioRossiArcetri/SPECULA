@@ -1,9 +1,11 @@
 
 import time
 from collections import defaultdict
+from contextlib import nullcontext
 
 from specula.base_time_obj import BaseTimeObj
 from specula import process_comm, process_rank
+from specula.tracing import tracer
 
 
 class LoopControl(BaseTimeObj):
@@ -102,7 +104,8 @@ class LoopControl(BaseTimeObj):
                     self.logger.mpi_debug(f'' + str(element) + ' startMemUsageCount')
                     element.startMemUsageCount()
                     self.logger.mpi_debug(f'' + str(element) + ' setup')
-                    element.setup()
+                    with tracer('setup', element):
+                        element.setup()
                     element.sanity_check()
                     self.logger.mpi_debug(f'' + str(element) + ' stopMemUsageCount')
                     element.stopMemUsageCount()
@@ -147,24 +150,34 @@ class LoopControl(BaseTimeObj):
         self.logger.info(f'Pre-rolling {n_steps} steps up to t0={self.t_to_seconds(self.t0)} s: '
                          f'{[el.name for lev in levels for el in lev]}')
 
-        for t in range(0, self.t0, self.dt):
-            for level in levels:
-                for element in level:
-                    self._counted(element, element.check_ready, t)
-                for element in level:
-                    try:
-                        if element.inputs_changed:
-                            self._counted(element, element.trigger)
-                            self._counted(element, element.post_trigger)
-                            self._mem_pending.discard(element)
-                    except:
-                        self.logger.error(f'Exception in {element.name} during pre-roll')
-                        raise
+
+        # The pre-roll is traced as a single range. The phases of the objects
+        # still show up in NVTX, but are not written to the trace file,
+        # where they would be mixed with those of the loop.
+        with tracer('preroll'), tracer.no_record():
+            for t in range(0, self.t0, self.dt):
+                for level in levels:
+                    for element in level:
+                        self._counted(element, element.check_ready, t)
+                    for element in level:
+                        try:
+                            if element.inputs_changed:
+                                with tracer('trigger', element):
+                                    self._counted(element, element.trigger)
+                                with tracer('post_trigger', element):
+                                    self._counted(element, element.post_trigger)
+                                self._mem_pending.discard(element)
+                        except:
+                            self.logger.error(f'Exception in {element.name} during pre-roll')
+                            raise
 
     def iter(self):
 
         # set the last_iter flag based on several conditions
         last_iter = (self.iter_counter == self.niters()-1)
+
+        if tracer.recording:
+            tracer.begin_iteration(self.iter_counter, self.t_to_seconds(self.t))
 
         for i in sorted(self.trigger_lists.keys()):
             # all the objects having this trigger order could be remote
@@ -180,7 +193,8 @@ class LoopControl(BaseTimeObj):
             for element in self.trigger_lists[i]:
                 try:
                     if element.inputs_changed:
-                        self._counted(element, element.trigger)
+                        with tracer('trigger', element):
+                            self._counted(element, element.trigger)
                 except:
                     self.logger.error(f'Exception in {element.name}')
                     raise
@@ -189,11 +203,15 @@ class LoopControl(BaseTimeObj):
             for element in self.trigger_lists[i]:
                 try:
                     if element.inputs_changed:
-                        self._counted(element, element.post_trigger)
-                        self._mem_pending.discard(element)
+                        with tracer('post_trigger', element):
+                            self._counted(element, element.post_trigger)
+                        self._mem_pending.discard(element)                            
+
                     # Always send MPI outputs, regardless of whether
                     # an object was triggered or not
-                    element.send_outputs(skip_delayed=last_iter, first_mpi_send=False)
+                    # Only traced with remote outputs, otherwise it does nothing
+                    with tracer('send_outputs', element) if element.remote_outputs else nullcontext():
+                        element.send_outputs(skip_delayed=last_iter, first_mpi_send=False)
                 except:
                     self.logger.error(f'Exception in {element.name}')
                     raise
@@ -210,6 +228,8 @@ class LoopControl(BaseTimeObj):
         if self._mem_first_trigger_report and not self._mem_pending:
             self._report_mem('after the first trigger of all objects')
             self._mem_first_trigger_report = False
+        if tracer.recording:
+            tracer.end_iteration()
 
         self.t += self.dt
         self.iter_counter += 1
