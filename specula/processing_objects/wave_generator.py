@@ -74,9 +74,13 @@ class WaveGenerator(BaseGenerator):
         elif self.wave_type == 'SQUARE':
             # Fractional position within the current cycle, in [0, 1):
             # +amp for the first `duty_cycle` fraction of the period,
-            # -amp for the rest.
+            # -amp for the rest. The symmetric case keeps sign(sin()), as
+            # before duty_cycle existed (it gives 0 at the switching points).
             cycle_frac = self.xp.mod(phase / (2 * self.xp.pi), 1.0)
-            wave = self.xp.where(cycle_frac < self.duty_cycle, 1.0, -1.0).astype(self.dtype)
+            wave = self.xp.where(self.duty_cycle == 0.5,
+                                 self.xp.sign(self.xp.sin(phase, dtype=self.dtype)),
+                                 self.xp.where(cycle_frac < self.duty_cycle, 1.0, -1.0)
+                                 ).astype(self.dtype)
             self.output.set_value(
                 (self.slope * self.current_time_gpu + self.amp * wave + self.constant) \
                     * self.output_size_array
