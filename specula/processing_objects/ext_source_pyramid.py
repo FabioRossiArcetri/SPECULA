@@ -122,11 +122,11 @@ class ExtSourcePyramid(ModulatedPyramid):
                  simul_params: SimulParams,
                  wavelengthInNm: float,
                  fov: float,
-                 pup_diam: int,
+                 pup_diam: float,
                  output_resolution: int,
                  fov_errinf: float = 0.5,
                  fov_errsup: float = 2,
-                 pup_dist: int = None,
+                 pup_dist: float = None,
                  pup_margin: int = 2,
                  fft_res: float = 3.0,
                  fp_obs: float = None,
@@ -206,9 +206,9 @@ class ExtSourcePyramid(ModulatedPyramid):
         self._fpsf_buffer = None
         self._pyr_image_buffer = None
         self._n_chunks = 0
-        self._coeff_padded = None
-        self._ffv_padded = None
         self._u_tlt_batch = None
+        self._coeff_valid = None
+        self._ffv_valid = None
 
         # Pre-allocate face center coefficients (4 points at pyramid face centers)
         # These will be used to redistribute filtered flux
@@ -231,7 +231,7 @@ class ExtSourcePyramid(ModulatedPyramid):
         """
         Calculate 4 points at the corners between pyramid faces, at a radius
         corresponding to the field of view of the extended source.
-        
+
         Returns
         -------
         face_angles_ttf : ndarray
@@ -260,6 +260,13 @@ class ExtSourcePyramid(ModulatedPyramid):
         return face_angles_ttf, mean_radius
 
 
+    def graph_input_ptrs(self):
+        # ext_source_coeff is copied into _coeff_valid by cache_ttexp(), outside
+        # the CUDA graph, and its producer reallocates it when the number of
+        # points changes
+        ptrs = super().graph_input_ptrs()
+        return {key: ptr for key, ptr in ptrs.items() if key[0] != 'ext_source_coeff'}
+
     def cache_ttexp(self):
         # set ext_source_coeff if not already set
         if self.ext_source_coeff is None:
@@ -284,43 +291,28 @@ class ExtSourcePyramid(ModulatedPyramid):
                 self._face_centers_ttf = face_angles_ttf
 
             # Pre-allocate buffers for batch processing (constant size for FFT plan reuse)
-            self._coeff_padded = self.xp.zeros((self.max_batch_size, 3), dtype=self.dtype)
-            self._ffv_padded = self.xp.zeros(self.max_batch_size, dtype=self.dtype)
             self._u_tlt_batch = self.xp.zeros(
                 (self.max_batch_size, self.fft_totsize, self.fft_totsize),
                 dtype=self.complex_dtype)
 
-        # Always update face centers when stream disabled (in case source was updated)
-        if not self.stream_enable:
-            # Check if we need to append face centers
-            # (either first time or source was updated and lost them)
-            current_size = self.ext_source_coeff.value.shape[0]
-            if self._face_centers_idx is None or self._face_centers_idx[0] >= current_size:
-                # Create face centers with flux initialized to zero
-                face_centers_with_flux = self.xp.hstack([
-                    self._face_centers_ttf,
-                    self.xp.zeros((4, 1), dtype=self.dtype)  # Initial flux = 0
-                ])
+        # Source coefficients, only read: the input belongs to its producer
+        # and must not be modified
+        coeff = self.ext_source_coeff.value
 
-                # Append face centers
-                self.ext_source_coeff.value = self.xp.vstack([
-                    self.ext_source_coeff.value,
-                    face_centers_with_flux
-                ])
-                self._face_centers_idx = self.xp.arange(current_size, current_size + 4)
-                self.mod_steps = current_size + 4
-            else:
-                # Face centers already exist, just reset their flux to zero
-                # (TTF coordinates are constant, no need to update)
-                self.ext_source_coeff.value[self._face_centers_idx, 3] = 0.0
-                self.mod_steps = self.ext_source_coeff.value.shape[0]
-        else:
-            # Stream enabled: just update mod_steps
-            self.mod_steps = int(self.ext_source_coeff.value.shape[0])
+        if not self.stream_enable:
+            # Local copy of the coefficients with the 4 face centers appended,
+            # with flux initialized to zero (set below with the filtered flux)
+            current_size = coeff.shape[0]
+            face_centers_with_flux = self.xp.hstack([
+                self._face_centers_ttf,
+                self.xp.zeros((4, 1), dtype=self.dtype)
+            ])
+            coeff = self.xp.vstack([coeff, face_centers_with_flux])
+            self._face_centers_idx = self.xp.arange(current_size, current_size + 4)
+        self.mod_steps = int(coeff.shape[0])
 
         # Set flux factor vector from source (will be updated in trigger if PSF changes)
-        coeff_flux  = self.ext_source_coeff.value[:, 3]
-        self.flux_factor_vector = self.to_xp(coeff_flux)
+        self.flux_factor_vector = self.to_xp(coeff[:, 3])
 
         # Clean up very small flux values (only if stream disabled)
         # When stream_enable=True, we need constant n_valid for CUDA graph
@@ -347,12 +339,12 @@ class ExtSourcePyramid(ModulatedPyramid):
 
             # Redistribute lost flux to 4 face centers
             if n_filtered > 0 and lost_flux > 0:
-                self.ext_source_coeff.value[self._face_centers_idx, 3] = lost_flux / 4.0
+                coeff[self._face_centers_idx, 3] = lost_flux / 4.0
             else:
-                self.ext_source_coeff.value[self._face_centers_idx, 3] = 0.0
+                coeff[self._face_centers_idx, 3] = 0.0
 
             # Update flux factor vector after redistribution
-            self.flux_factor_vector = self.ext_source_coeff.value[:, 3]
+            self.flux_factor_vector = coeff[:, 3]
 
             self.valid_idx = self.xp.where(self.flux_factor_vector > 0.0)[0]
 
@@ -375,16 +367,31 @@ class ExtSourcePyramid(ModulatedPyramid):
 
         self.factor = 1.0 / (self.xp.sum(self.flux_factor_vector) + 1e-20)
 
+        n_valid = int(self.valid_idx.shape[0])
+        n_padded = n_chunks_needed * self.max_batch_size
+        recapture_stream = False
         if self._n_chunks != n_chunks_needed:
             self._n_chunks = n_chunks_needed
             self._fpsf_buffer = self.xp.zeros((self._n_chunks, *self.fpsf.shape),
                                             dtype=self.dtype)
             self._pyr_image_buffer = self.xp.zeros((self._n_chunks, *self.pyr_image.shape),
                                                 dtype=self.dtype)
+            self._coeff_valid = self.xp.zeros((n_padded, 3), dtype=self.dtype)
+            self._ffv_valid = self.xp.zeros(n_padded, dtype=self.dtype)
+            recapture_stream = True
         else:
             # Clear buffers
             self._fpsf_buffer[:] = 0
             self._pyr_image_buffer[:] = 0
+
+        self._coeff_valid[:n_valid] = coeff[self.valid_idx, :3]
+        self._coeff_valid[n_valid:] = 0
+        self._ffv_valid[:n_valid] = self.flux_factor_vector[self.valid_idx]
+        self._ffv_valid[n_valid:] = 0
+
+        if recapture_stream and self.cuda_graph is not None:
+            self.logger.info('Recapturing CUDA graph as number of chunks have changed.')
+            self.build_stream()
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
@@ -403,24 +410,16 @@ class ExtSourcePyramid(ModulatedPyramid):
         iu = self.xp.array(1j, dtype=self.complex_dtype)  # complex unit
         u_tlt_const = self.ef * self.tlt_f
 
-        # Get extended source coefficients for current frame (only valid points)
-        coeff_ttf = self.ext_source_coeff.value[self.valid_idx, :3]
-        ffv_valid = self.flux_factor_vector[self.valid_idx]
-        n_valid = self.valid_idx.shape[0]
+        # Extended source coefficients of the current frame, zero-padded to n_chunks * max_batch_size
+        b = self.max_batch_size
 
-        # Process in chunks
-        for chunk_idx, start_idx in enumerate(range(0, n_valid, self.max_batch_size)):
-            end_idx = min(start_idx + self.max_batch_size, n_valid)
-            chunk_size = end_idx - start_idx
-
-            # Copy chunk data into pre-allocated padded arrays (rest remains zero)
-            self._coeff_padded[:] = 0
-            self._ffv_padded[:] = 0
-            self._coeff_padded[:chunk_size] = coeff_ttf[start_idx:end_idx]
-            self._ffv_padded[:chunk_size] = ffv_valid[start_idx:end_idx]
+        # Process in chunks (always full batch size)
+        for chunk_idx in range(self._n_chunks):
+            coeff_chunk = self._coeff_valid[chunk_idx * b:(chunk_idx + 1) * b]
+            ffv_chunk = self._ffv_valid[chunk_idx * b:(chunk_idx + 1) * b]
 
             # Compute pupil phases - ALWAYS full batch size
-            pup_phases = self.xp.sum(self._coeff_padded[:, :, None, None] \
+            pup_phases = self.xp.sum(coeff_chunk[:, :, None, None] \
                                     * self.ttf_signs[None, :, None, None] \
                                     * self.ext_ttf[None, :, :, :],
                                     axis=1)
@@ -439,7 +438,7 @@ class ExtSourcePyramid(ModulatedPyramid):
             # Store PSF contribution - use only valid results
             psf_batch = self.xp.real(u_fp_batch * self.xp.conj(u_fp_batch))
             self._fpsf_buffer[chunk_idx] = \
-                self.xp.sum(psf_batch * self._ffv_padded[:, None, None], axis=0)
+                self.xp.sum(psf_batch * ffv_chunk[:, None, None], axis=0)
 
             # Apply pyramid mask - ALWAYS full batch size
             u_fp_pyr_batch = u_fp_batch * self.shifted_masked_exp[None, :, :]
@@ -451,7 +450,7 @@ class ExtSourcePyramid(ModulatedPyramid):
             pyr_ef_norm = pyr_ef_batch * self.ifft_norm
             pyr_images = self.xp.real(pyr_ef_norm * self.xp.conj(pyr_ef_norm))
             self._pyr_image_buffer[chunk_idx] = \
-                self.xp.sum(pyr_images * self._ffv_padded[:, None, None], axis=0)
+                self.xp.sum(pyr_images * ffv_chunk[:, None, None], axis=0)
 
         # Final reduction
         self.fpsf[:] = self.xp.sum(self._fpsf_buffer, axis=0)

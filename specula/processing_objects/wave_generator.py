@@ -1,6 +1,6 @@
 import numpy as np
 from specula.processing_objects.base_generator import BaseGenerator
-from typing import List
+from typing import List, Union
 
 class WaveGenerator(BaseGenerator):
     """
@@ -9,12 +9,12 @@ class WaveGenerator(BaseGenerator):
     """
     def __init__(self,
                  wave_type='SIN',  # 'SIN', 'SQUARE', 'TRIANGLE'
-                 amp: List[float] = [0.0],
-                 freq: List[float] = [0.0],
-                 offset: List[float] = [0.0],
-                 constant: List[float] = [0.0],
-                 slope: List[float] = [0.0],
-                 duty_cycle: List[float] = [0.5],
+                 amp: Union[float, List[float]] = [0.0],
+                 freq: Union[float, List[float]] = [0.0],
+                 offset: Union[float, List[float]] = [0.0],
+                 constant: Union[float, List[float]] = [0.0],
+                 slope: Union[float, List[float]] = [0.0],
+                 duty_cycle: Union[float, List[float]] = [0.5],
                  output_size: int = None,
                  target_device_idx: int = None,
                  precision: int = None):

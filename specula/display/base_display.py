@@ -30,7 +30,8 @@ class BaseDisplay(BaseProcessingObj):
                  title='',
                  window: int=None,
                  subplot: int=111,
-                 figsize=(8, 6)):
+                 figsize=(8, 6),
+                 window_xy=None):
         super().__init__()
 
         if isinstance(window, Integral) and not isinstance(window, bool) and window >= 1:
@@ -63,12 +64,31 @@ class BaseDisplay(BaseProcessingObj):
 
         if not self.onNotebook:
             self.fig.show()
+            if window_xy is not None:
+                self._set_window_position(window_xy)
         else:
             from IPython.display import display
             self.handle = display(self.fig, display_id=True)
 
         self.output_id = IntValue(value=-1)
         self.outputs['out_window_id'] = self.output_id
+
+    def _set_window_position(self, window_xy):
+        """Place the GUI window at screen pixel (x, y) if the backend allows it."""
+        try:
+            x, y = int(window_xy[0]), int(window_xy[1])
+        except (TypeError, ValueError, IndexError):
+            self.logger.warning(f'Ignoring window_xy={window_xy!r}: expected [x, y] in screen pixels')
+            return
+        # Non-GUI backends (e.g. Agg) have no window: nothing to move
+        win = getattr(self.fig.canvas.manager, 'window', None)
+        try:
+            if hasattr(win, 'wm_geometry'):     # Tk
+                win.wm_geometry(f'+{x}+{y}')
+            elif hasattr(win, 'move'):          # Qt, GTK
+                win.move(x, y)
+        except Exception as e:
+            self.logger.debug(f'Could not set window position: {e}')
 
     @classmethod
     def output_names(cls):
@@ -138,6 +158,11 @@ class BaseDisplay(BaseProcessingObj):
                     transform=self.ax.transAxes, color='red', fontsize=12)
         self._safe_draw(force=True)
 
+    def _has_gui_window(self):
+        """True if the figure is shown in an open GUI window"""
+        return self.fig.canvas.required_interactive_framework is not None and \
+               plt.fignum_exists(self.fig.number)
+
     # How long plt.pause() actually blocks to let the GUI event loop run.
     # A near-zero pause is enough to get a repaint through for a *local*
     # display, but not over X11 forwarding: that repaint is a real network
@@ -161,6 +186,12 @@ class BaseDisplay(BaseProcessingObj):
         process exits or is interrupted. plt.pause() explicitly pumps the
         event loop and forces the repaint.
         """
+        # Without a GUI window (non-interactive backend like the Agg fallback
+        # when $DISPLAY is not set, or a closed window) nobody will see the
+        # figure, so skip the expensive rendering. DisplayRecorder renders
+        # the figure itself when it needs the pixels.
+        if not self.onNotebook and not self._has_gui_window():
+            return
         now = time.monotonic()
         if not force and now - self._last_draw_time < self._MIN_REDRAW_INTERVAL:
             return

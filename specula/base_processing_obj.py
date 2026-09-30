@@ -1,14 +1,15 @@
-import logging
 from collections import defaultdict, namedtuple
+import contextlib
 import fnmatch
 import re
 
 from specula import cpuArray, default_target_device, cp
-from specula import show_in_profiler
+from specula.tracing import tracer
 from specula import process_comm
 from specula.base_time_obj import BaseTimeObj
 from specula.connections import InputList, InputValue
 from specula.data_objects.layer import Layer
+from specula.log import MPI_DBG_LEVEL
 
 
 InputDesc = namedtuple('InputDesc', 'type desc')
@@ -38,6 +39,15 @@ class BaseProcessingObj(BaseTimeObj):
         self.stream = None
         self.inputs_changed = False
         self.cuda_graph = None
+
+        # Set by invalidate_graph(): the CUDA graph is captured again at the next trigger()
+        self._cuda_graph_invalid = False
+
+        # Memory pool for the arrays allocated while capturing the CUDA graph
+        self._graph_mempool = None
+
+        # Addresses of the input arrays when the CUDA graph was captured
+        self._captured_input_ptrs = {}
 
         # Will be populated by derived class
         self.inputs = {}
@@ -106,7 +116,11 @@ class BaseProcessingObj(BaseTimeObj):
             input_obj.input_name = input_name
             self.local_inputs[input_name] = input_obj.get(self.target_device_idx)
 
-        if self.logger.level <= logging.DEBUG:
+        # Normal object creation by Simul sets the correct log level,
+        # but tests may create objects on the fly and the logger level
+        # may end up NOTSET, so add a check to avoid expensive string formatting
+        # that may be discarded by the logging module.
+        if self.logger.isEnabledFor(MPI_DBG_LEVEL):
             self.logger.mpi_debug(f'My inputs are:')
             for in_name, in_value in self.local_inputs.items():
                 if type(in_value) is list:
@@ -212,32 +226,113 @@ class BaseProcessingObj(BaseTimeObj):
             cls._streams[target_device_idx] = cp.cuda.Stream(non_blocking=False)
         return cls._streams[target_device_idx]
 
-    def build_stream(self, allow_parallel=True):
+    def build_stream(self, allow_parallel=True, capture=True):
+        '''
+        Create the CUDA stream and capture the CUDA graph.
+        If *capture* is False, the graph is captured at the first trigger() instead,
+        for objects whose trigger_code() needs data that is only available then.
+        '''
         if self.target_device_idx >= 0:
             self._target_device.use()
             if allow_parallel:
                 self.stream = cp.cuda.Stream(non_blocking=False)
             else:
                 self.stream = self.device_stream(self.target_device_idx)
-            self.capture_stream()
+            if capture:
+                self.capture_stream()
+            else:
+                self._cuda_graph_invalid = True
             default_target_device.use()
 
     def capture_stream(self):
-        with self.stream:
+        # The temporary arrays allocated by trigger_code() are released when it
+        # returns, but the CUDA graph keeps using their memory at each launch.
+        # Taken from the default memory pool, that memory could be given to other
+        # arrays (overwritten by the graph) or freed (illegal address at launch).
+        # It is taken instead from a pool used only for this graph.
+        if cp is not None:
+            if self._graph_mempool is None:
+                self._graph_mempool = cp.cuda.MemoryPool()
+            else:
+                # Recapture: the old graph is not launched anymore
+                self.cuda_graph = None
+                self._graph_mempool.free_all_blocks()
+            allocator = cp.cuda.using_allocator(self._graph_mempool.malloc)
+        else:
+            allocator = contextlib.nullcontext()
+
+        with self.stream, allocator:
             # First execution is needed to build the FFT plan cache
             # See for example https://github.com/cupy/cupy/issues/7559
             self.trigger_code()
             self.stream.begin_capture()
             self.trigger_code()
             self.cuda_graph = self.stream.end_capture()
+        self._cuda_graph_invalid = False
+        self._captured_input_ptrs = self.graph_input_ptrs()
+
+    def graph_input_ptrs(self):
+        '''
+        Addresses of the GPU arrays of the local inputs, as a dictionary
+        {(input name, list index, attribute name): address}, checked by
+        check_input_ptrs(). Derived classes whose CUDA graph does not read
+        some inputs (for example copied by prepare_trigger()) can override
+        this method to exclude them.
+        '''
+        ptrs = {}
+        for name, value in self.local_inputs.items():
+            values = value if type(value) is list else [value]
+            for i, obj in enumerate(values):
+                if obj is None:
+                    continue
+                for attr, array in getattr(obj, '__dict__', {}).items():
+                    if isinstance(array, cp.ndarray):
+                        ptrs[(name, i, attr)] = array.data.ptr
+        return ptrs
+
+    def check_input_ptrs(self):
+        '''
+        The CUDA graph reads the inputs at the addresses they had when it was
+        captured: raise an error if an input array has been reallocated since,
+        instead of silently reading stale data. Host-side check, no synchronization.
+        '''
+        if not self._captured_input_ptrs:
+            return
+        current = self.graph_input_ptrs()
+        for key, ptr in self._captured_input_ptrs.items():
+            if current.get(key) != ptr:
+                name, i, attr = key
+                where = f'{name}[{i}]' if type(self.local_inputs[name]) is list else name
+                raise RuntimeError(f'{self.name}: input {where} has been reallocated after the'
+                                   f' CUDA graph capture (attribute {attr}), its producer must'
+                                   f' update its value in place')
+
+    def invalidate_graph(self):
+        '''
+        Mark the CUDA graph as invalid, so that it is captured again at the next trigger().
+        To be called by the methods that change something frozen in the graph
+        at capture time, like kernel parameters passed by value.
+        Does nothing if the object does not use a CUDA graph.
+
+        In the trigger() that captures the graph, the GPU work of trigger_code()
+        is executed only once: the graph is not launched, since the warm-up run in
+        capture_stream() already computes the results of that step. The Python code
+        of trigger_code() runs twice (warm-up and capture), so trigger_code() must
+        not keep state in Python variables, as for any code in a CUDA graph.
+        '''
+        if self.stream is not None:
+            self._cuda_graph_invalid = True
 
     def check_ready(self, t):
         self.current_time = t
         if self.target_device_idx >= 0:
             self._target_device.use()
-        if self.checkInputTimes():
+        with tracer('inputs', self):
+            ready = self.checkInputTimes()
+        if ready:
             self.inputs_changed = True  # Signal ready for trigger and post_trigger()
-            self.prepare_trigger(t)
+            with tracer('prepare_trigger', self):
+                self.prepare_trigger(t)
         else:
             self.inputs_changed = False
             self.logger.debug('No inputs have been refreshed, skipping trigger')
@@ -248,13 +343,20 @@ class BaseProcessingObj(BaseTimeObj):
         if not self.inputs_changed:
             raise RuntimeError("trigger() called when the object's inputs have not changed")
 
-        with show_in_profiler(self.__class__.__name__+'.trigger'):
-            if self.target_device_idx >= 0:
-                self._target_device.use()
-            if self.target_device_idx >= 0 and self.cuda_graph:
+        if self.target_device_idx >= 0:
+            self._target_device.use()
+        if self.target_device_idx >= 0 and self._cuda_graph_invalid:
+            # Capture the graph. The warm-up run in capture_stream() computes
+            # the results of this step, so the new graph is not launched.
+            self.logger.debug('Capturing the CUDA graph')
+            self.capture_stream()
+        elif self.target_device_idx >= 0 and self.cuda_graph:
+            self.check_input_ptrs()
+            # NVTX range only, to mark the graph kernels in Nsight Systems
+            with tracer.no_record(), tracer('cuda_graph', self):
                 self.cuda_graph.launch(stream=self.stream)
-            else:
-                self.trigger_code()
+        else:
+            self.trigger_code()
 
     def setup(self):
         """

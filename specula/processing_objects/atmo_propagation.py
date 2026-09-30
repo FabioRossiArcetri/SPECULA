@@ -7,7 +7,7 @@ from specula.data_objects.electric_field import ElectricField
 from specula.connections import InputList, InputValue
 from specula.data_objects.layer import Layer
 from specula.lib.air_refraction import MatharAirRefraction
-from specula import cpuArray, show_in_profiler
+from specula import cpuArray
 from specula.data_objects.simul_params import SimulParams
 
 import numpy as np
@@ -289,6 +289,10 @@ class AtmoPropagation(BaseProcessingObj):
                 "Thus it is reduced from " + str(z_in) + "m to " + str(z) +
                 "m. Consider increasing zero padding.")
 
+        # Phases are computed in float64 (they can be large); only the result is stored
+        # in the object precision, so that the per-step FFTs and products are not in double.
+        propagator = [None if p is None else p.astype(self.complex_dtype) for p in propagator]
+
         return propagator, far_field
 
     def doFresnel_setup(self):
@@ -356,7 +360,6 @@ class AtmoPropagation(BaseProcessingObj):
                 )
                 layer.phaseInNm[~mask_valid] = local_mean[~mask_valid]
 
-    @show_in_profiler('atmo_propagation.trigger_code')
     def trigger_code(self):
         layer_list = self.common_layer_list + self.atmo_layer_list
         if self.prop_sign == 1:  # reverse layers for downwards propagation
@@ -390,12 +393,14 @@ class AtmoPropagation(BaseProcessingObj):
                     x2 = topleft[0] + output_ef.size[0]
                     y2 = topleft[1] + output_ef.size[1]
                     self.ef_temp.A[:] = layer.A[topleft[0]: x2, topleft[1]: y2]
-                    self.ef_temp.phaseInNm[:] = self.prop_sign * layer.phaseInNm[topleft[0]: x2, topleft[1]: y2]
+                    self.ef_temp.phaseInNm[:] = layer.phaseInNm[topleft[0]: x2, topleft[1]: y2]
                 else:
-                    self.ef_temp.A[:] = interpolator.interpolate(layer.A)
-                    self.ef_temp.phaseInNm[:] = self.prop_sign * interpolator.interpolate(layer.phaseInNm)
+                    interpolator.interpolate(layer.A, out=self.ef_temp.A)
+                    interpolator.interpolate(layer.phaseInNm, out=self.ef_temp.phaseInNm)
 
                 if self.doFresnel:
+                    if self.prop_sign == -1:
+                        self.ef_temp.phaseInNm *= -1
                     self.ef_fresnel[s:s + self.pixel_pupil, s:s + self.pixel_pupil] *= self.ef_temp.ef_at_lambda(
                         self.wavelengthInNm)
                     if self.propagators[li] is not None:
@@ -407,7 +412,9 @@ class AtmoPropagation(BaseProcessingObj):
 
                 else:
                     output_ef.A *= self.ef_temp.A
-                    output_ef.phaseInNm += self.prop_sign * self.ef_temp.phaseInNm
+                    # The geometric phase does not depend on the propagation direction
+                    # (reciprocity): the same phase map is accumulated upwards and downwards
+                    output_ef.phaseInNm += self.ef_temp.phaseInNm
 
             if self.doFresnel:
                 output_ef.phaseInNm[:] = (self.prop_sign * self.xp.angle(
