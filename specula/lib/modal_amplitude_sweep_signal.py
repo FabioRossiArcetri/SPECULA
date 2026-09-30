@@ -13,7 +13,7 @@ def modal_amplitude_sweep_signal(
     across a shared grid of amplitudes.
 
     For calibration of a wavefront sensor's nonlinear response: unlike
-    :func:`~specula.lib.modal_pushpull_signal.modal_pushpull_signal` (which
+    :class:`~specula.processing_objects.push_pull_generator.PushPullGenerator` (which
     perturbs each mode with a fixed push-pull amplitude), this holds each
     mode active at every amplitude in `amplitudes` in turn, so the full
     per-mode response curve (including saturation) can be sampled.
