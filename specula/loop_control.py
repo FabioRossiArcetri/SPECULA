@@ -101,12 +101,14 @@ class LoopControl(BaseTimeObj):
                 try:
                     self.logger.mpi_debug(f'' + str(element) + ' startMemUsageCount')
                     element.startMemUsageCount()
-                    self.logger.mpi_debug(f'' + str(element) + ' setup')
-                    with tracer('setup', element):
-                        element.setup()
-                    element.sanity_check()
-                    self.logger.mpi_debug(f'' + str(element) + ' stopMemUsageCount')
-                    element.stopMemUsageCount()
+                    try:
+                        self.logger.mpi_debug(f'' + str(element) + ' setup')
+                        with tracer('setup', element):
+                            element.setup()
+                        element.sanity_check()
+                    finally:
+                        self.logger.mpi_debug(f'' + str(element) + ' stopMemUsageCount')
+                        element.stopMemUsageCount()
                     self.logger.mpi_debug(f'setup '+str(element))
                     #  workaround for objects that need to send outputs
                     # before the first iter() call
@@ -125,6 +127,9 @@ class LoopControl(BaseTimeObj):
         
         if preroll_objs:
             self.preroll(preroll_objs)
+        if self._mem_first_trigger_report and not self._mem_pending:
+            self._report_mem('after the first trigger of all objects')
+            self._mem_first_trigger_report = False
 
         self.t = self.t0
         self.last_reported_time = time.time()

@@ -1024,16 +1024,16 @@ class Simul():
 
         self.logger.debug(f'Simulation finished')
 
-def gpu_mem_report(self, title):
-    '''Log the GPU memory used by the objects of this simulation.'''
-    names = {id(obj): name for name, obj in self.objs.items()}
-    objs = sorted(top_level_objs(since=self._mem_mark), key=lambda obj: id(obj) not in names)
-    report = gpu_mem_report(objs, names)
-    if report:
-        self.logger.info(f'GPU memory {title}:\n{report}')
+    def gpu_mem_report(self, title):
+        '''Log the GPU memory used by the objects of this simulation.'''
+        names = {id(obj): name for name, obj in self.objs.items()}
+        objs = sorted(top_level_objs(since=self._mem_mark), key=lambda obj: id(obj) not in names)
+        report = gpu_mem_report(objs, names)
+        if report:
+            self.logger.info(f'GPU memory {title}:\n{report}')
 
-#        if data_store.has_key('sr'):
-#            self.logger.info(f"Mean Strehl Ratio (@{params['psf']['wavelengthInNm']}nm) : {store.mean('sr', init=min([50, 0.1 * self.mainParams['total_time'] / self.mainParams['time_step']])) * 100.}")
+    #        if data_store.has_key('sr'):
+    #            self.logger.info(f"Mean Strehl Ratio (@{params['psf']['wavelengthInNm']}nm) : {store.mean('sr', init=min([50, 0.1 * self.mainParams['total_time'] / self.mainParams['time_step']])) * 100.}")
 
     def _check_preroll_is_local(self, preroll_objs):
         '''

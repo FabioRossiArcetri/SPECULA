@@ -1,4 +1,7 @@
+import gc
+import logging
 import unittest
+from inspect import signature
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import weakref
@@ -28,6 +31,7 @@ class TestGpuMemoryAccounting(unittest.TestCase):
         self.registry_dict.start()
         self.registry_counter.start()
         self.pool = {0: 0, 1: 0, 2: 0, 3: 0}
+        self.pool_reader = bto._pool_used_bytes
         self.pool_patch = patch.object(bto, '_pool_used_bytes',
                                        side_effect=lambda device: self.pool[device])
         self.pool_patch.start()
@@ -86,6 +90,20 @@ class TestGpuMemoryAccounting(unittest.TestCase):
         self.assertEqual(parent.gpu_bytes_children, 5)
         self.assertEqual(parent.gpu_bytes_own, 0)
 
+    def test_child_on_different_device_is_a_separate_top_level_object(self):
+        parent = self.make_obj(device=0)
+        child = self.make_obj(device=1)
+        parent.startMemUsageCount()
+        child.startMemUsageCount()
+        self.pool[1] += 8
+        child.stopMemUsageCount()
+        parent.stopMemUsageCount()
+
+        self.assertEqual(parent.gpu_bytes_used, 0)
+        self.assertEqual(parent.gpu_bytes_children, 0)
+        self.assertEqual(child.gpu_bytes_used, 8)
+        self.assertCountEqual(top_level_objs(), [parent, child])
+
     def test_cpu_and_untracked_device_counts_do_not_add_gpu_bytes(self):
         obj = self.make_obj(device=-1)
         obj.startMemUsageCount()
@@ -110,6 +128,28 @@ class TestGpuMemoryAccounting(unittest.TestCase):
         self.assertEqual({call.args[0] for call in read.call_args_list}, {0, 1, 3})
         obj.target_device_idx = -1
         obj.stopMemUsageCount()
+
+    def test_pool_reader_enters_the_requested_device(self):
+        events = []
+
+        class Device:
+            def __init__(self, index):
+                events.append(('device', index))
+
+            def __enter__(self):
+                events.append(('enter',))
+
+            def __exit__(self, *args):
+                events.append(('exit',))
+
+        pool = MagicMock()
+        pool.used_bytes.return_value = 123
+        cp = SimpleNamespace(cuda=SimpleNamespace(Device=Device),
+                             get_default_memory_pool=lambda: pool)
+        with patch.object(bto, 'cp', cp):
+            self.assertEqual(self.pool_reader(2), 123)
+        self.assertEqual(events, [('device', 2), ('enter',), ('exit',)])
+        pool.used_bytes.assert_called_once_with()
 
     def test_nested_wrapped_method_stops_counting_after_exception(self):
         calls = []
@@ -137,6 +177,19 @@ class TestGpuMemoryAccounting(unittest.TestCase):
         state = obj.__getstate__()
         self.assertNotIn('_mem_owner', state)
         self.assertNotIn('_mem_parent', state)
+
+    def test_registry_does_not_keep_top_level_objects_alive(self):
+        obj = self.make_obj()
+        obj.startMemUsageCount()
+        obj.stopMemUsageCount()
+        mark = mem_registry_mark() - 1
+        ref = weakref.ref(obj)
+
+        del obj
+        gc.collect()
+
+        self.assertIsNone(ref())
+        self.assertEqual(top_level_objs(since=mark), [])
 
     def test_gpu_bytes_held_deduplicates_arrays_and_excludes_inputs(self):
         parent = self.make_obj()
@@ -172,6 +225,37 @@ class TestGpuMemoryAccounting(unittest.TestCase):
         self.assertIn('sum of totals 6.00 MB', report)
         self.assertIn('unattributed 4.00 MB', report)
         self.assertNotIn('GPU -1:', report)
+
+    def test_gpu_bytes_held_returns_zero_when_cupy_is_unavailable(self):
+        obj = self.make_obj()
+        with patch.object(bto, 'cp', None):
+            self.assertEqual(obj.gpu_bytes_held(), 0)
+
+    def test_print_memory_usage_logs_object_name_and_own_total(self):
+        obj = self.make_obj()
+        obj.name = 'memory-owner'
+        obj.gpu_bytes_used = 4 * bto.MB
+        obj.gpu_bytes_children = 1 * bto.MB
+        with self.assertLogs(obj.logger.logger, logging.INFO) as logs:
+            obj.printMemUsage()
+        self.assertIn('memory-owner', logs.output[0])
+        self.assertIn('4.00 MB', logs.output[0])
+        self.assertIn('own 3.00 MB', logs.output[0])
+
+    def test_subclass_init_and_setup_methods_are_wrapped_with_original_signature(self):
+        class Derived(BaseTimeObj):
+            def __init__(self, value):
+                self.value = value
+
+            def setup(self, value=1):
+                self.setup_value = value
+
+        self.assertEqual(list(signature(Derived.__init__).parameters), ['self', 'value'])
+        self.assertEqual(list(signature(Derived.setup).parameters), ['self', 'value'])
+        obj = Derived(9)
+        obj.setup(3)
+        self.assertEqual(obj.value, 9)
+        self.assertEqual(obj.setup_value, 3)
 
     def test_top_level_registry_mark_filters_and_weakly_holds_objects(self):
         first = self.make_obj()
@@ -223,6 +307,18 @@ class DummyLoopObject:
 
 
 class TestLoopMemoryTracking(unittest.TestCase):
+    def test_setup_exception_balances_memory_count(self):
+        class FailingSetup(DummyLoopObject):
+            def setup(self):
+                raise RuntimeError('setup failed')
+
+        obj = FailingSetup()
+        loop = LoopControl()
+        loop.add(obj, 0)
+        with self.assertRaisesRegex(RuntimeError, 'setup failed'):
+            loop.start(run_time=0.001, dt=0.001)
+        self.assertEqual((obj.count_starts, obj.count_stops), (1, 1))
+
     def test_counts_until_first_trigger_then_reports_once(self):
         obj = DummyLoopObject()
         loop = LoopControl()
@@ -269,6 +365,17 @@ class TestLoopMemoryTracking(unittest.TestCase):
         loop.run(run_time=0.001, dt=0.001)
         self.assertEqual([call.args[0] for call in report.call_args_list],
                          ['after setup', 'after the first trigger of all objects'])
+
+    def test_preroll_completing_first_trigger_reports_without_main_iteration(self):
+        obj = DummyLoopObject()
+        loop = LoopControl()
+        report = MagicMock()
+        loop.mem_report = report
+        loop.add(obj, 0)
+        loop.run(run_time=0, dt=0.001, t0=0.002, preroll_objs=['dummy'])
+        self.assertEqual([call.args[0] for call in report.call_args_list],
+                         ['after setup', 'after the first trigger of all objects'])
+        self.assertEqual(obj.triggers, 2)
 
 
 class TestSimulationMemoryReporting(unittest.TestCase):
