@@ -1,5 +1,7 @@
 import gc
 import logging
+import sys
+from types import ModuleType
 import unittest
 from inspect import signature
 from types import SimpleNamespace
@@ -9,6 +11,7 @@ import weakref
 import specula
 specula.init(-1)
 
+from specula import cp
 import specula.base_time_obj as bto
 from specula.base_time_obj import BaseTimeObj, gpu_mem_report, mem_registry_mark, top_level_objs
 from specula.loop_control import LoopControl
@@ -18,6 +21,34 @@ import specula.simul as simul_module
 class FakeArray:
     def __init__(self, ptr, size):
         self.data = SimpleNamespace(mem=SimpleNamespace(ptr=ptr, size=size))
+
+
+def gpu_available():
+    try:
+        return cp is not None and cp.cuda.runtime.getDeviceCount() > 0
+    except Exception:
+        return False
+
+
+@unittest.skipUnless(gpu_available(), 'GPU memory integration test requires CuPy and a GPU')
+class TestGpuMemoryIntegration(unittest.TestCase):
+    def test_nested_object_allocations_are_tracked_on_gpu(self):
+        class Child(BaseTimeObj):
+            def __init__(self):
+                super().__init__(target_device_idx=0)
+                self.array = cp.zeros(2048, dtype=cp.uint8)
+
+        class Parent(BaseTimeObj):
+            def __init__(self):
+                super().__init__(target_device_idx=0)
+                self.array = cp.zeros(1024, dtype=cp.uint8)
+                self.child = Child()
+
+        parent = Parent()
+        self.assertGreater(parent.gpu_bytes_used, 0)
+        self.assertGreater(parent.gpu_bytes_children, 0)
+        self.assertGreater(parent.gpu_bytes_own, 0)
+        self.assertGreater(parent.gpu_bytes_held(), 1024 + 2048 - 1)
 
 
 class TestGpuMemoryAccounting(unittest.TestCase):
@@ -76,6 +107,51 @@ class TestGpuMemoryAccounting(unittest.TestCase):
         self.assertEqual(parent.gpu_bytes_used, 10)
         self.assertEqual(parent.gpu_bytes_children, 6)
         self.assertEqual(parent.gpu_bytes_own, 4)
+
+    def test_device_is_added_to_pre_init_count_when_not_hinted(self):
+        class Device:
+            use = MagicMock()
+
+        device = Device()
+        fake_cp = SimpleNamespace(
+            cuda=SimpleNamespace(Device=MagicMock(return_value=device)),
+            ndarray=FakeArray)
+        modules = {}
+        for name in ('cupyx', 'cupyx.scipy'):
+            module = ModuleType(name)
+            module.__path__ = []
+            modules[name] = module
+        for name, exports in (
+                ('cupyx.scipy.ndimage', ('rotate', 'shift', 'center_of_mass')),
+                ('cupyx.scipy.fft', ('ifft2', 'idct', 'dct')),
+                ('cupyx.scipy.linalg', ('lu_factor', 'lu_solve'))):
+            module = ModuleType(name)
+            for export in exports:
+                setattr(module, export, MagicMock())
+            modules[name] = module
+        cupy = ModuleType('cupy')
+        cupy.__path__ = []
+        modules['cupy'] = cupy
+        util = ModuleType('cupy._util')
+        util.PerformanceWarning = RuntimeWarning
+        modules['cupy._util'] = util
+
+        with patch.object(bto, 'cp', fake_cp), \
+             patch.object(bto, 'default_target_device_idx', -1), \
+             patch.object(bto, '_used_devices', set()), \
+             patch.object(bto, '_pool_used_bytes', side_effect=[50, 75]) as pool_used, \
+             patch.dict(sys.modules, modules):
+            class DeviceSelectedInConstructor(BaseTimeObj):
+                def __init__(self, device_idx):
+                    super().__init__(target_device_idx=device_idx)
+
+            obj = DeviceSelectedInConstructor(0)
+
+        self.assertEqual(obj.gpu_bytes_used, 25)
+        self.assertEqual(pool_used.call_args_list[0].args, (0,))
+        self.assertEqual(pool_used.call_args_list[1].args, (0,))
+        device.use.assert_called_once_with()
+        self.assertEqual(obj.PerformanceWarning, RuntimeWarning)
 
     def test_child_counted_during_parent_count_is_not_double_counted(self):
         parent = self.make_obj()
@@ -199,12 +275,13 @@ class TestGpuMemoryAccounting(unittest.TestCase):
         parent.array = FakeArray(10, 100)
         parent.view = FakeArray(10, 100)
         child.array = FakeArray(20, 200)
+        parent.arrays = [FakeArray(40, 50)]
         parent.inputs = {'ignored': FakeArray(30, 300)}
         parent.local_inputs = {}
 
-        self.assertEqual(parent.gpu_bytes_held(), 300)
+        self.assertEqual(parent.gpu_bytes_held(), 350)
         seen = set()
-        self.assertEqual(parent.gpu_bytes_held(seen), 300)
+        self.assertEqual(parent.gpu_bytes_held(seen), 350)
         self.assertEqual(parent.gpu_bytes_held(seen), 0)
 
     def test_gpu_memory_report_groups_gpu_objects_and_uses_names(self):
@@ -266,6 +343,19 @@ class TestGpuMemoryAccounting(unittest.TestCase):
         later.startMemUsageCount()
         later.stopMemUsageCount()
         self.assertEqual(top_level_objs(since=mark), [later])
+
+    def test_nested_start_stop_only_samples_outermost_call(self):
+        obj = self.make_obj()
+        obj.startMemUsageCount()
+        self.pool[0] += 3
+        obj.startMemUsageCount()
+        self.pool[0] += 4
+        obj.stopMemUsageCount()
+        self.assertEqual(obj.gpu_bytes_used, 0)
+        self.assertEqual(self.stack, [obj])
+        obj.stopMemUsageCount()
+        self.assertEqual(obj.gpu_bytes_used, 7)
+        self.assertEqual(self.stack, [])
 
 
 class DummyLoopObject:
