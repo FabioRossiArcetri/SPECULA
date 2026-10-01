@@ -12,7 +12,7 @@ from specula.base_time_obj import gpu_mem_report, mem_registry_mark, top_level_o
 
 from specula.log import get_specula_logger
 from specula.loop_control import LoopControl
-from specula.lib.utils import import_class, get_type_hints, remove_suffix, resolve_type
+from specula.lib.utils import import_class, get_type_hints, resolve_type
 from specula.calib_manager import CalibManager
 from specula.processing_objects.data_store import DataStore
 from specula.connections import InputList, InputValue, split_output
@@ -344,7 +344,7 @@ class Simul():
                 parname = name
                 if parname not in args:
                     for ending in ['_ref', '_data', '_object']:
-                        candidate = remove_suffix(parname, ending)
+                        candidate = parname.removesuffix(ending)
                         if candidate in args:
                             parname = candidate
                             break
