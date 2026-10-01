@@ -507,3 +507,180 @@ class Test(unittest.TestCase):
                 obj.post_trigger()
 
         self.assertTrue(id(prop_down.ef_fresnel) != id(prop_down.ft_ef1))
+
+    def _build_deterministic_propagation(self, target_device_idx, precision, pixel_pupil,
+                                         pixel_pitch, wavelengthInNm, layer_height, padding_factor,
+                                         phase_pattern, pupil_pattern):
+        """Build an AtmoPropagation with fixed, non-random Layers (smooth phase screen
+        + circular pupil) so that propagator precision/accuracy can be checked deterministically."""
+        simul_params = SimulParams(pixel_pupil, pixel_pitch)
+        source = Source(polar_coordinates=[0.0, 0.0], magnitude=0, wavelengthInNm=wavelengthInNm)
+
+        atmo_layer = Layer(pixel_pupil, pixel_pupil, pixel_pitch, layer_height,
+                           target_device_idx=target_device_idx, precision=precision)
+        atmo_layer.phaseInNm[:] = atmo_layer.to_xp(phase_pattern, dtype=atmo_layer.dtype)
+        atmo_layer.generation_time = 1  # marks the input as refreshed for checkInputTimes
+
+        pupil_layer = Layer(pixel_pupil, pixel_pupil, pixel_pitch, 0.0,
+                            target_device_idx=target_device_idx, precision=precision)
+        pupil_layer.A[:] = pupil_layer.to_xp(pupil_pattern, dtype=pupil_layer.dtype)
+        pupil_layer.generation_time = 1
+
+        prop = AtmoPropagation(simul_params, source_dict={'src': source},
+                               wavelengthInNm=wavelengthInNm, doFresnel=True,
+                               padding_factor=padding_factor,
+                               target_device_idx=target_device_idx, precision=precision)
+        prop.inputs['atmo_layer_list'].set([atmo_layer])
+        prop.inputs['common_layer_list'].set([pupil_layer])
+        prop.setup()
+        return prop
+
+    def _check_propagator_dtypes(self, prop, expected_complex_dtype):
+        """Check that all stored propagator arrays have the expected complex dtype."""
+        for prop_elem in prop.propagators:
+            if prop_elem is None:
+                continue
+            self.assertEqual(len(prop_elem), 3)
+            for arr in prop_elem:
+                if arr is not None:
+                    self.assertEqual(cpuArray(arr).dtype, expected_complex_dtype)
+
+    @cpu_and_gpu
+    def test_propagator_precision_and_accuracy_near_field(self, target_device_idx, xp):
+        '''ASM (near-field) propagators: check storage dtype, and that a precision=1
+        run matches a precision=0 run of the same deterministic setup.'''
+        pixel_pupil = 64
+        pixel_pitch = 0.01
+        wavelengthInNm = 1550.0
+        layer_height = 300.0
+        padding_factor = 2
+
+        yy, xx = np.meshgrid(np.arange(pixel_pupil), np.arange(pixel_pupil), indexing='ij')
+        phase_pattern = 400.0 * np.sin(2 * np.pi * xx / pixel_pupil) * np.cos(2 * np.pi * yy / pixel_pupil)
+        rr = np.sqrt((xx - pixel_pupil / 2 + 0.5) ** 2 + (yy - pixel_pupil / 2 + 0.5) ** 2)
+        pupil_pattern = (rr < pixel_pupil / 2).astype(float)
+
+        prop0 = self._build_deterministic_propagation(target_device_idx, 0, pixel_pupil, pixel_pitch,
+                                                       wavelengthInNm, layer_height, padding_factor,
+                                                       phase_pattern, pupil_pattern)
+        prop1 = self._build_deterministic_propagation(target_device_idx, 1, pixel_pupil, pixel_pitch,
+                                                       wavelengthInNm, layer_height, padding_factor,
+                                                       phase_pattern, pupil_pattern)
+
+        # z=300m is well below z_far_field for this pitch/pupil: ASM branch, not far field
+        self.assertFalse(any(ff for ff in prop0.far_field_propagation if ff is not None))
+        self._check_propagator_dtypes(prop0, np.complex128)
+        self._check_propagator_dtypes(prop1, np.complex64)
+
+        for prop in (prop0, prop1):
+            prop.check_ready(1)
+            prop.trigger()
+            prop.post_trigger()
+
+        phase0 = cpuArray(prop0.outputs['out_src_ef'].phaseInNm)
+        phase1 = cpuArray(prop1.outputs['out_src_ef'].phaseInNm)
+        rel = np.sqrt(np.mean((phase1 - phase0) ** 2)) / np.max(np.abs(phase0))
+        self.assertLess(rel, 1e-5)
+
+    @cpu_and_gpu
+    def test_propagator_precision_and_accuracy_far_field(self, target_device_idx, xp):
+        '''Fraunhofer (far-field) propagators: check storage dtype,
+        and that a precision=1 run matches a precision=0 run of the same deterministic setup.'''
+        pixel_pupil = 64
+        pixel_pitch = 0.001
+        wavelengthInNm = 1550.0
+        layer_height = 10000.0  # 10 km: exceeds z_far_field for this pitch/pupil/padding
+        padding_factor = 3
+
+        yy, xx = np.meshgrid(np.arange(pixel_pupil), np.arange(pixel_pupil), indexing='ij')
+        phase_pattern = 400.0 * np.sin(2 * np.pi * xx / pixel_pupil) * np.cos(2 * np.pi * yy / pixel_pupil)
+        rr = np.sqrt((xx - pixel_pupil / 2 + 0.5) ** 2 + (yy - pixel_pupil / 2 + 0.5) ** 2)
+        pupil_pattern = (rr < pixel_pupil / 2).astype(float)
+
+        prop0 = self._build_deterministic_propagation(target_device_idx, 0, pixel_pupil, pixel_pitch,
+                                                       wavelengthInNm, layer_height, padding_factor,
+                                                       phase_pattern, pupil_pattern)
+        prop1 = self._build_deterministic_propagation(target_device_idx, 1, pixel_pupil, pixel_pitch,
+                                                       wavelengthInNm, layer_height, padding_factor,
+                                                       phase_pattern, pupil_pattern)
+
+        self.assertTrue(any(ff for ff in prop0.far_field_propagation if ff is not None))
+        self._check_propagator_dtypes(prop0, np.complex128)
+        self._check_propagator_dtypes(prop1, np.complex64)
+
+        for prop in (prop0, prop1):
+            prop.check_ready(1)
+            prop.trigger()
+            prop.post_trigger()
+
+        phase0 = cpuArray(prop0.outputs['out_src_ef'].phaseInNm)
+        phase1 = cpuArray(prop1.outputs['out_src_ef'].phaseInNm)
+        rel = np.sqrt(np.mean((phase1 - phase0) ** 2)) / np.max(np.abs(phase0))
+        self.assertLess(rel, 1e-5)
+
+    @cpu_and_gpu
+    def test_fresnel_beam_drift_same_direction_up_down(self, target_device_idx, xp):
+        '''
+        A tilted layer deflects the beam towards +grad(phase) in both propagation
+        directions (reciprocity). Regression test: upwards propagation used to
+        conjugate the field, which drifted the beam towards -grad(phase).
+        '''
+        pixel_pupil = 120
+        pixel_pitch = 0.008333
+        wavelengthInNm = 1550
+        layer_height = 2000.0
+        source_height = 4000.0
+        simul_params = SimulParams(pixel_pupil=pixel_pupil, pixel_pitch=pixel_pitch, zenithAngleInDeg=0.0)
+        x = (np.arange(pixel_pupil) - (pixel_pupil - 1) / 2) * pixel_pitch
+
+        def propagate(upwards, tilt):
+            # Flat layer at 0 m (the pupil plane) and tilted layer above it, so that there
+            # are layer_height meters of propagation after the tilt in both directions
+            ground = Layer(pixel_pupil, pixel_pupil, pixel_pitch, height=0.0,
+                           target_device_idx=target_device_idx)
+            tilted = Layer(pixel_pupil, pixel_pupil, pixel_pitch, height=layer_height,
+                           target_device_idx=target_device_idx)
+            for layer in (ground, tilted):
+                layer.A[:] = 1.0
+                layer.generation_time = 1
+            ground.phaseInNm[:] = 0.0
+            tilted.phaseInNm[:] = xp.asarray(np.tile(tilt * x * 1e9, (pixel_pupil, 1)))
+
+            source = Source(polar_coordinates=[0.0, 0.0], magnitude=0, height=source_height,
+                            wavelengthInNm=wavelengthInNm)
+            prop = AtmoPropagation(simul_params, source_dict={'src': source}, doFresnel=True,
+                                   upwards=upwards, wavelengthInNm=wavelengthInNm, padding_factor=3,
+                                   target_device_idx=target_device_idx)
+            prop.inputs['common_layer_list'].set([ground, tilted])
+            prop.setup()
+            prop.check_ready(1)
+            prop.trigger()
+            prop.post_trigger()
+            return prop
+
+        def centroid(prop):
+            intensity = np.abs(cpuArray(prop.ef_fresnel)) ** 2
+            coords = (np.arange(intensity.shape[1]) - (intensity.shape[1] - 1) / 2) * pixel_pitch
+            return np.array([(intensity.sum(axis=0) * coords).sum(),
+                             (intensity.sum(axis=1) * coords).sum()]) / intensity.sum()
+
+        drift = {}
+        for upwards in (False, True):
+            prop = propagate(upwards, tilt=2e-5)
+            # Relative to the same propagation without tilt, to remove the small
+            # offset of the padded grid
+            dx, dy = centroid(prop) - centroid(propagate(upwards, tilt=0.0))
+            self.assertLess(abs(dy), 1e-3 * abs(dx))
+
+            # Expected drift: output phase tilt (the layer tilt seen in the pupil,
+            # scaled by the cone) times the propagation distance after the layer
+            ef = prop.outputs['out_src_ef']
+            field = cpuArray(ef.A) * np.exp(1j * 2 * np.pi * cpuArray(ef.phaseInNm) / wavelengthInNm)
+            out_tilt = np.angle((field[:, 1:] * np.conj(field[:, :-1])).sum()) \
+                       / (2 * np.pi / (wavelengthInNm * 1e-9)) / pixel_pitch
+            np.testing.assert_allclose(dx, out_tilt * layer_height, rtol=0.1)
+            drift[upwards] = dx
+
+        self.assertGreater(drift[False], 0)
+        self.assertGreater(drift[True], 0)
+        np.testing.assert_allclose(drift[True], drift[False], rtol=0.1)

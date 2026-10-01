@@ -3,6 +3,7 @@ import weakref
 from functools import wraps
 from inspect import signature
 
+import specula
 from specula import np, cp, to_xp
 from specula import global_precision, default_target_device, default_target_device_idx
 from specula import cpu_float_dtype_list, gpu_float_dtype_list
@@ -78,6 +79,19 @@ def gpu_mem_report(objs, names=None):
                      f' unattributed {(pool-tot)/MB:.2f} MB')
     return '\n'.join(lines)
 
+def _check_specula_initialized():
+    if specula.global_precision is None:
+        raise RuntimeError(
+            'SPECULA is not initialized: call specula.init(device_idx, precision) '
+            'before creating any SPECULA object')
+    if global_precision is None:
+        # init() was called, but after this module was imported, so the
+        # names imported above from specula are stale
+        raise RuntimeError(
+            'specula.init() was called after importing SPECULA submodules. '
+            'Call specula.init() right after "import specula", before any other '
+            'specula.* import')
+
 
 class BaseTimeObj:
     gpu_bytes_used = 0
@@ -92,6 +106,8 @@ class BaseTimeObj:
         target_device_idx (int, optional): if None will use the default_target_device_idx,
         otherwise pass -1 for cpu, i for GPU of index i
         """
+        _check_specula_initialized()
+
         self.logger = get_specula_logger('specula.'+self.__class__.__name__)
         self.logger.set_instance_name(INIT_PLACEHOLDER_NAME)
 
@@ -105,6 +121,11 @@ class BaseTimeObj:
             self.target_device_idx = default_target_device_idx
         else:
             self.target_device_idx = target_device_idx
+
+        if self.target_device_idx >= 0 and cp is None:
+            raise RuntimeError(
+                f'target_device_idx={self.target_device_idx} requested, but cupy is not available '
+                '(not installed, failed to import, or disabled by SPECULA_DISABLE_GPU)')
 
         if self.target_device_idx >= 0:
             self._target_device = cp.cuda.Device(self.target_device_idx)      # GPU case
