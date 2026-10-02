@@ -221,11 +221,18 @@ class TestConv2dNetTrainerLoading(unittest.TestCase):
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
 class TestConv2dNetTrainerDevice(unittest.TestCase):
 
-    def test_device_matches_cuda_availability(self):
+    def test_cpu_object_trains_on_cpu(self):
         with tempfile.TemporaryDirectory() as d:
-            trainer = build_trainer(d)
-            expected = 'cuda' if torch.cuda.is_available() else 'cpu'
-            self.assertEqual(trainer.device.type, expected)
+            trainer = build_trainer(d, target_device_idx=-1)
+            self.assertEqual(trainer.device.type, 'cpu')
+
+    @unittest.skipIf(specula.cp is None or not torch.cuda.is_available(), "no GPU")
+    def test_gpu_object_trains_on_its_gpu_only(self):
+        # Not on every visible GPU: DataParallel is opt-in (data_parallel)
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, target_device_idx=0)
+            self.assertEqual(str(trainer.device), 'cuda:0')
+            self.assertNotIsInstance(trainer.model, torch.nn.DataParallel)
 
 
 @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")

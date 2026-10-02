@@ -223,6 +223,16 @@ class Conv2dNetTrainer(BaseProcessingObj):
         Training stops after this many triggers without improvement of the
         validation loss.
 
+    Device:
+
+    The network trains on the object's device: the GPU of target_device_idx,
+    or the CPU when the object is on the CPU.
+
+    data_parallel : bool
+        Train on all visible GPUs with torch's DataParallel instead of the
+        object's GPU only. Off by default: on a GPU shared with other
+        simulations it would take all of them.
+
     Diagnostics:
 
     diag_interval : int
@@ -267,6 +277,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
                  patience=600,
                  diag_interval=10,
                  diag_ridge_samples=4000,
+                 data_parallel=False,
                  target_device_idx=None,
                  precision=None):
         if TORCH_IMPORT_ERROR is not None:
@@ -342,9 +353,12 @@ class Conv2dNetTrainer(BaseProcessingObj):
         if load_from_file:
             self._load(model)
 
-        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        if self.xp is np or not torch.cuda.is_available():
+            self.device = torch.device('cpu')
+        else:
+            self.device = torch.device(f'cuda:{self.target_device_idx}')
         n_gpus = torch.cuda.device_count()
-        if n_gpus > 1:
+        if data_parallel and n_gpus > 1:
             model = nn.DataParallel(model.to(self.device), device_ids=list(range(n_gpus)))
             print(f'[{self.name}] Training on {n_gpus} GPUs (DataParallel)', flush=True)
         else:
