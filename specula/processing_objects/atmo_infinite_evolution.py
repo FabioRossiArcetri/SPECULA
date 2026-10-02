@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List
 import numpy as np
 
 from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
@@ -19,7 +19,7 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
     def __init__(self,
                  simul_params: SimulParams,
                  data_dir:str='',
-                 L0: Union[float, List[float]]=[1.0],
+                 L0: float | List[float]=[1.0],
                  heights: list=[0.0],
                  Cn2: list=[1.0],
                  fov: float=0.0,
