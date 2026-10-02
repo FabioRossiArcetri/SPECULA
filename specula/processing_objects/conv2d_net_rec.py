@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 
-from specula import cpuArray
 from specula.base_processing_obj import InputDesc
 from specula.processing_objects.base_modalrec import BaseModalrec
 from specula.connections import InputValue
@@ -62,6 +61,10 @@ class Conv2dNetRec(BaseModalrec):
             network that shrinks less silently raises the effective loop gain.
             Modes the network barely predicts are left uncorrected, since
             amplifying them would mostly amplify noise.
+
+        The network runs on the object's device: on the GPU when
+        target_device_idx is a GPU (data exchanged with cupy through DLPack,
+        without host copies), on the CPU otherwise.
         """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
@@ -71,7 +74,10 @@ class Conv2dNetRec(BaseModalrec):
         self.input_channels = network['input_channels']
         self.n_frames = network['n_frames']
         self.baseline_offset = baseline_offset
-        self.stacker = FrameStacker(self.n_frames, np)
+        self.torch_device = (torch.device('cpu') if self.xp is np
+                             else torch.device(f'cuda:{self.target_device_idx}'))
+        self.model = self.model.to(self.torch_device)
+        self.stacker = FrameStacker(self.n_frames, self.xp)
         self.meanp = stats['meanp']
         self.stdp = stats['stdp']
         self.meanmodes = np.asarray(stats['meanmodes'], dtype=float)
@@ -93,29 +99,47 @@ class Conv2dNetRec(BaseModalrec):
                       'output for residual learning; see Conv2dNetTrainer (optional)')
         return names
 
+    def setup(self):
+        super().setup()
+        # Device copies of the output statistics, made here (not in __init__)
+        # so that they can still be replaced after construction.
+        self._meanmodes = self.to_xp(self.meanmodes, dtype=self.dtype)
+        self._stdmodes = self.to_xp(self.stdmodes, dtype=self.dtype)
+        self._calibration = (None if self.calibration is None
+                             else self.to_xp(self.calibration, dtype=self.dtype))
+
+    def _to_torch(self, x):
+        x = self.xp.ascontiguousarray(x, dtype=self.xp.float32)
+        if self.xp is np:
+            return torch.from_numpy(x)
+        return torch.from_dlpack(x)
+
+    def _from_torch(self, t):
+        if self.xp is np:
+            return t.numpy()
+        return self.xp.from_dlpack(t.contiguous())
+
     def trigger_code(self):
         slopes_obj = self.local_inputs['in_slopes']
-        map2d = cpuArray(slopes_obj.get2d())
+        map2d = self.to_xp(slopes_obj.get2d(), dtype=self.xp.float32)
         if map2d.ndim == 2:
-            map2d = map2d[np.newaxis, ...]
-        map2d = map2d.astype(np.float32)
+            map2d = map2d[self.xp.newaxis, ...]
 
-        stacked = self.stacker(map2d[np.newaxis, ...])   # (1, input_channels * n_frames, H, W)
+        stacked = self.stacker(map2d[self.xp.newaxis, ...])   # (1, input_channels * n_frames, H, W)
         ph = (stacked - self.meanp) / self.stdp
-        inputs = torch.from_numpy(ph.astype(np.float32))
 
         with torch.no_grad():
-            preds_normalized = self.model(inputs)
+            preds_normalized = self.model(self._to_torch(ph))
 
-        preds = preds_normalized.cpu().numpy()[0] * self.stdmodes + self.meanmodes
-        if self.calibration is not None:
-            preds = (preds - self.meanmodes) * self.calibration + self.meanmodes
+        preds = self._from_torch(preds_normalized[0]) * self._stdmodes + self._meanmodes
+        if self._calibration is not None:
+            preds = (preds - self._meanmodes) * self._calibration + self._meanmodes
 
         baseline_in = self.local_inputs['baseline']
         if baseline_in is not None:
-            baseline_modes = cpuArray(baseline_in.get_value())[
+            baseline_modes = self.to_xp(baseline_in.get_value())[
                 self.baseline_offset:self.baseline_offset + self.nmodes]
             preds = preds + baseline_modes
 
-        self.modes.value[:] = self.to_xp(preds, dtype=self.dtype)
+        self.modes.value[:] = preds
         self.modes.generation_time = self.current_time

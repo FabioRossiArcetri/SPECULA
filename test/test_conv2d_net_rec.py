@@ -62,7 +62,7 @@ def build_slopes(target_device_idx, seed=0):
     output would."""
     rng = np.random.default_rng(seed)
     slopes = Slopes(length=2 * N_VALID, interleave=False, target_device_idx=target_device_idx)
-    slopes.slopes[:] = rng.standard_normal(2 * N_VALID)
+    slopes.slopes[:] = slopes.xp.asarray(rng.standard_normal(2 * N_VALID))
     slopes.single_mask = np.zeros((MASK_SIDE, MASK_SIDE), dtype=bool)
     slopes.display_map = np.arange(N_VALID)
     return slopes
@@ -246,6 +246,31 @@ class TestConv2dNetRecTrigger(unittest.TestCase):
 
             out = run_once(rec, slopes, target_device_idx=-1)
             np.testing.assert_allclose(out, baseline_full[2:2 + NMODES], atol=1e-5)
+
+
+class TestConv2dNetRecDevice(unittest.TestCase):
+
+    @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
+    @unittest.skipIf(specula.cp is None or not TORCH_AVAILABLE or not torch.cuda.is_available(),
+                     "no GPU")
+    def test_gpu_output_matches_cpu(self):
+        # Same checkpoint and slopes: the network on the GPU (cupy <-> torch
+        # through DLPack) must give the CPU result, with gain calibration on.
+        with tempfile.TemporaryDirectory() as d:
+            net_path = os.path.join(d, 'net.pth')
+            # 16 channels: with CHANNELS=4 the bottleneck attention has 4 // 8 = 0
+            # channels, an empty conv that torch hands to triton on CUDA.
+            save_checkpoint(net_path, channels=16, mode_gain=[0.5, 0.8, 1.0, 0.9, 0.6],
+                            meanmodes=[1.0, -2.0, 0.5, 0.0, 3.0],
+                            stdmodes=[2.0, 1.0, 0.5, 4.0, 1.5])
+            outputs = []
+            for device in (-1, 0):
+                rec = Conv2dNetRec(network_filename=net_path, calibrate_gain=True,
+                                   target_device_idx=device)
+                outputs.append(run_once(rec, build_slopes(target_device_idx=device), device))
+            self.assertEqual(str(rec.torch_device), 'cuda:0')
+            # cuDNN uses TF32 for float32 convolutions by default (~1e-3 relative)
+            np.testing.assert_allclose(outputs[1], outputs[0], rtol=1e-3, atol=1e-3)
 
 
 if __name__ == '__main__':
