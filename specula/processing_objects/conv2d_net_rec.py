@@ -1,12 +1,19 @@
 import numpy as np
-import torch
 
 from specula.base_processing_obj import InputDesc
 from specula.processing_objects.base_modalrec import BaseModalrec
 from specula.connections import InputValue
 from specula.base_value import BaseValue
-from specula.lib.cnn_checkpoint import calibration_factor, load_trained_network
 from specula.lib.frame_stacker import FrameStacker
+
+# torch is optional (the "nn" extra in pyproject.toml): this module must
+# import without it, so that SPECULA itself does; the constructor raises.
+try:
+    import torch
+    from specula.lib.cnn_checkpoint import calibration_factor, load_trained_network
+    TORCH_IMPORT_ERROR = None
+except ImportError as e:
+    TORCH_IMPORT_ERROR = e
 
 
 class Conv2dNetRec(BaseModalrec):
@@ -66,6 +73,9 @@ class Conv2dNetRec(BaseModalrec):
         target_device_idx is a GPU (data exchanged with cupy through DLPack,
         without host copies), on the CPU otherwise.
         """
+        if TORCH_IMPORT_ERROR is not None:
+            raise ImportError(f'{type(self).__name__} needs torch, an optional '
+                              f'dependency: pip install specula[nn]') from TORCH_IMPORT_ERROR
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         self.model, stats = load_trained_network(network_filename)

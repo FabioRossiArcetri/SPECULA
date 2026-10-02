@@ -1,13 +1,20 @@
-import torch
 
 from specula import cpuArray, np
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
 from specula.connections import InputValue
-from specula.lib.cnn_checkpoint import calibration_factor, load_trained_network
 from specula.lib.frame_stacker import FrameStacker
-from specula.lib.nn_training_diagnostics import mode_groups
-from specula.processing_objects.conv2d_net_trainer import network_input
+
+# torch is optional (the "nn" extra in pyproject.toml): this module must
+# import without it, so that SPECULA itself does; the constructor raises.
+try:
+    import torch
+    from specula.lib.cnn_checkpoint import calibration_factor, load_trained_network
+    from specula.lib.nn_training_diagnostics import mode_groups
+    from specula.processing_objects.conv2d_net_trainer import network_input
+    TORCH_IMPORT_ERROR = None
+except ImportError as e:
+    TORCH_IMPORT_ERROR = e
 
 
 class Conv2dNetTester(BaseProcessingObj):
@@ -44,6 +51,9 @@ class Conv2dNetTester(BaseProcessingObj):
                  gain_mod_threshold=1.0,
                  target_device_idx: int = None,
                  precision: int = None):
+        if TORCH_IMPORT_ERROR is not None:
+            raise ImportError(f'{type(self).__name__} needs torch, an optional '
+                              f'dependency: pip install specula[nn]') from TORCH_IMPORT_ERROR
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         self.model, stats = load_trained_network(network_filename)
