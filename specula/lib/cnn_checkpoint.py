@@ -49,11 +49,14 @@ def build_network(network):
     )
 
 
-def predict(model, inputs, mean, std, chunk=1000):
+def predict(model, inputs, mean, std, chunk=128):
     """Predictions of ``model`` in physical units (denormalized with the
     per-mode mean/std tensors), in eval mode and without gradients, in
     chunks of at most ``chunk`` samples so that memory doesn't grow with the
-    number of samples."""
+    number of samples. The default keeps the peak low on a GPU shared with
+    the simulation: the SOUL U-Net (64 channels, 120x120 maps) needs ~30 GiB
+    for 1000 samples, ~4 GiB for 128, and torch's caching allocator keeps
+    that memory reserved afterwards."""
     model.eval()
     with torch.no_grad():
         out = torch.cat([model(inputs[i:i + chunk]) for i in range(0, inputs.shape[0], chunk)])
