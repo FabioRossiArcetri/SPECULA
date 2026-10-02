@@ -11,6 +11,7 @@ from specula.lib.frame_stacker import FrameStacker
 try:
     import torch
     from specula.lib.cnn_checkpoint import calibration_factor, load_trained_network
+    from specula.processing_objects.conv2d_net_trainer import network_input
     TORCH_IMPORT_ERROR = None
 except ImportError as e:
     TORCH_IMPORT_ERROR = e
@@ -132,10 +133,13 @@ class Conv2dNetRec(BaseModalrec):
     def trigger_code(self):
         slopes_obj = self.local_inputs['in_slopes']
         map2d = self.to_xp(slopes_obj.get2d(), dtype=self.xp.float32)
-        if map2d.ndim == 2:
-            map2d = map2d[self.xp.newaxis, ...]
-
-        stacked = self.stacker(map2d[self.xp.newaxis, ...])   # (1, input_channels * n_frames, H, W)
+        # The same input as in training: network_input() as Conv2dNetTrainer
+        # applies it to the buffered maps (with input_channels 1, x/y slope
+        # maps become their per-pixel product).
+        x = network_input(map2d[self.xp.newaxis, ...], self.input_channels)
+        if x.ndim == 3:
+            x = x[:, self.xp.newaxis]                       # (1, 1, H, W)
+        stacked = self.stacker(x)                           # (1, input_channels * n_frames, H, W)
         ph = (stacked - self.meanp) / self.stdp
 
         with torch.no_grad():

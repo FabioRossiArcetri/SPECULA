@@ -248,6 +248,23 @@ class TestConv2dNetRecTrigger(unittest.TestCase):
             np.testing.assert_allclose(out, baseline_full[2:2 + NMODES], atol=1e-5)
 
 
+class TestConv2dNetRecInput(unittest.TestCase):
+
+    @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
+    def test_single_channel_network_gets_the_training_input(self):
+        # With input_channels 1 the trainer feeds x/y slope maps as their
+        # per-pixel product (network_input): so must the reconstructor.
+        with tempfile.TemporaryDirectory() as d:
+            rec, _, _ = build_rec(d, input_channels=1)
+            seen = []
+            rec.model = lambda x: (seen.append(x.clone()), torch.zeros(1, NMODES))[1]
+            slopes = build_slopes(target_device_idx=-1)
+            maps = np.asarray(slopes.get2d())
+            run_once(rec, slopes, target_device_idx=-1)
+            self.assertEqual(tuple(seen[0].shape), (1, 1, MASK_SIDE, MASK_SIDE))
+            np.testing.assert_allclose(seen[0].numpy()[0, 0], maps[1] * maps[0], atol=1e-6)
+
+
 class TestConv2dNetRecDevice(unittest.TestCase):
 
     @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
