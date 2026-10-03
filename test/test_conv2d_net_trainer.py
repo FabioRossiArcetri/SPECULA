@@ -493,6 +493,20 @@ class TestConv2dNetTrainerTrigger(unittest.TestCase):
             self.assertAlmostEqual(float(trainer.meanp), float(np.mean(value)), places=4)
             self.assertEqual(trainer.val_inputs.shape[1:], (1, H, W))
 
+    def test_mode_gain_moving_average_uses_mode_gain_alpha(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, mode_gain_alpha=0.1)
+            targets = torch.randn(200, NMODES, dtype=torch.float64)
+            trainer._update_mode_gain(0.5 * targets, targets)     # first: the gain itself
+            np.testing.assert_allclose(trainer.mode_gain, 0.5, atol=1e-9)
+            trainer._update_mode_gain(1.0 * targets, targets)     # then 0.9 old + 0.1 new
+            np.testing.assert_allclose(trainer.mode_gain, 0.55, atol=1e-9)
+
+    def test_mode_gain_alpha_out_of_range_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError):
+                build_trainer(d, mode_gain_alpha=0.0)
+
     def test_mode_gain_is_measured_and_saved(self):
         # A model whose output is a known fraction of the target must come out
         # with that fraction as its per-mode gain in the stats file.

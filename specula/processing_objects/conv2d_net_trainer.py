@@ -223,6 +223,14 @@ class Conv2dNetTrainer(BaseProcessingObj):
         Training stops after this many triggers without improvement of the
         validation loss.
 
+    mode_gain_alpha : float
+        Weight of the newest batch in the moving average of the per-mode
+        prediction gain (see _update_mode_gain), saved in the checkpoint and
+        used by calibrate_gain. The default follows the latest conditions
+        within ~10 triggers; when a checkpoint is trained over runs in
+        different conditions (e.g. different magnitudes), a small value
+        averages over several runs instead of reflecting only the last one.
+
     Device:
 
     The network trains on the object's device: the GPU of target_device_idx,
@@ -277,6 +285,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
                  patience=600,
                  diag_interval=10,
                  diag_ridge_samples=4000,
+                 mode_gain_alpha=0.3,
                  data_parallel=False,
                  target_device_idx=None,
                  precision=None):
@@ -347,6 +356,9 @@ class Conv2dNetTrainer(BaseProcessingObj):
         self._out_m1 = self._out_m2 = None
         self._norm_time = None
         self.mode_gain = None       # per-mode prediction gain, see _update_mode_gain
+        if not 0 < mode_gain_alpha <= 1:
+            raise ValueError(f'mode_gain_alpha must be in (0, 1], got {mode_gain_alpha}')
+        self.mode_gain_alpha = mode_gain_alpha
         self._resume_lr = None      # learning rate saved in the checkpoint, if resuming
 
         model = build_network(self.network)
@@ -799,7 +811,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
         centred = t - t.mean(0)
         gain = ((centred * (p - p.mean(0))).mean(0)
                 / centred.pow(2).mean(0).clamp_min(1e-30)).cpu().numpy()
-        alpha = 0.3
+        alpha = self.mode_gain_alpha
         self.mode_gain = gain if self.mode_gain is None else (1 - alpha) * self.mode_gain + alpha * gain
 
     # ------------------------------------------------------------------
