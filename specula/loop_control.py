@@ -23,7 +23,9 @@ class LoopControl(BaseTimeObj):
         self.max_global_order = -1
         self.iter_counter = 0
         self.stepping = stepping
+        # Optional callable(title) printing a GPU memory report, set by Simul
         self.mem_report = None
+        # Objects whose GPU memory is still counted, until they are triggered once
         self._mem_pending = set()
         self._mem_first_trigger_report = False
 
@@ -153,6 +155,7 @@ class LoopControl(BaseTimeObj):
         self.logger.info(f'Pre-rolling {n_steps} steps up to t0={self.t_to_seconds(self.t0)} s: '
                          f'{[el.name for lev in levels for el in lev]}')
 
+
         # The pre-roll is traced as a single range. The phases of the objects
         # still show up in NVTX, but are not written to the trace file,
         # where they would be mixed with those of the loop.
@@ -239,7 +242,11 @@ class LoopControl(BaseTimeObj):
         self.iter_counter += 1
 
     def _counted(self, element, method, *args):
-        '''Call a method while counting memory until the element's first trigger.'''
+        '''
+        Call *method*, counting the GPU memory it allocates for *element*
+        if the element has not been triggered yet: objects often allocate
+        buffers lazily, on their first trigger.
+        '''
         if element not in self._mem_pending:
             return method(*args)
         element.startMemUsageCount()

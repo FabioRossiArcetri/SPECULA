@@ -1035,6 +1035,15 @@ class Simul():
     #        if data_store.has_key('sr'):
     #            self.logger.info(f"Mean Strehl Ratio (@{params['psf']['wavelengthInNm']}nm) : {store.mean('sr', init=min([50, 0.1 * self.mainParams['total_time'] / self.mainParams['time_step']])) * 100.}")
 
+    def gpu_mem_report(self, title):
+        '''Log the GPU memory used by the objects of this simulation'''
+        names = {id(obj): name for name, obj in self.objs.items()}
+        # Simulation objects first, then the ones restored for their parameters
+        objs = sorted(top_level_objs(since=self._mem_mark), key=lambda obj: id(obj) not in names)
+        report = gpu_mem_report(objs, names)
+        if report:
+            self.logger.info(f'GPU memory {title}:\n{report}')
+
     def _check_preroll_is_local(self, preroll_objs):
         '''
         Pre-roll triggers objects without the MPI send/receive of the main
