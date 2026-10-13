@@ -86,6 +86,74 @@ def gpu_mem_report(objs, names=None):
     return '\n'.join(lines)
 
 
+# GPU memory tracking (see BaseTimeObj.startMemUsageCount()).
+_mem_count_stack = []
+_top_level_objs = weakref.WeakValueDictionary()
+_top_level_counter = 0
+_used_devices = set()
+
+MB = 1024 * 1024
+
+
+def _pool_used_bytes(device_idx):
+    '''Bytes used in the cupy memory pool of a device, whatever the current device.'''
+    with cp.cuda.Device(device_idx):
+        return cp.get_default_memory_pool().used_bytes()
+
+
+def mem_registry_mark():
+    '''Current position in the registry of top-level objects, see top_level_objs().'''
+    return _top_level_counter
+
+
+def top_level_objs(since=0):
+    '''Live top-level objects registered after mem_registry_mark() returned *since*.'''
+    return [obj for idx, obj in list(_top_level_objs.items()) if idx >= since]
+
+
+def _owner(obj):
+    ref = obj.__dict__.get('_mem_owner')
+    return ref() if ref is not None else None
+
+
+def _top_owner(obj):
+    while (owner := _owner(obj)) is not None:
+        obj = owner
+    return obj
+
+
+def gpu_mem_report(objs, names=None):
+    '''
+    Table of the GPU memory of *objs* (top-level objects), grouped by device.
+
+    For each object: its own memory, the total including nested objects, and
+    the memory held in its arrays. The pool difference is unattributed memory.
+    Arrays shared between objects are credited to the first one listed.
+    '''
+    names = names or {}
+    by_device = {}
+    for obj in objs:
+        if getattr(obj, 'target_device_idx', -1) >= 0:
+            by_device.setdefault(obj.target_device_idx, []).append(obj)
+
+    seen = set()
+    lines = []
+    for dev in sorted(by_device):
+        lines.append(f'  GPU {dev}:')
+        lines.append(f'    {"object":30s} {"class":26s} {"own MB":>10s} {"total MB":>10s} {"held MB":>10s}')
+        tot = 0
+        for obj in by_device[dev]:
+            name = names.get(id(obj)) or getattr(obj, 'name', None) or \
+                   f'{type(obj).__name__}({getattr(obj, "tag", "")})'
+            held = obj.gpu_bytes_held(seen)
+            tot += obj.gpu_bytes_used
+            lines.append(f'    {name:30.30s} {type(obj).__name__:26.26s} {obj.gpu_bytes_own/MB:10.2f}'
+                         f' {obj.gpu_bytes_used/MB:10.2f} {held/MB:10.2f}')
+        pool = _pool_used_bytes(dev)
+        lines.append(f'    sum of totals {tot/MB:.2f} MB, memory pool {pool/MB:.2f} MB,'
+                     f' unattributed {(pool-tot)/MB:.2f} MB')
+    return '\n'.join(lines)
+
 def _check_specula_initialized():
     if specula.global_precision is None:
         raise RuntimeError(
@@ -359,4 +427,3 @@ class BaseTimeObj:
         Method wrapping the global to_xp function.
         '''
         return to_xp(self.xp, v, dtype, force_copy)
-

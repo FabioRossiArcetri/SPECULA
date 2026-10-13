@@ -487,7 +487,6 @@ class Simul():
             except Exception:
                 self.logger.error(f'Exception building {key}')
                 raise
-
             # TODO this could be more general like the getters above
             if type(self.objs[key]) is DataStore:
                 self.objs[key].setParams(params)
@@ -1024,8 +1023,17 @@ class Simul():
                       preroll_objs=preroll_objs)
 
         self.logger.debug(f'Simulation finished')
-#        if data_store.has_key('sr'):
-#            self.logger.info(f"Mean Strehl Ratio (@{params['psf']['wavelengthInNm']}nm) : {store.mean('sr', init=min([50, 0.1 * self.mainParams['total_time'] / self.mainParams['time_step']])) * 100.}")
+
+    def gpu_mem_report(self, title):
+        '''Log the GPU memory used by the objects of this simulation.'''
+        names = {id(obj): name for name, obj in self.objs.items()}
+        objs = sorted(top_level_objs(since=self._mem_mark), key=lambda obj: id(obj) not in names)
+        report = gpu_mem_report(objs, names)
+        if report:
+            self.logger.info(f'GPU memory {title}:\n{report}')
+
+    #        if data_store.has_key('sr'):
+    #            self.logger.info(f"Mean Strehl Ratio (@{params['psf']['wavelengthInNm']}nm) : {store.mean('sr', init=min([50, 0.1 * self.mainParams['total_time'] / self.mainParams['time_step']])) * 100.}")
 
     def gpu_mem_report(self, title):
         '''Log the GPU memory used by the objects of this simulation'''
