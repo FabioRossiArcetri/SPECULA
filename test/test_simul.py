@@ -20,6 +20,7 @@ from specula.connections import InputValue, InputList
 from specula.data_objects.recmat import Recmat
 from specula.base_data_obj import BaseDataObj
 from specula.lib.utils import import_class as real_import_class
+from iteras.data_objects.sim_params import SimParams
 from specula.processing_objects.modalrec_multirate import ModalrecMultirate
 from specula.data_objects.iir_filter_data import IirFilterData
 from specula.scalar_values import IntValue
@@ -36,7 +37,8 @@ class DummyOutput:
 class DummyOutputDerived(DummyOutput):
     pass
 
-class DummySimulParams:
+class DummySimulParams(SimParams):
+    # Does not call SimParams.__init__(): only root_dir is needed
     def __init__(self, root_dir='dummy', **_kwargs):
         self.root_dir = root_dir
     def init_logging(self, *args):
