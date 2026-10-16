@@ -10,6 +10,7 @@ import iteras
 from iteras import process_rank
 from iteras.base_processing_obj import BaseProcessingObj
 from iteras.base_data_obj import BaseDataObj
+from iteras.data_objects.sim_params import SimParams
 from iteras.base_time_obj import gpu_mem_report, mem_registry_mark, top_level_objs
 
 from iteras.log import get_iteras_logger
@@ -260,11 +261,27 @@ class Simul():
                                       f"character '{ch}' is reserved ({purpose}) and cannot "
                                       "be used in object names")
 
+    def is_main_params(self, params, key):
+        '''
+        True if the section *key* of *params* holds the main simulation
+        parameters, that is, if its class is SimParams or a subclass of it
+        (like SPECULA's SimulParams).
+        Classes are looked up in the registered packages and in the
+        additional modules listed in any section of *params*.
+        '''
+        additional_modules = [m for pars in params.values() if isinstance(pars, dict)
+                              for m in pars.get('add_modules', [])]
+        try:
+            klass = import_class(params[key]['class'], additional_modules)
+            return isinstance(klass, type) and issubclass(klass, SimParams)
+        except Exception:
+            # Errors will be reported when the object is built
+            return False
+
     def setSimulParams(self, params):
-        for key, pars in params.items():
-            classname = pars['class']
-            if classname == 'SimulParams':
-                self.mainParams = pars
+        for key in params:
+            if self.is_main_params(params, key):
+                self.mainParams = params[key]
 
     def build_order(self, params):
         '''
@@ -797,7 +814,7 @@ class Simul():
         still exist, and therefore all their inputs are either loaded
         from disk or computed, recursively.
 
-        SimulParams parameters are replicated unchanged.
+        Main parameters (SimParams) are replicated unchanged.
         DataStore parameters are converted to DataSource
 
         on_missing_downstream_consumers : str
@@ -808,16 +825,16 @@ class Simul():
             'error' (default) raises ValueError, 'warn' logs a warning, 'ignore'
             does nothing.
         '''
-        # Create new parameter dict and copy SimulParams without changes
+        # Create new parameter dict and copy the main parameters without changes
         replay_params = {}
         datastore_outputs = {}
 
         for key, pars in params.items():
-            if pars['class'] == 'SimulParams':
+            if self.is_main_params(params, key):
                 main_pars = pars
                 break
         else:
-            raise ValueError('Parameter file does not contain a SimulParams class')
+            raise ValueError('Parameter file does not contain a SimParams class (or a subclass)')
 
         replay_params[key] = main_pars.copy()
 
