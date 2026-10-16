@@ -13,6 +13,7 @@ import iteras
 from iteras import registry as _registry
 from iteras import (init, main_simul, cpuArray, to_xp, fuse,
                    cpu_float_dtype_list, cpu_complex_dtype_list)
+from specula.calib_subdirs import CALIB_SUBDIRS as _CALIB_SUBDIRS
 
 ASEC2RAD = np.pi / (3600 * 180)
 RAD2ASEC = 1.0 / ASEC2RAD
@@ -22,6 +23,7 @@ _registry.register_plugin(
     packages=['specula.processing_objects',
               'specula.data_objects',
               'specula.display'],
+    calib_subdirs=_CALIB_SUBDIRS,
     env_aliases={'ITERAS_DISABLE_GPU': 'SPECULA_DISABLE_GPU',
                  'ITERAS_PORT': 'SPECULA_PORT'},
 )
