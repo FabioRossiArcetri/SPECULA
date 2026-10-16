@@ -3,9 +3,9 @@ import time
 from collections import defaultdict
 from contextlib import nullcontext
 
-from specula.base_time_obj import BaseTimeObj
-from specula import process_comm, process_rank
-from specula.tracing import tracer
+from iteras.base_time_obj import BaseTimeObj
+from iteras import process_comm, process_rank
+from iteras.tracing import tracer
 
 
 class LoopControl(BaseTimeObj):

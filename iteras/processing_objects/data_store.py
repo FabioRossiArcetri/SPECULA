@@ -7,9 +7,9 @@ from collections import OrderedDict, defaultdict
 import pickle
 import yaml
 
-from specula import cpuArray
-from specula.base_processing_obj import BaseProcessingObj
-from specula.lib import utils
+from iteras import cpuArray
+from iteras.base_processing_obj import BaseProcessingObj
+from iteras.lib import utils
 
 
 class DataStore(BaseProcessingObj):

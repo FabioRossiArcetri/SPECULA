@@ -1,11 +1,20 @@
-import os
+'''
+iteras: a framework for end-to-end, time-domain simulations of systems made
+of data objects and processing objects, running on CPU (numpy) or GPU (cupy),
+optionally distributed over several processes with MPI.
+
+Call :func:`init` before creating any object, and before importing the
+other iteras modules: some of them read the device and precision settings
+when they are imported.
+'''
 import numpy as np
 import logging
 import traceback
 import functools
 from functools import wraps
 
-from specula.log import get_specula_logger, init_logging
+from iteras import registry
+from iteras.log import get_iteras_logger, init_logging
 
 cpu_float_dtype_list = [np.float64, np.float32]
 cpu_complex_dtype_list = [np.complex128, np.complex64]
@@ -25,8 +34,6 @@ default_target_device_idx = None
 default_target_device = None
 process_comm = None
 process_rank = None
-ASEC2RAD = np.pi / (3600 * 180)
-RAD2ASEC = 1.0 / ASEC2RAD
 
 # precision = 0 -> double precision
 # precision = 1 -> single precision
@@ -67,10 +74,10 @@ def init(device_idx=-1,
     process_rank = rank
 
     init_logging(log_level=log_level, process_rank=rank)
-    logger = get_specula_logger(__name__)
+    logger = get_iteras_logger(__name__)
 
     default_target_device_idx = device_idx
-    systemDisable = os.environ.get('SPECULA_DISABLE_GPU', 'FALSE')
+    systemDisable = registry.getenv('ITERAS_DISABLE_GPU', 'FALSE')
     if systemDisable == 'FALSE':
         try:
             import cupy as cp
@@ -78,12 +85,12 @@ def init(device_idx=-1,
             gpuEnabled = True
             cp = cp
         except:
-            logger.warning("Cupy import failed. SPECULA will fall back to CPU use.")
+            logger.warning("Cupy import failed. Falling back to CPU use.")
             cp = None
             xp = np
             default_target_device_idx = -1
     else:
-        logger.info("env variable SPECULA_DISABLE_GPU prevents using the GPU.")
+        logger.info("GPU use disabled by environment variable (ITERAS_DISABLE_GPU or an alias).")
         cp = None
         xp = np
         default_target_device_idx = -1
@@ -208,9 +215,10 @@ def main_simul(yml_files: list,
                trace_gpu_events: bool=False,
                ):
 
-    # Set logging level for the "parent" specula logger
-    logger = logging.getLogger('specula')
-    logger.setLevel(log_level.upper())
+    # Set logging level for the "parent" loggers of iteras and its plugins
+    for root in registry.plugin_roots():
+        logging.getLogger(root).setLevel(log_level.upper())
+    logger = logging.getLogger('iteras')
 
     if mpi:
         try:
@@ -240,7 +248,7 @@ def main_simul(yml_files: list,
         target_device_idx = target
 
     init(target_device_idx, precision=precision, rank=rank, comm=comm)
-    from specula.simul import Simul
+    from iteras.simul import Simul
 
     if profile:
         import cProfile
@@ -248,7 +256,7 @@ def main_simul(yml_files: list,
         pr = cProfile.Profile()
         pr.enable()
 
-    from specula.tracing import tracer
+    from iteras.tracing import tracer
     if trace_file:
         tracer.open(trace_file, sync=trace_sync, rank=rank, skip=trace_skip,
                     gpu_events=trace_gpu_events)

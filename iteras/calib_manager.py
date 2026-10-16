@@ -2,7 +2,7 @@
 import os
 from astropy.io import fits
 
-from specula.log import get_specula_logger
+from iteras.log import get_iteras_logger
 
 
 class CalibManager():
@@ -83,7 +83,7 @@ class CalibManager():
             'projection': 'popt/'
         }
         self.root_dir = root_dir
-        self.logger = get_specula_logger('specula.calib_manager')
+        self.logger = get_iteras_logger('iteras.calib_manager')
 
     def root_subdir(self, type):
         """

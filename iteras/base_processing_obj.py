@@ -4,13 +4,12 @@ import fnmatch
 import re
 import weakref
 
-from specula import cpuArray, default_target_device, cp
-from specula.tracing import tracer
-from specula import process_comm
-from specula.base_time_obj import BaseTimeObj
-from specula.connections import InputList, InputValue
-from specula.data_objects.layer import Layer
-from specula.log import MPI_DBG_LEVEL
+from iteras import cpuArray, default_target_device, cp
+from iteras.tracing import tracer
+from iteras import process_comm
+from iteras.base_time_obj import BaseTimeObj
+from iteras.connections import InputList, InputValue
+from iteras.log import MPI_DBG_LEVEL
 
 
 InputDesc = namedtuple('InputDesc', 'type desc')
@@ -125,12 +124,8 @@ class BaseProcessingObj(BaseTimeObj):
             self.logger.mpi_debug(f'My inputs are:')
             for in_name, in_value in self.local_inputs.items():
                 if type(in_value) is list:
-                    if len(in_value) > 0 and type(in_value[0]) is Layer:
-                        self.logger.mpi_debug(f'- {in_name}' + 
-                                    str([(x.generation_time, x.phaseInNm) for x in in_value]))
-                    else:
-                        self.logger.mpi_debug(f'- {in_name}' + 
-                                    str([(x.generation_time, x) for x in in_value]))
+                    self.logger.mpi_debug(f'- {in_name}' +
+                                str([(x.generation_time, x.debug_summary()) for x in in_value]))
                 else:
                     self.logger.mpi_debug(f'- {in_name}' + 
                             str(in_value.generation_time if in_value is not None else None) +

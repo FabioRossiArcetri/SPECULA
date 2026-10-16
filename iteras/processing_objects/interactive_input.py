@@ -1,13 +1,13 @@
 import queue
 
-from specula.connections import split_output
-from specula.base_processing_obj import BaseProcessingObj
-from specula.scalar_values import IntValue, FloatValue, StringValue
+from iteras.connections import split_output
+from iteras.base_processing_obj import BaseProcessingObj
+from iteras.scalar_values import IntValue, FloatValue, StringValue
 
 
-class SpeculaInput(BaseProcessingObj):
+class InteractiveInput(BaseProcessingObj):
     """
-    Specula input processing object. Handles interactive inputs
+    Interactive input processing object. Handles interactive inputs
 
     This class is meant to provide outputs that can be set
     interactively and/or asynchronously wrt. the normal simulation run.

@@ -1,10 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from specula.display.base_display import BaseDisplay
-from specula.connections import InputValue
-from specula.base_value import BaseValue
-from specula import cpuArray
+from iteras.display.base_display import BaseDisplay
+from iteras.connections import InputValue
+from iteras.base_value import BaseValue
+from iteras import cpuArray
 
 
 class PlotVectorDisplay(BaseDisplay):

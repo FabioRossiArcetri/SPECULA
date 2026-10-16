@@ -1,7 +1,7 @@
-from specula.base_processing_obj import BaseProcessingObj, InputDesc
-from specula.connections import InputValue
-from specula.base_value import BaseValue
-from specula import cpuArray, np
+from iteras.base_processing_obj import BaseProcessingObj, InputDesc
+from iteras.connections import InputValue
+from iteras.base_value import BaseValue
+from iteras import cpuArray, np
 
 
 class DataPrint(BaseProcessingObj):

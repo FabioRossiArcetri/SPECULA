@@ -1,8 +1,6 @@
-from specula.base_processing_obj import BaseProcessingObj
-from specula.base_value import BaseValue
-from specula.connections import InputList, InputValue
-from specula.data_objects.recmat import Recmat
-from specula.data_objects.slopes import Slopes
+from iteras.base_processing_obj import BaseProcessingObj
+from iteras.base_value import BaseValue
+from iteras.connections import InputList, InputValue
 
 
 class ProcessingObjName(BaseProcessingObj):
@@ -12,7 +10,7 @@ class ProcessingObjName(BaseProcessingObj):
                  # object specific parameters are passed here, can have a default value or not
                  # are normally provided in the yaml config file of the simulation using this
                  parameter1: float=0,       # any basic type or data object
-                 parameter2: Recmat=None,   # any basic type or data object
+                 parameter2: BaseValue=None,   # any basic type or data object
                  # for all processing objects:                 
                  target_device_idx=None, # thise is always here
                  precision=None          # thise is always here
@@ -21,23 +19,23 @@ class ProcessingObjName(BaseProcessingObj):
 
         # initialization code, does something witht the parameters passed
         # build an intenal state, check some conditions
-        self.interalParam = self.to_xp(parameter1 * parameter2.recmat)
+        self.interalParam = self.to_xp(parameter1 * parameter2.value)
 
         # BaseValue is just an example, could be any data object 
         self.result_data1 = BaseValue('some output for this processing object', target_device_idx=target_device_idx)
         # self.result_data2 = BaseValue('some other output for this processing oibject', target_device_idx=target_device_idx)        
 
         # allocate the inputs dictionary
-        self.inputs['in_data1'] = InputValue(type=Slopes, optional=True) # Slopes is just an example, could be any data object 
-        # self.inputs['in_data_list1'] = InputList(type=Slopes, optional=True)
+        self.inputs['in_data1'] = InputValue(type=BaseValue, optional=True) # BaseValue is just an example, could be any data object 
+        # self.inputs['in_data_list1'] = InputList(type=BaseValue, optional=True)
         
         # allocate and initialize the outputs dictionary
         self.outputs['out_result_data1'] = self.result_data1
         # self.outputs['out_result_data2'] = self.result_data2
         
         # Pre-Allocate output data
-        self.result_data1.value = self.xp.zeros(self.interalParam.recmat.shape[0], dtype=self.dtype)
-        # self.result_data2.value = self.xp.zeros(self.interalParam.recmat.shape[1], dtype=self.dtype)
+        self.result_data1.value = self.xp.zeros(self.interalParam.shape[0], dtype=self.dtype)
+        # self.result_data2.value = self.xp.zeros(self.interalParam.shape[1], dtype=self.dtype)
         
 
     def prepare_trigger(self, t):
@@ -54,7 +52,7 @@ class ProcessingObjName(BaseProcessingObj):
         if data1 is None:                        
             d1 = self.xp.zeros_like(data1, dtype=self.dtype)
         else:
-            d1 = self.interalParam @ data1
+            d1 = self.interalParam @ data1.value
 
         # Could do this: 
         # self.result_data1.value = d1                
