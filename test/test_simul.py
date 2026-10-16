@@ -757,7 +757,7 @@ class TestSimul(unittest.TestCase):
     def test_build_targeted_replay_warn_mode_logs_without_raising(self):
         params = self._ef_combinator_shadowing_prop_params()
 
-        with self.assertLogs('specula.simul', level='WARNING') as cm:
+        with self.assertLogs('iteras.simul', level='WARNING') as cm:
             replay = Simul('dummy.yaml').build_targeted_replay(
                 params, 'prop', on_missing_downstream_consumers='warn')
 
