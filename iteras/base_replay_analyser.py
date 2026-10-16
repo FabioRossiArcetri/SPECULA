@@ -3,10 +3,10 @@ from pathlib import Path
 from typing import Optional
 import yaml
 from astropy.io import fits
-import specula
+import iteras
 
-from specula.simul import Simul
-from specula.log import get_specula_logger
+from iteras.simul import Simul
+from iteras.log import get_iteras_logger
 
 
 class BaseReplayAnalyser:
@@ -41,7 +41,7 @@ class BaseReplayAnalyser:
                 f"got {on_missing_downstream_consumers!r}"
             )
         self.on_missing_downstream_consumers = on_missing_downstream_consumers
-        self.logger = get_specula_logger(__name__)
+        self.logger = get_iteras_logger(__name__)
         if log_level is not None:
             self.logger.setLevel(log_level)
 
@@ -83,7 +83,7 @@ class BaseReplayAnalyser:
         replay_precision = self._get_saved_replay_precision()
         self.replay_precision = replay_precision
         if replay_precision is None:
-            self.logger.debug('Did not find saved replay precision; using current SPECULA precision state')
+            self.logger.debug('Did not find saved replay precision; using current precision state')
         else:
             self.logger.debug(f'Loaded replay precision={replay_precision} from replay_params.yml')
         self._ensure_replay_precision(replay_precision)
@@ -167,18 +167,18 @@ class BaseReplayAnalyser:
         if replay_precision not in (0, 1):
             return
 
-        if specula.global_precision == replay_precision:
+        if iteras.global_precision == replay_precision:
             return
 
-        if specula.default_target_device_idx is None:
-            self.logger.warning('SPECULA not initialized yet, cannot enforce replay precision automatically')
+        if iteras.default_target_device_idx is None:
+            self.logger.warning('Not initialized yet, cannot enforce replay precision automatically')
             return
 
-        specula.init(
-            device_idx=specula.default_target_device_idx,
+        iteras.init(
+            device_idx=iteras.default_target_device_idx,
             precision=replay_precision,
-            rank=specula.process_rank,
-            comm=specula.process_comm,
+            rank=iteras.process_rank,
+            comm=iteras.process_comm,
         )
 
     def _add_extra_objects_to_params(self, params_dict: dict):

@@ -2,7 +2,7 @@
 Run all displays in a separate process, so that slow drawing
 does not slow down the simulation.
 
-With ``specula --async-displays``, a BaseDisplay object in the simulation
+With the ``--async-displays`` command line option, a BaseDisplay object in the simulation
 does not draw: at each trigger it copies its inputs to the CPU and sends them
 to a single display process, which holds a copy of each display, built with
 the same constructor arguments, and runs the usual display code.
@@ -14,7 +14,7 @@ a history (like PlotDisplay) set *skip_updates* to False: their data, usually sm
 is always sent.
 
 Only this module's top-level imports run in the display process
-before specula.init(), so they must not import other SPECULA modules.
+before iteras.init(), so they must not import other iteras modules.
 '''
 
 import io
@@ -119,8 +119,8 @@ def stop(logger, timeout=30):
 # the display loop is in _worker_loop(), tested directly
 def _worker(q, slots, specs, precision, log_level):  # pragma: no cover
     try:
-        import specula
-        specula.init(-1, precision=precision)
+        import iteras
+        iteras.init(-1, precision=precision)
         _worker_loop(q, slots, specs, log_level)
     except KeyboardInterrupt:
         pass

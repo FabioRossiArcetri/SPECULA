@@ -3,12 +3,13 @@ import weakref
 from functools import wraps
 from inspect import signature
 
-import specula
-from specula import np, cp, to_xp
-from specula import global_precision, default_target_device, default_target_device_idx
-from specula import cpu_float_dtype_list, gpu_float_dtype_list
-from specula import cpu_complex_dtype_list, gpu_complex_dtype_list
-from specula.log import get_specula_logger, INIT_PLACEHOLDER_NAME
+import iteras
+from iteras import np, cp, to_xp
+from iteras import global_precision, default_target_device, default_target_device_idx
+from iteras import cpu_float_dtype_list, gpu_float_dtype_list
+from iteras import cpu_complex_dtype_list, gpu_complex_dtype_list
+from iteras import registry
+from iteras.log import get_iteras_logger, INIT_PLACEHOLDER_NAME
 
 # GPU memory tracking (see BaseTimeObj.startMemUsageCount()).
 # Objects whose memory is being counted right now, innermost last.
@@ -154,18 +155,26 @@ def gpu_mem_report(objs, names=None):
                      f' unattributed {(pool-tot)/MB:.2f} MB')
     return '\n'.join(lines)
 
-def _check_specula_initialized():
-    if specula.global_precision is None:
+def _check_initialized():
+    app = registry.application_name()
+    module = app.lower()
+    if iteras.global_precision is None:
         raise RuntimeError(
-            'SPECULA is not initialized: call specula.init(device_idx, precision) '
-            'before creating any SPECULA object')
+            f'{app} is not initialized: call {module}.init(device_idx, precision) '
+            f'before creating any {app} object')
     if global_precision is None:
         # init() was called, but after this module was imported, so the
-        # names imported above from specula are stale
+        # names imported above from iteras are stale
         raise RuntimeError(
-            'specula.init() was called after importing SPECULA submodules. '
-            'Call specula.init() right after "import specula", before any other '
-            'specula.* import')
+            f'{module}.init() was called after importing {app} submodules. '
+            f'Call {module}.init() right after "import {module}", before any other '
+            f'{module}.* import')
+
+
+def _logger_root(cls):
+    '''Logger root of a class: the top-level package of iteras or of a plugin, iteras otherwise'''
+    root = cls.__module__.partition('.')[0]
+    return root if root in registry.plugin_roots() else 'iteras'
 
 
 class BaseTimeObj:
@@ -182,9 +191,9 @@ class BaseTimeObj:
         target_device_idx (int, optional): if None will use the default_target_device_idx,
         otherwise pass -1 for cpu, i for GPU of index i
         """
-        _check_specula_initialized()
+        _check_initialized()
 
-        self.logger = get_specula_logger('specula.'+self.__class__.__name__)
+        self.logger = get_iteras_logger(_logger_root(type(self)) + '.' + self.__class__.__name__)
         self.logger.set_instance_name(INIT_PLACEHOLDER_NAME)
 
         self._time_resolution = int(1e9)
@@ -202,7 +211,7 @@ class BaseTimeObj:
         if self.target_device_idx >= 0 and cp is None:
             raise RuntimeError(
                 f'target_device_idx={self.target_device_idx} requested, but cupy is not available '
-                '(not installed, failed to import, or disabled by SPECULA_DISABLE_GPU)')
+                '(not installed, failed to import, or disabled by ITERAS_DISABLE_GPU or an alias)')
 
         if self.target_device_idx >= 0:
             self._target_device = cp.cuda.Device(self.target_device_idx)      # GPU case
@@ -389,7 +398,8 @@ class BaseTimeObj:
             elif isinstance(obj, BaseTimeObj):
                 if obj is self or _top_owner(obj) is self:
                     todo.extend(v for k, v in vars(obj).items() if k not in ('inputs', 'local_inputs'))
-            elif type(obj).__module__.startswith('specula.') and hasattr(obj, '__dict__') \
+            elif type(obj).__module__.partition('.')[0] in registry.plugin_roots() \
+                    and hasattr(obj, '__dict__') \
                     and not isinstance(obj, type):
                 todo.extend(vars(obj).values())
         return total

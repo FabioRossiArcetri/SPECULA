@@ -1,6 +1,6 @@
 
 from collections import Counter
-from specula.log import get_specula_logger
+from iteras.log import get_iteras_logger
 
 class SimulDiagram:
     def __init__(self,
@@ -16,7 +16,7 @@ class SimulDiagram:
 
         self.connections = []
         self.references = []
-        self.logger = get_specula_logger(__name__)
+        self.logger = get_iteras_logger(__name__)
 
     def add_reference(self, start, end):
         self.references.append({'start':start, 'end': end})

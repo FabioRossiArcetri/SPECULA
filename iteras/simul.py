@@ -5,20 +5,20 @@ import inspect
 import itertools
 from copy import deepcopy
 from pathlib import Path
-import specula
-from specula import process_rank
-from specula.base_processing_obj import BaseProcessingObj
-from specula.base_data_obj import BaseDataObj
-from specula.base_time_obj import gpu_mem_report, mem_registry_mark, top_level_objs
+import iteras
+from iteras import process_rank
+from iteras.base_processing_obj import BaseProcessingObj
+from iteras.base_data_obj import BaseDataObj
+from iteras.base_time_obj import gpu_mem_report, mem_registry_mark, top_level_objs
 
-from specula.log import get_specula_logger
-from specula.loop_control import LoopControl
-from specula.lib.utils import import_class, get_type_hints, resolve_type
-from specula.calib_manager import CalibManager
-from specula.processing_objects.data_store import DataStore
-from specula.connections import InputList, InputValue, split_output
-from specula.simul_diagram import SimulDiagram
-from specula.display import display_process
+from iteras.log import get_iteras_logger
+from iteras.loop_control import LoopControl
+from iteras.lib.utils import import_class, get_type_hints, resolve_type
+from iteras.calib_manager import CalibManager
+from iteras.processing_objects.data_store import DataStore
+from iteras.connections import InputList, InputValue, split_output
+from iteras.simul_diagram import SimulDiagram
+from iteras.display import display_process
 
 import yaml
 
@@ -58,7 +58,7 @@ class Simul():
         self.stepping = stepping
         self.async_displays = async_displays
         self.speed_report = speed_report
-        self.logger = get_specula_logger(__name__)
+        self.logger = get_iteras_logger(__name__)
         self.logger.setLevel(log_level.upper())
         if diagram or diagram_title or diagram_filename or diagram_colors_on:
             if diagram_filename is None:
@@ -756,34 +756,32 @@ class Simul():
             if key in target_params and 'seed' not in target_params[key]:
                 target_params[key]['seed'] = seed
 
-    def _produces_ef_or_layer(self, class_name):
+    def _produces_tracked_output(self, class_name):
         '''
-        True if the given class declares an ElectricField or Layer output.
+        True if the given class declares an output whose type has the
+        replay_track_consumers flag set (see BaseDataObj).
         Used to detect objects whose silent omission from a replay would drop
-        a phase-additive contribution (e.g. an ElectricFieldCombinator or
-        PhaseScreenCube feeding a WFS downstream of a captured AtmoPropagation).
+        a contribution to the data flowing downstream (e.g. an object adding a
+        perturbation to a field, downstream of a captured propagation object).
         '''
-        from specula.data_objects.electric_field import ElectricField
-        from specula.data_objects.layer import Layer
         try:
             outputs = import_class(class_name).output_names()
         except Exception:
             return False
-        return any(issubclass(desc.type, (ElectricField, Layer)) for desc in outputs.values())
+        return any(getattr(desc.type, 'replay_track_consumers', False) for desc in outputs.values())
 
-    def _find_dropped_ef_layer_consumers(self, params, replay_params):
+    def _find_dropped_tracked_consumers(self, params, replay_params):
         '''
         Objects present in the original params but not captured into replay_params,
         that (a) consume an output of an object that IS captured, and (b) themselves
-        declare an ElectricField or Layer output -- i.e. objects whose omission
-        silently drops a phase-additive contribution from the replayed graph
-        (SPECULA #696: a PhaseScreenCube summed via ElectricFieldCombinator onto an
-        AtmoPropagation source's output, downstream of the propagation object, is
-        invisible to a replay targeted at that propagation object).
+        declare an output whose type has the replay_track_consumers flag set -- i.e.
+        objects whose omission silently drops a contribution from the replayed graph
+        (e.g. a phase screen summed onto a propagated electric field, downstream of
+        the propagation object, is invisible to a replay targeted at that object).
         '''
         dropped = {}
         for key, pars in params.items():
-            if key in replay_params or not self._produces_ef_or_layer(pars.get('class')):
+            if key in replay_params or not self._produces_tracked_output(pars.get('class')):
                 continue
             hits = [(input_name, out) for input_name, out in self.iterate_inputs(pars)
                     if self.output_owner(out) in replay_params]
@@ -803,7 +801,8 @@ class Simul():
 
         on_missing_downstream_consumers : str
             What to do when an object present in params, that consumes a captured
-            object's output and itself declares an ElectricField or Layer output,
+            object's output and itself declares an output whose type has the
+            replay_track_consumers flag set,
             was not captured into the replay (see _find_dropped_ef_layer_consumers):
             'error' (default) raises ValueError, 'warn' logs a warning, 'ignore'
             does nothing.
@@ -860,11 +859,12 @@ class Simul():
         for key in target_object_names:
             add_key(key)
 
-        dropped = self._find_dropped_ef_layer_consumers(params, replay_params)
+        dropped = self._find_dropped_tracked_consumers(params, replay_params)
         if dropped and on_missing_downstream_consumers != 'ignore':
             message = (
-                "build_targeted_replay: the following objects produce an ElectricField/Layer "
-                "output and consume a captured object's output, but were not themselves captured "
+                "build_targeted_replay: the following objects produce an output whose "
+                "type requires tracking its consumers (replay_track_consumers) "
+                "and consume a captured object's output, but were not themselves captured "
                 "-- their contribution is silently missing from the replayed graph: "
                 + '; '.join(f"'{k}' (input '{inp}' -> '{out}')"
                             for k, hits in dropped.items() for inp, out in hits)
@@ -974,7 +974,7 @@ class Simul():
     
     def run(self, start_time=0, end_time=None):
         # Forget the display windows of a previous simulation in the same process
-        from specula.display.base_display import BaseDisplay
+        from iteras.display.base_display import BaseDisplay
         BaseDisplay.reset_windows()
 
         params = {}
@@ -1052,7 +1052,7 @@ class Simul():
 
         # Default display web server
         if 'display_server' in self.mainParams and self.mainParams['display_server'] and process_rank in [0, None]:
-            from specula.processing_objects.display_server import DisplayServer
+            from iteras.processing_objects.display_server import DisplayServer
             disp = DisplayServer(params, self.input_ref, self.output_ref, self.get_info)
             disp.name = 'display_server'
             self.objs['display_server'] = disp
@@ -1066,7 +1066,7 @@ class Simul():
         # Run simulation loop
         total_time = self.mainParams['total_time']
         run_time = (end_time if end_time is not None else total_time) - start_time
-        display_process.start(specula.global_precision, self.logger.getEffectiveLevel())
+        display_process.start(iteras.global_precision, self.logger.getEffectiveLevel())
         try:
             self.loop.run(run_time=run_time,
                           dt=self.mainParams['time_step'],

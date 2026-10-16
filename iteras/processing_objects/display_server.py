@@ -8,10 +8,10 @@ import multiprocessing as mp
 import numpy as np
 from contextlib import contextmanager
 
-from specula.base_value import BaseValue
-from specula.base_processing_obj import BaseProcessingObj
+from iteras.base_value import BaseValue
+from iteras.base_processing_obj import BaseProcessingObj
 
-from specula.lib.display_server_api import start_server
+from iteras.lib.display_server_api import start_server
 
 class DisplayServer(BaseProcessingObj):
     """

@@ -15,25 +15,25 @@ logging.addLevelName(MPI_SEND_DBG_LEVEL, 'MPI_SEND_DBG')
 logging_initialized = False
 
 
-def get_specula_logger(name):
+def get_iteras_logger(name):
     '''
-    Replacement of logging.getLogger() that returns a SpeculaLogAdapter instead of a standard logger,
+    Replacement of logging.getLogger() that returns a IterasLogAdapter instead of a standard logger,
     so that we can use our custom log levels and formatting.
     '''
     orig_logger = logging.getLogger(name)
-    return SpeculaLogAdapter(orig_logger)
+    return IterasLogAdapter(orig_logger)
 
 
 def init_logging(log_level=logging.INFO, process_rank=None):
     '''
     Initialize logging with a custom format that includes the process rank if provided,
-    and set up logging with our SpeculaLogFilter enabled.
+    and set up logging with our IterasLogFilter enabled.
     '''
     global logging_initialized
     if logging_initialized:
         return
 
-    formatter = SpeculaLogFormatter(
+    formatter = IterasLogFormatter(
         fmt_with_rank="%(asctime)s [%(levelname)s]: [rank %(process_rank)s] [%(display_name)s]: %(message)s",
         fmt_without_rank="%(asctime)s [%(levelname)s]: [%(display_name)s]: %(message)s",
     )
@@ -48,7 +48,7 @@ def init_logging(log_level=logging.INFO, process_rank=None):
     # Make sure all loggers use our filter
     root = logging.getLogger()
     for handler in root.handlers:
-        handler.addFilter(SpeculaLogFilter(process_rank))
+        handler.addFilter(IterasLogFilter(process_rank))
 
     logging_initialized = True
 
@@ -58,7 +58,7 @@ def reset_logging():
     logging_initialized = False
 
 
-class SpeculaLogFilter(logging.Filter):
+class IterasLogFilter(logging.Filter):
     '''
     Add the process rank to the log record, if defined.
     '''
@@ -72,7 +72,7 @@ class SpeculaLogFilter(logging.Filter):
         return True
 
 
-class SpeculaLogAdapter(logging.LoggerAdapter):
+class IterasLogAdapter(logging.LoggerAdapter):
     '''
     Logger adapter that defines custom log levels for MPI debugging, below the standard DEBUG level (10):
     - MPI_DBG_LEVEL (6): General MPI debugging messages
@@ -98,7 +98,7 @@ class SpeculaLogAdapter(logging.LoggerAdapter):
         self.extra['instance_name'] = instance_name
 
 
-class SpeculaLogFormatter():
+class IterasLogFormatter():
     '''
     Dispatcher class sending logs to one of two different formatters
     depending on whether the process rank is present or not.

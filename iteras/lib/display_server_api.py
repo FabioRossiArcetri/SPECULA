@@ -1,7 +1,8 @@
 import io
 import os
 import socket
-from specula.log import get_specula_logger
+from iteras import registry
+from iteras.log import get_iteras_logger
 import threading
 import time
 import queue
@@ -13,7 +14,7 @@ from flask import Flask, render_template, request
 from flask_socketio import SocketIO, join_room
 import socketio
 import socketio.exceptions
-from specula.display.data_plotter import DataPlotter
+from iteras.display.data_plotter import DataPlotter
 
 if os.name == 'nt':
     async_mode = 'threading'
@@ -34,7 +35,7 @@ else:
 base_dir = os.path.abspath(os.path.dirname(__file__))
 templates_dir = os.path.join(base_dir, "..", "scripts", "templates")
 
-app = Flask('Specula_display_server', template_folder=templates_dir)
+app = Flask('iteras_display_server', template_folder=templates_dir)
 sio = SocketIO(app, cors_allowed_origins="*", async_mode=async_mode)
 
 server = None
@@ -157,7 +158,7 @@ class FlaskServer:
                  host: str = '0.0.0.0',
                  port: int = 5000,
                  ):
-        self.logger = get_specula_logger(__name__)
+        self.logger = get_iteras_logger(__name__)
 
         self.params_dict = params_dict
         self.t0 = {}
@@ -207,7 +208,7 @@ class FlaskServer:
         
         def connect():
             if not self.frontend_connected:
-                frontend_port = os.environ.get('SPECULA_PORT', '8080')
+                frontend_port = registry.getenv('ITERAS_PORT', '8080')
                 try:
                     sio_client.connect(f'http://localhost:{frontend_port}')
                     self.frontend_connected = True
@@ -361,7 +362,7 @@ def start_server(params_dict, status_queue, request_queue, host, port, mode):
 
 @app.route('/')
 def index():
-    return render_template('specula_display.html')
+    return render_template('iteras_display.html')
 
 
 @app.route('/status')
