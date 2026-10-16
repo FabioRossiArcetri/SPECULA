@@ -2,6 +2,7 @@
 import os
 from astropy.io import fits
 
+from iteras import registry
 from iteras.log import get_iteras_logger
 
 
@@ -12,76 +13,14 @@ class CalibManager():
 
         Parameters:
         root_dir (str): Root path of the calibration tree
+
+        Files are stored in a subdirectory of root_dir depending on their
+        data type (or on the class that computes them). Plugins register
+        their subdirectories with iteras.registry.register_calib_subdirs().
         """
         super().__init__()
-        self._subdirs = {
-            'phasescreen': 'phasescreens/',
-            'AtmoRandomPhase': 'phasescreens/',
-            'AtmoEvolution': 'phasescreens/',
-            'AtmoEvolutionUpDown': 'phasescreens/',
-            'AtmoInfiniteEvolution': 'phasescreens/',
-            'AtmoInfiniteEvolutionUpDown': 'phasescreens/',
-            'slopenull': 'slopenulls/',
-            'SnCalibrator': 'slopenulls/',
-            'sn': 'slopenulls/',
-            'background': 'backgrounds/',
-            'pupils': 'pupils/',
-            'pupdata': 'pupils',
-            'PupData': 'pupils',
-            'PyrPupdataCalibrator': 'pupils/',
-            'DynamicPyrPupdataCalibrator': 'pupils/',
-            'DynamicDarkCalibrator': 'dark/',
-            'subapdata': 'subapdata/',
-            'ShSubapCalibrator': 'subapdata/',
-            'iir_filter_data': 'filter/',
-            'IirFilterData': 'filter/',
-            'ssr_filter_data': 'filter/',
-            'SsrFilterData': 'filter/',
-            'rec': 'rec/',
-            'recmat': 'rec/',
-            'Recmat': 'rec/',
-            'intmat': 'im/',
-            'Intmat': 'im/',
-            'ImCalibrator': 'im/',
-            'MultiImCalibrator': 'im/',
-            'projmat': 'rec/',
-            'RecCalibrator': 'rec/',
-            'MultiRecCalibrator': 'rec/',
-            'im': 'im/',
-            'ifunc': 'ifunc/',
-            'IFunc': 'ifunc/',
-            'ifunc_inv': 'ifunc/',
-            'IFuncInv': 'ifunc/',
-            'm2c': 'm2c/',
-            'M2C': 'm2c/',
-            'filter': 'filter/',
-            'kernel': 'kernels/',
-            'sh': 'kernels/',
-            'SH': 'kernels/',
-            'convolution_kernel': 'kernels/',
-            'ConvolutionKernel': 'kernels/',
-            'gaussian_convolution_kernel': 'kernels/',
-            'GaussianConvolutionKernel': 'kernels/',
-            'pupilstop': 'pupilstop/',
-            'Pupilstop': 'pupilstop/',
-            'maskef': 'maskef/',
-            'ElectricField': 'ef/',
-            'Intensity': 'intensity/',
-            'LaserLaunchTelescope': 'data/',
-            'Lenslet': 'lenslet/',
-            'Phasescreen': 'phasescreens/',
-            'Pixels': 'pixels/',
-            'Slopes': 'slopenulls/',
-            'TimeHistory': 'data/',
-            'time_hist': 'data/',
-            'Source': 'data/',
-            'SpatioTempArray': 'arrays/',
-            'SubapData': 'subapdata/',
-            'vibrations': 'vibrations/',
-            'Layer': 'layers/',
-            'data': 'data/',
-            'projection': 'popt/'
-        }
+        # Subdirectories of the data types, extended by plugins (see iteras.registry)
+        self._subdirs = registry.calib_subdirs()
         self.root_dir = root_dir
         self.logger = get_iteras_logger('iteras.calib_manager')
 
