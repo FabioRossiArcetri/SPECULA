@@ -1,9 +1,9 @@
 from collections import namedtuple
 
-from specula import cpuArray, process_comm
-from specula import np, cp
-from specula.lib.utils import flatten
-from specula.log import get_specula_logger
+from iteras import cpuArray, process_comm
+from iteras import np, cp
+from iteras.lib.utils import flatten
+from iteras.log import get_iteras_logger
 
 
 Output = namedtuple('Output', 'obj_name output_key delay ref input_name type')
@@ -83,7 +83,7 @@ class _InputItem():
         *value* must be a reference to the output value being read, or None
         in case of remote inputs.
         """
-        self.logger = get_specula_logger(__name__)
+        self.logger = get_iteras_logger(__name__)
         if remote_rank is not None:
             if value is not None:
                 raise ValueError(f'non-None value used with remote input')

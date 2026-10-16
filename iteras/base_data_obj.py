@@ -3,8 +3,8 @@ import warnings
 from copy import copy
 from functools import cache
 
-from specula import cp, np, array_types
-from specula.base_time_obj import BaseTimeObj
+from iteras import cp, np, array_types
+from iteras.base_time_obj import BaseTimeObj
 
 
 @cache
@@ -17,6 +17,11 @@ def get_properties(cls):
 
 
 class BaseDataObj(BaseTimeObj):
+
+    # True for data types whose producers must not be silently left out of
+    # a targeted replay, see Simul.build_targeted_replay()
+    replay_track_consumers = False
+
     def __init__(self, target_device_idx: int=None, precision: int=None):
         """
         Initialize the base data object.
@@ -31,6 +36,13 @@ class BaseDataObj(BaseTimeObj):
         super().__init__(target_device_idx, precision)
         self.generation_time = -1
         self.tag = ''
+
+    def debug_summary(self):
+        '''
+        Value shown for this object in the MPI debug log of the inputs
+        (see BaseProcessingObj.get_all_inputs()). Override to show its data.
+        '''
+        return self
 
     def transferDataTo(self, destobj, force_reallocation=False):
         '''

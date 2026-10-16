@@ -1,7 +1,7 @@
 
-from specula import np, array_types, cpuArray
+from iteras import np, array_types, cpuArray
 from astropy.io import fits
-from specula.base_data_obj import BaseDataObj
+from iteras.base_data_obj import BaseDataObj
 
 
 class BaseValue(BaseDataObj):

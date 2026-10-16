@@ -1,10 +1,10 @@
 import matplotlib.pyplot as plt
 from numbers import Integral
 
-from specula.scalar_values import IntValue
-from specula.base_processing_obj import BaseProcessingObj
-from specula.base_processing_obj import OutputDesc
-from specula.display import display_process
+from iteras.scalar_values import IntValue
+from iteras.base_processing_obj import BaseProcessingObj
+from iteras.base_processing_obj import OutputDesc
+from iteras.display import display_process
 
 def runningOnNotebook():
     try:

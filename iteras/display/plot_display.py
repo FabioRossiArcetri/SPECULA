@@ -2,9 +2,9 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 
-from specula.display.base_display import BaseDisplay
-from specula.connections import InputValue, InputList
-from specula.base_value import BaseValue
+from iteras.display.base_display import BaseDisplay
+from iteras.connections import InputValue, InputList
+from iteras.base_value import BaseValue
 
 
 class PlotDisplay(BaseDisplay):

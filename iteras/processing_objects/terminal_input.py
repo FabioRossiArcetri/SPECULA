@@ -5,14 +5,14 @@ import logging
 import threading
 import _thread
 
-from specula.processing_objects.specula_input import SpeculaInput
+from iteras import registry
+from iteras.processing_objects.interactive_input import InteractiveInput
 
 output_list_for_help = None
 
-PROMPT = 'specula> '
 
 
-class TerminalInput(SpeculaInput):
+class TerminalInput(InteractiveInput):
     """
     Terminal input processing object. Handles input from a terminal.
 
@@ -146,7 +146,7 @@ class TerminalReader:
             try:
                 while not self._stopping:
                     try:
-                        line = session.prompt(PROMPT, pre_run=self._exit_if_stopping)
+                        line = session.prompt(f'{registry.application_name().lower()}> ', pre_run=self._exit_if_stopping)
                     except KeyboardInterrupt:
                         # The terminal is in raw mode while the prompt is
                         # active, so Ctrl-C does not generate SIGINT:

@@ -2,11 +2,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import imageio.v2 as imageio   # from scikit-image
 
-from specula.connections import InputList
-from specula.scalar_values import IntValue
-from specula.base_processing_obj import InputDesc
-from specula.base_processing_obj import BaseProcessingObj
-from specula.display import display_process
+from iteras.connections import InputList
+from iteras.scalar_values import IntValue
+from iteras.base_processing_obj import InputDesc
+from iteras.base_processing_obj import BaseProcessingObj
+from iteras.display import display_process
 
 class DisplayRecorder(BaseProcessingObj):
 

@@ -1,7 +1,7 @@
 
-from specula import np 
+from iteras import np 
 from astropy.io import fits
-from specula.base_data_obj import BaseDataObj
+from iteras.base_data_obj import BaseDataObj
 
 
 class _BaseScalarValue(BaseDataObj):

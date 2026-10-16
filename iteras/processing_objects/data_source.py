@@ -3,9 +3,9 @@ import os
 import pickle
 from astropy.io import fits
 
-from specula.base_processing_obj import BaseProcessingObj
-from specula.base_value import BaseValue
-from specula.lib.utils import import_class
+from iteras.base_processing_obj import BaseProcessingObj
+from iteras.base_value import BaseValue
+from iteras.lib.utils import import_class
 
 
 class DataSource(BaseProcessingObj):
