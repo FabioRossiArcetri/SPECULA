@@ -16,8 +16,7 @@ The registry holds:
   (see :func:`iteras.lib.utils.import_class`);
 - the top-level package names of the plugins, used as logger roots;
 - the calibration subdirectories of the data types (see :class:`iteras.calib_manager.CalibManager`);
-- alternative names of iteras's environment variables (see :func:`getenv`);
-- the application name shown to the user (prompts, messages), see :func:`set_application_name`.
+- alternative names of iteras's environment variables (see :func:`getenv`).
 
 This module must stay lightweight: it is imported by iteras's ``__init__``.
 '''
@@ -37,8 +36,6 @@ _calib_subdirs = {
 
 # Alternative names of iteras's environment variables, {iteras name: [alias, ...]}
 _env_aliases = {}
-
-_application_name = 'iteras'
 
 _entry_points_loaded = False
 
@@ -103,17 +100,6 @@ def getenv(name, default=None):
         if key in os.environ:
             return os.environ[key]
     return default
-
-
-def set_application_name(name):
-    '''Set the application name shown to the user, for example in prompts and messages'''
-    global _application_name
-    _application_name = name
-
-
-def application_name():
-    '''Application name shown to the user: 'iteras', unless a plugin changed it'''
-    return _application_name
 
 
 def search_packages():

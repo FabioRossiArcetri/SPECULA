@@ -27,7 +27,6 @@ _registry.register_plugin(
     env_aliases={'ITERAS_DISABLE_GPU': 'SPECULA_DISABLE_GPU',
                  'ITERAS_PORT': 'SPECULA_PORT'},
 )
-_registry.set_application_name('SPECULA')
 
 # Values set by init(): they are read from iteras when accessed,
 # so that they are always up to date.

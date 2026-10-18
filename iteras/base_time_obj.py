@@ -156,19 +156,19 @@ def gpu_mem_report(objs, names=None):
     return '\n'.join(lines)
 
 def _check_initialized():
-    app = registry.application_name()
-    module = app.lower()
+    # init() is the same function whether it is called as iteras.init()
+    # or through a plugin package that re-exports it
     if iteras.global_precision is None:
         raise RuntimeError(
-            f'{app} is not initialized: call {module}.init(device_idx, precision) '
-            f'before creating any {app} object')
+            'Not initialized: call init(device_idx, precision), from iteras or from '
+            'the plugin package in use, before creating any simulation object')
     if global_precision is None:
         # init() was called, but after this module was imported, so the
         # names imported above from iteras are stale
         raise RuntimeError(
-            f'{module}.init() was called after importing {app} submodules. '
-            f'Call {module}.init() right after "import {module}", before any other '
-            f'{module}.* import')
+            'init() was called after importing simulation modules. Call init() right '
+            'after importing the top-level package (iteras or the plugin in use), '
+            'before importing any of its submodules')
 
 
 def _logger_root(cls):

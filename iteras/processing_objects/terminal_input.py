@@ -1,14 +1,25 @@
 
+import os
 import sys
 import atexit
 import logging
 import threading
 import _thread
 
-from iteras import registry
 from iteras.processing_objects.interactive_input import InteractiveInput
 
 output_list_for_help = None
+
+
+def default_prompt():
+    '''
+    Prompt shown when no prompt is given: the name of the command running
+    the simulation (e.g. "specula> ", "iteras> "), or "> " if not available.
+    '''
+    name = os.path.splitext(os.path.basename(sys.argv[0]))[0] if sys.argv else ''
+    if not name or name.startswith('-'):    # python -c ...
+        return '> '
+    return f'{name}> '
 
 
 
@@ -36,6 +47,7 @@ class TerminalInput(InteractiveInput):
 
     def __init__(self,
                  output_list: list,
+                 prompt: str=None,
                  target_device_idx: int=None,
                  precision: int =None):
         global output_list_for_help
@@ -43,6 +55,9 @@ class TerminalInput(InteractiveInput):
         """
         output_list: list of strings
             List of output names to be generated
+        prompt : str, optional
+            Prompt shown on the terminal. Default is the name of the command
+            running the simulation followed by "> " (e.g. "specula> ").
         target_device_idx : int, optional
             Target device index for computation (CPU/GPU). Default is None (uses global setting).
         precision : int, optional
@@ -54,7 +69,7 @@ class TerminalInput(InteractiveInput):
                          precision=precision)
 
         output_list_for_help = output_list
-        self.reader = TerminalReader(self.put_input)
+        self.reader = TerminalReader(self.put_input, prompt=prompt)
         self.reader.start()
         atexit.register(self.reader.stop)
 
@@ -73,8 +88,9 @@ class TerminalReader:
     passes (name, value) pairs to the *put* callable, which may raise
     KeyError or ValueError to reject them.
     """
-    def __init__(self, put):
+    def __init__(self, put, prompt=None):
         self.put = put
+        self.prompt = prompt if prompt is not None else default_prompt()
         self.thread = None
         self._app = None
         self._stopping = False
@@ -146,7 +162,7 @@ class TerminalReader:
             try:
                 while not self._stopping:
                     try:
-                        line = session.prompt(f'{registry.application_name().lower()}> ', pre_run=self._exit_if_stopping)
+                        line = session.prompt(self.prompt, pre_run=self._exit_if_stopping)
                     except KeyboardInterrupt:
                         # The terminal is in raw mode while the prompt is
                         # active, so Ctrl-C does not generate SIGINT:

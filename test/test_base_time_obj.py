@@ -226,7 +226,7 @@ class TestBaseValue(unittest.TestCase):
     def test_uninitialized_raises(self):
         r = self._run_python('from specula.base_time_obj import BaseTimeObj; BaseTimeObj()')
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn('SPECULA is not initialized', r.stderr, r.stderr)
+        self.assertIn('Not initialized', r.stderr, r.stderr)
 
     def test_init_after_import_raises(self):
         r = self._run_python('import specula; from specula.base_time_obj import BaseTimeObj; '
@@ -244,7 +244,7 @@ class TestBaseValue(unittest.TestCase):
     def test_uninitialized_raises_inprocess(self):
         # The global state is kept in iteras, specula forwards it
         with patch('iteras.global_precision', None):
-            with self.assertRaisesRegex(RuntimeError, 'SPECULA is not initialized'):
+            with self.assertRaisesRegex(RuntimeError, 'Not initialized'):
                 BaseTimeObj()
 
     def test_init_after_import_raises_inprocess(self):
