@@ -355,6 +355,10 @@ class Simul():
     def build_objects(self, params):
 
         self.setSimulParams(params)
+        if self.mainParams is None:
+            raise ValueError('The parameter file does not contain a section whose class is SimParams '
+                             'or a subclass of it. If the class is defined by a plugin, check that '
+                             'the plugin is installed (or listed in add_modules)')
 
         self.cm = CalibManager(self.mainParams['root_dir'])
         skip_pars = 'class inputs outputs gui_pos'.split()
