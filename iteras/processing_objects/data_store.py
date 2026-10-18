@@ -92,6 +92,10 @@ class DataStore(BaseProcessingObj):
     def output_names(cls):
         return {}
 
+    @classmethod
+    def accepts_input_list(cls):
+        return True
+
     @staticmethod
     def _validate_downsample_factor(value, name):
         value = int(value)
@@ -116,11 +120,15 @@ class DataStore(BaseProcessingObj):
     def init_storage(self):
         self.storage = defaultdict(OrderedDict)
 
-    def setParams(self, params):
+    def set_simulation_params(self, params):
         self.params = params
 
-    def setReplayParams(self, replay_params):
+    def set_replay_params(self, replay_params):
         self.replay_params = replay_params
+
+    # Previous names, kept for compatibility
+    setParams = set_simulation_params
+    setReplayParams = set_replay_params
 
     def save_pickle(self):
         times = {k: np.array(list(v.keys()), dtype=self.dtype)

@@ -9,7 +9,8 @@ from iteras.base_value import BaseValue
 
 class PlotDisplay(BaseDisplay):
 
-    skip_updates = False   # keep every point of the history
+    def can_skip_updates(self):
+        return False    # keep every point of the history
 
     def __init__(self,
                  title='Plot Display',

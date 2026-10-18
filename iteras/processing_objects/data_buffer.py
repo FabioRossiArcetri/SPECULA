@@ -26,6 +26,13 @@ class DataBuffer(BaseProcessingObj):
     def output_names(cls):
         return {}
 
+    @classmethod
+    def accepts_input_list(cls):
+        return True
+
+    def input_list_created(self):
+        self.setOutputs()
+
     def setOutputs(self):
         # Create output objects for each input (like DataStore does)
         for input_name, input_obj in self.inputs.items():

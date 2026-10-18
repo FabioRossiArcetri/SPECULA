@@ -18,16 +18,12 @@ from iteras.loop_control import LoopControl
 from iteras.lib.utils import import_class, get_type_hints, resolve_type
 from iteras.calib_manager import CalibManager
 from iteras.processing_objects.data_store import DataStore
+from iteras.processing_objects.data_source import DataSource
 from iteras.connections import InputList, InputValue, split_output
 from iteras.simul_diagram import SimulDiagram
 from iteras.display import display_process
 
 import yaml
-
-
-def short_class_name(classname):
-    '''Class name without the qualification, if any (e.g. "specula.DM" -> "DM")'''
-    return str(classname).rpartition('.')[2]
 
 
 class Simul():
@@ -266,22 +262,37 @@ class Simul():
                                       f"character '{ch}' is reserved ({purpose}) and cannot "
                                       "be used in object names")
 
+    def param_class(self, params, key):
+        '''
+        Class of the section *key* of *params*, or None if it cannot be
+        determined (no "class" entry, class not found, ambiguous name...):
+        errors are reported when the object is built.
+        Classes are looked up in the registered packages and in the
+        additional modules listed in any section of *params*.
+        '''
+        pars = params.get(key)
+        if not isinstance(pars, dict) or 'class' not in pars:
+            return None
+        additional_modules = [m for p in params.values() if isinstance(p, dict)
+                              for m in p.get('add_modules', [])]
+        try:
+            klass = import_class(pars['class'], additional_modules)
+        except Exception:
+            return None
+        return klass if isinstance(klass, type) else None
+
+    def param_is(self, params, key, base_class):
+        '''True if the class of the section *key* of *params* is *base_class* or a subclass of it'''
+        klass = self.param_class(params, key)
+        return klass is not None and issubclass(klass, base_class)
+
     def is_main_params(self, params, key):
         '''
         True if the section *key* of *params* holds the main simulation
         parameters, that is, if its class is SimParams or a subclass of it
         (like SPECULA's SimulParams).
-        Classes are looked up in the registered packages and in the
-        additional modules listed in any section of *params*.
         '''
-        additional_modules = [m for pars in params.values() if isinstance(pars, dict)
-                              for m in pars.get('add_modules', [])]
-        try:
-            klass = import_class(params[key]['class'], additional_modules)
-            return isinstance(klass, type) and issubclass(klass, SimParams)
-        except Exception:
-            # Errors will be reported when the object is built
-            return False
+        return self.param_is(params, key, SimParams)
 
     def setSimulParams(self, params):
         for key in params:
@@ -317,15 +328,16 @@ class Simul():
 
     def create_input_list_inputs(self, params):
         '''
-        Create inputs for objects that use input_list parameter.
-        Currently supported: DataStore, DataBuffer
+        Create inputs for objects that use the input_list parameter, that is
+        objects whose class returns True from accepts_input_list()
+        (e.g. DataStore, DataBuffer), then call their input_list_created().
         '''
-        supported_classes = ['DataBuffer','DataStore']
-
         for key, pars in params.items():
-            if ('class' in pars and
-                short_class_name(pars['class']) in supported_classes and
-                'inputs' in pars and 
+            klass = self.param_class(params, key)
+            if klass is None or not issubclass(klass, BaseProcessingObj) or not klass.accepts_input_list():
+                continue
+
+            if ('inputs' in pars and
                 'input_list' in pars['inputs']):
 
                 for single_output_name in pars['inputs']['input_list']:
@@ -338,8 +350,8 @@ class Simul():
                     params[key]['inputs'][output.input_name] = single_output_name
                 del params[key]['inputs']['input_list']
 
-            if short_class_name(pars['class']) == 'DataBuffer':
-                self.objs[key].setOutputs()
+            if key in self.objs:
+                self.objs[key].input_list_created()
 
     def restore_object(self, klass, tag, target_device_idx, name=None):
         '''
@@ -557,9 +569,8 @@ class Simul():
             except Exception:
                 self.logger.error(f'Exception building {key}')
                 raise
-            # TODO this could be more general like the getters above
-            if type(self.objs[key]) is DataStore:
-                self.objs[key].setParams(params)
+            if isinstance(self.objs[key], BaseProcessingObj):
+                self.objs[key].set_simulation_params(params)
 
     def connect(self, output_name, input_name, dest_object, tag):
         '''
@@ -699,8 +710,7 @@ class Simul():
                 found |= frontier
             return found
 
-        replayed = {name for name, pars in params.items()
-                    if short_class_name(pars.get('class')) == 'DataSource'}
+        replayed = {name for name in params if self.param_is(params, name, DataSource)}
         changed = True
         while changed:
             new = {name for name, srcs in producers.items()
@@ -753,12 +763,10 @@ class Simul():
         data_source_objname =''
         data_source_outputs = {}
         for key, pars in params.items():
-            try:
-                classname = pars['class']
-            except KeyError:
+            if 'class' not in pars:
                 raise KeyError(f'Object {key} does not define the "class" parameter')
 
-            if short_class_name(classname) == 'DataStore':
+            if self.param_is(params, key, DataStore):
                 data_source_pars, obj_to_remove, data_source_outputs = self.data_store_to_data_source(pars)
                 replay_params['data_source'] = data_source_pars
                 data_source_objname = key
@@ -795,8 +803,8 @@ class Simul():
 
     def _produces_tracked_output(self, class_name):
         '''
-        True if the given class declares an output whose type has the
-        replay_track_consumers flag set (see BaseDataObj).
+        True if the given class declares an output whose type returns True
+        from track_consumers_in_replay() (see BaseDataObj).
         Used to detect objects whose silent omission from a replay would drop
         a contribution to the data flowing downstream (e.g. an object adding a
         perturbation to a field, downstream of a captured propagation object).
@@ -805,13 +813,15 @@ class Simul():
             outputs = import_class(class_name).output_names()
         except Exception:
             return False
-        return any(getattr(desc.type, 'replay_track_consumers', False) for desc in outputs.values())
+        return any(isinstance(desc.type, type) and issubclass(desc.type, BaseDataObj)
+                   and desc.type.track_consumers_in_replay()
+                   for desc in outputs.values())
 
     def _find_dropped_tracked_consumers(self, params, replay_params):
         '''
         Objects present in the original params but not captured into replay_params,
         that (a) consume an output of an object that IS captured, and (b) themselves
-        declare an output whose type has the replay_track_consumers flag set -- i.e.
+        declare an output whose type returns True from track_consumers_in_replay() -- i.e.
         objects whose omission silently drops a contribution from the replayed graph
         (e.g. a phase screen summed onto a propagated electric field, downstream of
         the propagation object, is invisible to a replay targeted at that object).
@@ -839,7 +849,7 @@ class Simul():
         on_missing_downstream_consumers : str
             What to do when an object present in params, that consumes a captured
             object's output and itself declares an output whose type has the
-            replay_track_consumers flag set,
+            track_consumers_in_replay() method returning True,
             was not captured into the replay (see _find_dropped_ef_layer_consumers):
             'error' (default) raises ValueError, 'warn' logs a warning, 'ignore'
             does nothing.
@@ -859,7 +869,7 @@ class Simul():
 
         # Copy DataStore params and convert it to DataSource
         for key, pars in params.items():
-            if short_class_name(pars['class']) == 'DataStore':
+            if self.param_is(params, key, DataStore):
                 data_source_pars, _, datastore_mapping = self.data_store_to_data_source(pars, set_store_dir=set_store_dir)
                 replay_params['data_source'] = data_source_pars
 
@@ -900,7 +910,7 @@ class Simul():
         if dropped and on_missing_downstream_consumers != 'ignore':
             message = (
                 "build_targeted_replay: the following objects produce an output whose "
-                "type requires tracking its consumers (replay_track_consumers) "
+                "type requires tracking its consumers (track_consumers_in_replay()) "
                 "and consume a captured object's output, but were not themselves captured "
                 "-- their contribution is silently missing from the replayed graph: "
                 + '; '.join(f"'{k}' (input '{inp}' -> '{out}')"
@@ -1072,8 +1082,8 @@ class Simul():
             if recorded_seeds:
                 replay_params.setdefault('data_source', {})['random_seeds'] = recorded_seeds
             for obj in self.objs.values():
-                if type(obj) is DataStore:
-                    obj.setReplayParams(replay_params)
+                if isinstance(obj, BaseProcessingObj):
+                    obj.set_replay_params(replay_params)
 
         # Initialize housekeeping objects
         self.loop = LoopControl(stepping=self.stepping)

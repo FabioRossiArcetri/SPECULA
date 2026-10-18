@@ -217,7 +217,7 @@ For a new plugin, the steps are:
    per module, ``FooBar`` in ``foo_bar.py``), possibly grouped in subpackages
    like ``processing_objects`` and ``data_objects``;
 2. derive the classes from the iteras base classes, or from the classes of the
-   plugin they extend. Use the ``xp``, ``dtype`` and ``target_device_idx``
+   plugin they extend, following the :doc:`extension_api`. Use the ``xp``, ``dtype`` and ``target_device_idx``
    attributes of the objects rather than importing ``cp`` or ``xp`` from iteras
    (or from SPECULA) at module level: the iteras modules read these settings
    when objects are created, so ``init()`` may be called after importing them,

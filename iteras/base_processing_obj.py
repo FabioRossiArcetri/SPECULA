@@ -380,6 +380,41 @@ class BaseProcessingObj(BaseTimeObj):
         '''
         pass
 
+    @classmethod
+    def accepts_input_list(cls):
+        '''
+        Override to return True if this class accepts the "input_list" entry in
+        the inputs section of the parameter file (a list of "alias-obj.output"
+        strings), for objects whose inputs are not known in advance, like
+        DataStore and DataBuffer. Simul then creates one input per list item,
+        named after its alias, and calls input_list_created().
+        '''
+        return False
+
+    def input_list_created(self):
+        '''
+        Called by Simul after creating the inputs listed in "input_list",
+        for classes whose accepts_input_list() returns True. Override to
+        create the outputs that depend on them, for example.
+        '''
+        pass
+
+    def set_simulation_params(self, params):
+        '''
+        Called by Simul after building this object, with the dictionary of
+        the parameters of the whole simulation. Override to use it, for
+        example to save it together with the results (as DataStore does).
+        '''
+        pass
+
+    def set_replay_params(self, replay_params):
+        '''
+        Called by Simul before the simulation starts, with the parameters of
+        a simulation that would replay this one from the stored data (see
+        Simul.build_replay()). Override to use it (as DataStore does).
+        '''
+        pass
+
     def get_resolved_seed(self):
         '''
         Override for objects that resolve a random seed at construction time,

@@ -8,9 +8,9 @@ to a single display process, which holds a copy of each display, built with
 the same constructor arguments, and runs the usual display code.
 
 The simulation never waits for the displays. While QUEUE_LEN_PER_DISPLAY updates
-per display are pending, displays with *skip_updates* (like image displays) drop
-new data, before copying it, so that memory stays bounded. Displays that accumulate
-a history (like PlotDisplay) set *skip_updates* to False: their data, usually small,
+per display are pending, displays whose can_skip_updates() returns True (like image
+displays) drop new data, before copying it, so that memory stays bounded. Displays
+that accumulate a history (like PlotDisplay) return False: their data, usually small,
 is always sent.
 
 Only this module's top-level imports run in the display process
@@ -86,13 +86,14 @@ def send(display):
     if not _process.is_alive():
         stop(display.logger)
         return
-    if display.skip_updates and not _slots.acquire(block=False):
+    skip_updates = display.can_skip_updates()
+    if skip_updates and not _slots.acquire(block=False):
         _dropped += 1
         return
     inputs = {k: _to_cpu(v) for k, v in display.local_inputs.items()}
     # Pickle here: the queue would pickle later in a background thread,
     # when a CPU simulation may have already modified the arrays
-    _queue.put((display.skip_updates, _dumps((display.name, display.current_time, inputs))))
+    _queue.put((skip_updates, _dumps((display.name, display.current_time, inputs))))
 
 
 def stop(logger, timeout=30):
