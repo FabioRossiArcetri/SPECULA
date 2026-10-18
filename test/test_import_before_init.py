@@ -39,7 +39,8 @@ class TestImportBeforeInit(unittest.TestCase):
         offending = []
         for root in ROOTS:
             for path in sorted(root.rglob('*.py')):
-                tree = ast.parse(path.read_text(), filename=str(path))
+                # Bytes: decoded as Python does (UTF-8 by default), whatever the platform encoding
+                tree = ast.parse(path.read_bytes(), filename=str(path))
                 for node in ast.walk(tree):
                     if isinstance(node, ast.ImportFrom) and node.level == 0 \
                             and node.module in ('iteras', 'specula'):
