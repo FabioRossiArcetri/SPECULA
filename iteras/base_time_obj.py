@@ -172,9 +172,11 @@ def _check_initialized():
 
 
 def _logger_root(cls):
-    '''Logger root of a class: the top-level package of iteras or of a plugin, iteras otherwise'''
-    root = cls.__module__.partition('.')[0]
-    return root if root in registry.plugin_roots() else 'iteras'
+    '''
+    Logger root of a class: the top-level package of the module defining it
+    (e.g. "iteras", "specula", or the package of a class found through add_modules)
+    '''
+    return cls.__module__.partition('.')[0]
 
 
 class BaseTimeObj:

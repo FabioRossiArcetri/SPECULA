@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import inspect
+import importlib.util
 import itertools
 from copy import deepcopy
 from pathlib import Path
@@ -22,6 +23,11 @@ from iteras.simul_diagram import SimulDiagram
 from iteras.display import display_process
 
 import yaml
+
+
+def short_class_name(classname):
+    '''Class name without the qualification, if any (e.g. "specula.DM" -> "DM")'''
+    return str(classname).rpartition('.')[2]
 
 
 class Simul():
@@ -317,8 +323,8 @@ class Simul():
         supported_classes = ['DataBuffer','DataStore']
 
         for key, pars in params.items():
-            if ('class' in pars and 
-                pars['class'] in supported_classes and
+            if ('class' in pars and
+                short_class_name(pars['class']) in supported_classes and
                 'inputs' in pars and 
                 'input_list' in pars['inputs']):
 
@@ -332,7 +338,7 @@ class Simul():
                     params[key]['inputs'][output.input_name] = single_output_name
                 del params[key]['inputs']['input_list']
 
-            if pars['class'] == 'DataBuffer':
+            if short_class_name(pars['class']) == 'DataBuffer':
                 self.objs[key].setOutputs()
 
     def restore_object(self, klass, tag, target_device_idx, name=None):
@@ -365,6 +371,15 @@ class Simul():
             additional_modules = self.mainParams['add_modules']
         else:
             additional_modules = []
+        # All packages are searched for each class, and missing ones are skipped:
+        # check them here, so that a misspelled name is not silently ignored
+        for module_name in additional_modules:
+            try:
+                found = importlib.util.find_spec(module_name) is not None
+            except ModuleNotFoundError:     # a parent package is missing
+                found = False
+            if not found:
+                raise ValueError(f'Package {module_name} listed in add_modules cannot be found')
 
         self.logger.mpi_debug(f'building objects')
 
@@ -520,7 +535,7 @@ class Simul():
             my_params = {}
 
             if 'data_dir' in args and 'data_dir' not in my_params:  # TODO special case
-                my_params['data_dir'] = self.cm.root_subdir(classname)
+                my_params['data_dir'] = self.cm.root_subdir(klass.__name__)
 
             if 'params_dict' in args:
                 my_params['params_dict'] = params
@@ -684,7 +699,8 @@ class Simul():
                 found |= frontier
             return found
 
-        replayed = {name for name, pars in params.items() if pars.get('class') == 'DataSource'}
+        replayed = {name for name, pars in params.items()
+                    if short_class_name(pars.get('class')) == 'DataSource'}
         changed = True
         while changed:
             new = {name for name, srcs in producers.items()
@@ -742,7 +758,7 @@ class Simul():
             except KeyError:
                 raise KeyError(f'Object {key} does not define the "class" parameter')
 
-            if classname=='DataStore':
+            if short_class_name(classname) == 'DataStore':
                 data_source_pars, obj_to_remove, data_source_outputs = self.data_store_to_data_source(pars)
                 replay_params['data_source'] = data_source_pars
                 data_source_objname = key
@@ -843,7 +859,7 @@ class Simul():
 
         # Copy DataStore params and convert it to DataSource
         for key, pars in params.items():
-            if pars['class'] == 'DataStore':
+            if short_class_name(pars['class']) == 'DataStore':
                 data_source_pars, _, datastore_mapping = self.data_store_to_data_source(pars, set_store_dir=set_store_dir)
                 replay_params['data_source'] = data_source_pars
 

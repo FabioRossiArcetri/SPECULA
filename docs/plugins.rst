@@ -51,9 +51,7 @@ process.
        by ``DataSource``) and the main parameters class
    * - Plugin roots
      - ``register_plugin(root, ...)``
-     - logger names: an object of a class defined in a registered top-level
-       package logs as ``<root>.<ClassName>`` (e.g. ``specula.DM``). Also the
-       GPU memory accounting, which follows objects of these packages
+     - the GPU memory accounting, which follows the objects of these packages
    * - Calibration subdirectories
      - ``register_plugin(calib_subdirs=...)``
      - ``CalibManager`` (e.g. ``IFunc`` objects are stored in ``ifunc/``),
@@ -94,8 +92,9 @@ registered before a parameter file is read. This is the case of the ``specula``
 command, and of any script that calls ``specula.init()``.
 
 A plugin can also declare an ``iteras.plugins`` entry point in its package
-metadata. The ``iteras`` command imports all the plugins declared in this way
-before building the simulation, so that it can run their parameter files
+metadata. The plugins declared in this way are imported by the ``iteras``
+command before building the simulation, and by any program the first time a
+class is not found (see below), so that their parameter files can be run
 without importing them explicitly. SPECULA declares it in ``pyproject.toml``:
 
 .. code-block:: toml
@@ -110,15 +109,41 @@ installation).
 How classes are found
 ---------------------
 
-When ``Simul`` builds a simulation, ``import_class()`` converts each class name
-to a module name (``FooBar`` to ``foo_bar``) and tries to import that module
-from the following packages, in order. The first module found must define the
-class.
+When ``Simul`` builds a simulation, ``iteras.lib.utils.import_class()`` converts
+each class name to a module name (``FooBar`` to ``foo_bar``) and looks for that
+module in all the following packages:
 
 1. the iteras packages: ``iteras.processing_objects``, ``iteras.data_objects``,
    ``iteras.display``;
-2. the packages of the registered plugins, in registration order;
+2. the packages of the registered plugins;
 3. the packages listed in the ``add_modules`` parameter of the main parameters.
+
+If the module is found in a single package, or always leads to the same class
+(as for the SPECULA modules that are aliases of iteras modules), that class is
+used. If different classes with the same name are found in more than one
+package, an ``AmbiguousClassError`` is raised, listing them: no class silently
+hides another one, whatever the order in which the plugins are imported.
+
+The class name can be qualified, to choose one of several classes with the same
+name, or simply to be explicit:
+
+- ``<prefix>.FooBar``, where ``<prefix>`` is a plugin or one of the searched
+  packages: the class is looked for only in the packages equal to ``<prefix>``
+  or contained in it. For example ``class: specula.IirFilter`` searches only
+  the SPECULA packages;
+- otherwise, the full path of the module defining the class, for example
+  ``class: mypackage.mymodule.FooBar``.
+
+.. code-block:: yaml
+
+    rec:
+      class: 'specula.Modalrec'
+      ...
+
+If a class is not found, the plugins declared with an ``iteras.plugins`` entry
+point are imported (once per process, and only if needed), and the search is
+repeated. Installed plugins are therefore found by any program, also when they
+were not imported explicitly.
 
 The main parameters are the section whose class is ``SimParams`` (defined by
 iteras), or a subclass of it, like SPECULA's ``SimulParams``. ``Simul`` finds it
@@ -144,16 +169,24 @@ building that simulation:
 scope:
 
 - ``add_modules`` only extends the class search of the simulation that lists
-  it. It does not register anything: the classes found in this way log as
-  ``iteras.<ClassName>``, and they cannot add calibration subdirectories or
-  environment variable aliases. It suits objects that are local to a project,
-  or experimental.
+  it. It does not register anything, so it cannot add calibration
+  subdirectories or environment variable aliases. It suits objects that are
+  local to a project, or experimental.
 - Registration is permanent for the process and applies to every simulation:
   it suits a package installed and used across many simulations, and it is the
-  only way to add calibration subdirectories, environment variable aliases and
-  a logger root.
+  only way to add calibration subdirectories and environment variable aliases.
 
-Listing a registered package in ``add_modules`` too is harmless.
+Listing a registered package in ``add_modules`` too is harmless. A package
+listed in ``add_modules`` that cannot be found is an error.
+
+Logger names
+------------
+
+Each object logs under the top-level package of the module defining its class,
+followed by the class name: ``iteras.DataStore``, ``specula.DM``, or
+``speculab.PlicoDM`` for a class found in the ``speculab`` package, whether
+it is a registered plugin or listed in ``add_modules``. The framework modules
+log under ``iteras`` (e.g. ``iteras.simul``).
 
 Writing a plugin
 ----------------
@@ -179,9 +212,9 @@ In ``setup.py`` (or ``pyproject.toml``):
 
     entry_points={'iteras.plugins': ['speculab = speculab']},
 
-After this, ``add_modules: ['speculab']`` is no longer needed in programs that
-import ``speculab`` or with the ``iteras`` command, and the SpecuLab objects log
-as ``speculab.<ClassName>``.
+After this, ``add_modules: ['speculab']`` is no longer needed once SpecuLab is
+installed: its classes are found through the entry point, whatever program
+runs the simulation.
 
 For a new plugin, the steps are:
 
@@ -211,17 +244,8 @@ importing from ``specula`` and do not need any change.
 Planned changes
 ---------------
 
-The following changes are planned before iteras 1.0, and will be described
+The following change is planned before iteras 1.0, and will be described
 here when implemented:
 
-- an error when a class name matches different classes in more than one
-  package, instead of silently using the first one, and qualified class names
-  in the parameter files (e.g. ``class: specula.IirFilter``) to choose one
-  explicitly;
-- automatic loading of the installed plugins (entry points) when a class is not
-  found, so that they are found by any program, not only by the ``iteras``
-  command;
-- classes found through ``add_modules`` logging under the application name
-  (e.g. ``specula.<ClassName>``) instead of ``iteras.<ClassName>``;
 - removal of the global application name, which depends on which plugin is
   imported last.
