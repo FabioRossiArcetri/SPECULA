@@ -231,7 +231,11 @@ class TestPromptToolkit(unittest.TestCase):
     def test_prompt_is_shown(self):
         from prompt_toolkit import PromptSession
         reader = TerminalReader(lambda name, value: None, prompt='lab> ')
-        with patch.object(PromptSession, 'prompt', side_effect=EOFError) as mock_prompt:
+        # Pipe input and dummy output, as in _run_prompt(): no real console
+        # is needed (there is none on Windows CI runners)
+        with create_pipe_input() as pipe_input, \
+             create_app_session(input=pipe_input, output=DummyOutput()), \
+             patch.object(PromptSession, 'prompt', side_effect=EOFError) as mock_prompt:
             reader._run_prompt_toolkit()
         self.assertEqual(mock_prompt.call_args.args, ('lab> ',))
 
