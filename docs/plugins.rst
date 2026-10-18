@@ -60,10 +60,6 @@ process.
      - ``register_plugin(env_aliases=...)``
      - ``iteras.registry.getenv()``: for example ``SPECULA_DISABLE_GPU`` is an
        alias of ``ITERAS_DISABLE_GPU``, and ``SPECULA_PORT`` of ``ITERAS_PORT``
-   * - Application name
-     - ``set_application_name()``
-     - messages, the prompt of ``TerminalInput`` and the header of the trace
-       files (``SPECULA`` when SPECULA is imported, ``iteras`` otherwise)
 
 How a plugin is registered
 --------------------------
@@ -85,7 +81,6 @@ A plugin registers itself when its top-level package is imported, calling
         env_aliases={'ITERAS_DISABLE_GPU': 'SPECULA_DISABLE_GPU',
                      'ITERAS_PORT': 'SPECULA_PORT'},
     )
-    registry.set_application_name('SPECULA')
 
 Any program that imports the plugin, or any of its modules, therefore has it
 registered before a parameter file is read. This is the case of the ``specula``
@@ -240,12 +235,3 @@ objects referring to the old paths keep working. The values set by
 ``specula.init()`` (``cp``, ``xp``, ``global_precision``, ...) are read from
 iteras when accessed through ``specula``. Plugins written for SPECULA can keep
 importing from ``specula`` and do not need any change.
-
-Planned changes
----------------
-
-The following change is planned before iteras 1.0, and will be described
-here when implemented:
-
-- removal of the global application name, which depends on which plugin is
-  imported last.

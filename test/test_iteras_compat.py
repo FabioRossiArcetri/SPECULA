@@ -118,7 +118,6 @@ class TestSpeculaPlugin(unittest.TestCase):
     def test_registered(self):
         self.assertIn('specula', registry.plugin_roots())
         self.assertIn('specula.processing_objects', registry.search_packages())
-        self.assertEqual(registry.application_name(), 'SPECULA')
 
     def test_import_class_finds_iteras_and_specula_classes(self):
         self.assertEqual(import_class('DataStore').__module__, 'iteras.processing_objects.data_store')
@@ -168,8 +167,7 @@ class TestRegistry(unittest.TestCase):
         patches = [patch.object(registry, name, list(getattr(registry, name)))
                    for name in ('_packages', '_plugin_roots')]
         patches += [patch.object(registry, '_calib_subdirs', dict(registry._calib_subdirs)),
-                    patch.object(registry, '_env_aliases', dict(registry._env_aliases)),
-                    patch.object(registry, '_application_name', registry._application_name)]
+                    patch.object(registry, '_env_aliases', dict(registry._env_aliases))]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
@@ -186,10 +184,6 @@ class TestRegistry(unittest.TestCase):
             os.environ.pop('ITERAS_PORT', None)
             os.environ.pop('SPECULA_PORT', None)
             self.assertEqual(registry.getenv('ITERAS_PORT'), '1234')
-
-    def test_application_name(self):
-        registry.set_application_name('MyApp')
-        self.assertEqual(registry.application_name(), 'MyApp')
 
     def test_load_entry_point_plugins(self):
         ep = MagicMock()

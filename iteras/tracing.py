@@ -38,7 +38,6 @@ import functools
 import contextlib
 
 from iteras import cp
-from iteras import registry
 
 # NVTX color ids, one per phase, so that phases are
 # easy to tell apart in the Nsight Systems timeline.
@@ -141,7 +140,7 @@ class Tracer:
         self._skip = max(int(skip), 0)
         self._gpu_events = gpu_events and cp is not None
         self._reset()
-        self._file.write(f'# {registry.application_name()} trace, device sync: {self._sync}, '
+        self._file.write(f'# Simulation trace, device sync: {self._sync}, '
                          f'GPU events: {self._gpu_events}, '
                          f'skipped iterations: {self._skip}. '
                          'Durations are inclusive of nested phases.\n')
