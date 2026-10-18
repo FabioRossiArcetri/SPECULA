@@ -4,9 +4,9 @@ import fnmatch
 import re
 import weakref
 
-from iteras import cpuArray, default_target_device, cp
+import iteras
+from iteras import cpuArray
 from iteras.tracing import tracer
-from iteras import process_comm
 from iteras.base_time_obj import BaseTimeObj
 from iteras.connections import InputList, InputValue
 from iteras.log import MPI_DBG_LEVEL
@@ -169,7 +169,7 @@ class BaseProcessingObj(BaseTimeObj):
             self.logger.mpi_send_debug(f'SEND with Pickle: {dest_tag=}')
             xp_orig = item.xp
             item.xp = 0            
-            process_comm.ibsend(item, dest=dest_rank, tag=dest_tag)
+            iteras.process_comm.ibsend(item, dest=dest_rank, tag=dest_tag)
             item.xp = xp_orig
         else:
             buffer = item.get_value()
@@ -177,9 +177,9 @@ class BaseProcessingObj(BaseTimeObj):
             self.logger.mpi_send_debug(f'SEND with Buffe {dest_tag=}, {type(buffer)=}, {buffer=}')
             self.logger.mpi_send_debug(f'SEND with Buffer type {dest_tag=} {buffer.dtype=}')
 
-            process_comm.Ibsend(cpuArray(buffer), dest=dest_rank, tag=dest_tag)
+            iteras.process_comm.Ibsend(cpuArray(buffer), dest=dest_rank, tag=dest_tag)
 
-            process_comm.ibsend(item.generation_time, dest=dest_rank, tag=dest_tag+1)
+            iteras.process_comm.ibsend(item.generation_time, dest=dest_rank, tag=dest_tag+1)
         if item.get_value() is not None:
             self.sent_valid[dest_tag] = True
 
@@ -219,7 +219,7 @@ class BaseProcessingObj(BaseTimeObj):
     @classmethod
     def device_stream(cls, target_device_idx):
         if not target_device_idx in cls._streams:
-            cls._streams[target_device_idx] = cp.cuda.Stream(non_blocking=False)
+            cls._streams[target_device_idx] = iteras.cp.cuda.Stream(non_blocking=False)
         return cls._streams[target_device_idx]
 
     def build_stream(self, allow_parallel=True, capture=True):
@@ -231,14 +231,14 @@ class BaseProcessingObj(BaseTimeObj):
         if self.target_device_idx >= 0:
             self._target_device.use()
             if allow_parallel:
-                self.stream = cp.cuda.Stream(non_blocking=False)
+                self.stream = iteras.cp.cuda.Stream(non_blocking=False)
             else:
                 self.stream = self.device_stream(self.target_device_idx)
             if capture:
                 self.capture_stream()
             else:
                 self._cuda_graph_invalid = True
-            default_target_device.use()
+            iteras.default_target_device.use()
 
     def capture_stream(self):
         # The temporary arrays allocated by trigger_code() are released when it
@@ -246,9 +246,9 @@ class BaseProcessingObj(BaseTimeObj):
         # Taken from the default memory pool, that memory could be given to other
         # arrays (overwritten by the graph) or freed (illegal address at launch).
         # It is taken instead from a pool used only for this graph.
-        if cp is not None:  # pragma: gpu
+        if iteras.cp is not None:  # pragma: gpu
             if self._graph_mempool is None:
-                self._graph_mempool = cp.cuda.MemoryPool()
+                self._graph_mempool = iteras.cp.cuda.MemoryPool()
                 # A deleted MemoryPool does not release its memory to the device,
                 # free it explicitly when this object is garbage collected
                 weakref.finalize(self, self._graph_mempool.free_all_blocks)
@@ -256,7 +256,7 @@ class BaseProcessingObj(BaseTimeObj):
                 # Recapture: the old graph is not launched anymore
                 self.cuda_graph = None
                 self._graph_mempool.free_all_blocks()
-            allocator = cp.cuda.using_allocator(self._graph_mempool.malloc)
+            allocator = iteras.cp.cuda.using_allocator(self._graph_mempool.malloc)
         else:
             allocator = contextlib.nullcontext()
 
@@ -285,7 +285,7 @@ class BaseProcessingObj(BaseTimeObj):
                 if obj is None:
                     continue
                 for attr, array in getattr(obj, '__dict__', {}).items():
-                    if isinstance(array, cp.ndarray):
+                    if isinstance(array, iteras.cp.ndarray):
                         ptrs[(name, i, attr)] = array.data.ptr
         return ptrs
 

@@ -4,10 +4,9 @@ from functools import wraps
 from inspect import signature
 
 import iteras
-from iteras import np, cp, to_xp
-from iteras import global_precision, default_target_device, default_target_device_idx
-from iteras import cpu_float_dtype_list, gpu_float_dtype_list
-from iteras import cpu_complex_dtype_list, gpu_complex_dtype_list
+from iteras import np, to_xp
+from iteras import cpu_float_dtype_list
+from iteras import cpu_complex_dtype_list
 from iteras import registry
 from iteras.log import get_iteras_logger, INIT_PLACEHOLDER_NAME
 
@@ -26,8 +25,8 @@ MB = 1024 * 1024
 
 def _pool_used_bytes(device_idx):
     '''Bytes used in the cupy memory pool of a device, whatever the current device.'''
-    with cp.cuda.Device(device_idx):
-        return cp.get_default_memory_pool().used_bytes()
+    with iteras.cp.cuda.Device(device_idx):
+        return iteras.cp.get_default_memory_pool().used_bytes()
 
 
 def mem_registry_mark():
@@ -98,8 +97,8 @@ MB = 1024 * 1024
 
 def _pool_used_bytes(device_idx):
     '''Bytes used in the cupy memory pool of a device, whatever the current device.'''
-    with cp.cuda.Device(device_idx):
-        return cp.get_default_memory_pool().used_bytes()
+    with iteras.cp.cuda.Device(device_idx):
+        return iteras.cp.get_default_memory_pool().used_bytes()
 
 
 def mem_registry_mark():
@@ -157,18 +156,13 @@ def gpu_mem_report(objs, names=None):
 
 def _check_initialized():
     # init() is the same function whether it is called as iteras.init()
-    # or through a plugin package that re-exports it
+    # or through a plugin package that re-exports it. The settings are read
+    # from iteras when objects are created, so init() can be called after
+    # importing the framework modules.
     if iteras.global_precision is None:
         raise RuntimeError(
             'Not initialized: call init(device_idx, precision), from iteras or from '
             'the plugin package in use, before creating any simulation object')
-    if global_precision is None:
-        # init() was called, but after this module was imported, so the
-        # names imported above from iteras are stale
-        raise RuntimeError(
-            'init() was called after importing simulation modules. Call init() right '
-            'after importing the top-level package (iteras or the plugin in use), '
-            'before importing any of its submodules')
 
 
 def _logger_root(cls):
@@ -201,28 +195,28 @@ class BaseTimeObj:
         self._time_resolution = int(1e9)
 
         if precision is None:
-            self.precision = global_precision
+            self.precision = iteras.global_precision
         else:
             self.precision = precision
 
         if target_device_idx is None:
-            self.target_device_idx = default_target_device_idx
+            self.target_device_idx = iteras.default_target_device_idx
         else:
             self.target_device_idx = target_device_idx
 
-        if self.target_device_idx >= 0 and cp is None:
+        if self.target_device_idx >= 0 and iteras.cp is None:
             raise RuntimeError(
                 f'target_device_idx={self.target_device_idx} requested, but cupy is not available '
                 '(not installed, failed to import, or disabled by ITERAS_DISABLE_GPU or an alias)')
 
         if self.target_device_idx >= 0:
-            self._target_device = cp.cuda.Device(self.target_device_idx)      # GPU case
-            self.dtype = gpu_float_dtype_list[self.precision]
-            self.complex_dtype = gpu_complex_dtype_list[self.precision]
-            self.xp = cp
+            self._target_device = iteras.cp.cuda.Device(self.target_device_idx)      # GPU case
+            self.dtype = iteras.gpu_float_dtype_list[self.precision]
+            self.complex_dtype = iteras.gpu_complex_dtype_list[self.precision]
+            self.xp = iteras.cp
             self.xp_str = 'cp'
         else:
-            self._target_device = default_target_device                # CPU case
+            self._target_device = iteras.default_target_device                # CPU case
             self.dtype = cpu_float_dtype_list[self.precision]
             self.complex_dtype = cpu_complex_dtype_list[self.precision]
             self.xp = np
@@ -314,14 +308,14 @@ class BaseTimeObj:
         _mem_count_stack.append(self)
 
         device_idx = getattr(self, 'target_device_idx', None)
-        if cp is None or (device_idx is not None and device_idx < 0):
+        if iteras.cp is None or (device_idx is not None and device_idx < 0):
             self._mem_before = {}
         elif device_idx is None:
             # Before BaseTimeObj.__init__ the device is not known. Read only the GPUs
             # already used or about to be: reading the memory pool of any other GPU
             # would create a CUDA context (hundreds of MB) on it.
             devices = set(_used_devices)
-            for d in (default_target_device_idx, device_hint):
+            for d in (iteras.default_target_device_idx, device_hint):
                 if d is not None and d >= 0:
                     devices.add(d)
             self._mem_before = {d: _pool_used_bytes(d) for d in devices}
@@ -376,7 +370,7 @@ class BaseTimeObj:
         seen (set, optional): pointers of memory already counted, updated in
         place. Pass the same set to several objects to count shared arrays once.
         '''
-        if cp is None:
+        if iteras.cp is None:
             return 0
         if seen is None:
             seen = set()
@@ -388,7 +382,7 @@ class BaseTimeObj:
             if id(obj) in visited:
                 continue
             visited.add(id(obj))
-            if isinstance(obj, cp.ndarray):
+            if isinstance(obj, iteras.cp.ndarray):
                 mem = obj.data.mem
                 if mem.ptr not in seen:
                     seen.add(mem.ptr)

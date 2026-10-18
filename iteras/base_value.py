@@ -1,5 +1,6 @@
 
-from iteras import np, array_types, cpuArray
+import iteras
+from iteras import np, cpuArray
 from astropy.io import fits
 from iteras.base_data_obj import BaseDataObj
 
@@ -39,7 +40,7 @@ class BaseValue(BaseDataObj):
     def save(self, filename, overwrite=False):
         hdr = self.get_fits_header()
 
-        if type(self.value) in array_types:
+        if type(self.value) in iteras.array_types:
             data = cpuArray(self.value)
             hdr['NDARRAY'] = 1
         else:

@@ -8,6 +8,7 @@ import specula
 specula.init(0)  # Default target device
 
 import importlib
+import numpy as np
 import os
 import unittest
 from unittest.mock import patch, MagicMock
@@ -62,8 +63,8 @@ class TestMovedModules(unittest.TestCase):
         self.assertIsInstance(BaseValue(), importlib.import_module('iteras.base_value').BaseValue)
 
     def test_patching_old_path_patches_iteras(self):
-        with patch('specula.connections.process_comm', 'patched'):
-            self.assertEqual(importlib.import_module('iteras.connections').process_comm, 'patched')
+        with patch('specula.connections.cpuArray', 'patched'):
+            self.assertEqual(importlib.import_module('iteras.connections').cpuArray, 'patched')
 
     def test_synonyms(self):
         from specula.processing_objects.specula_input import SpeculaInput
@@ -107,6 +108,19 @@ class TestRuntimeValues(unittest.TestCase):
         self.assertIs(specula.init, iteras.init)
         self.assertIs(specula.cpuArray, iteras.cpuArray)
         self.assertIs(specula.main_simul, iteras.main_simul)
+
+    def test_fuse_decorated_before_init(self):
+        # The fused kernel is created at the first GPU call, so functions can
+        # be decorated before init() (here, with cupy not yet set)
+        with patch('iteras.cp', None):
+            @iteras.fuse(kernel_name="add_one")
+            def add_one(x, xp):
+                return x + 1
+        x = np.arange(3.0)
+        np.testing.assert_array_equal(add_one(x, xp=np), x + 1)
+        if iteras.cp is not None:
+            y = iteras.cp.arange(3.0)
+            np.testing.assert_array_equal(iteras.cp.asnumpy(add_one(y, xp=iteras.cp)), x + 1)
 
     def test_unknown_attribute(self):
         with self.assertRaises(AttributeError):

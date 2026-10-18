@@ -1,7 +1,7 @@
 from collections import namedtuple
 
-from iteras import cpuArray, process_comm
-from iteras import np, cp
+import iteras
+from iteras import cpuArray, np
 from iteras.lib.utils import flatten
 from iteras.log import get_iteras_logger
 
@@ -106,9 +106,9 @@ class _InputItem():
                                )
         if first_mpi_receive or self.cloned_value.get_value() is None:
             self.logger.mpi_send_debug(f'recv with Pickle tag={self.tag}')
-            new_value = process_comm.recv(source=self.remote_rank, tag=self.tag)
+            new_value = iteras.process_comm.recv(source=self.remote_rank, tag=self.tag)
             if new_value.xp_str == 'cp':
-                new_value.xp = cp
+                new_value.xp = iteras.cp
             else:
                 new_value.xp = np
         else:            
@@ -117,9 +117,9 @@ class _InputItem():
             buffer = cpuArray(self.cloned_value.get_value())
             self.logger.mpi_send_debug(f'tag={self.tag} RECV .buffer ' + str(type(buffer)))
             self.logger.mpi_send_debug(f'tag={self.tag} RECV .buffer dtype' + str(buffer.dtype))
-            process_comm.Recv(buffer, source=self.remote_rank, tag=self.tag)
+            iteras.process_comm.Recv(buffer, source=self.remote_rank, tag=self.tag)
             self.logger.mpi_send_debug(f'tag={self.tag+1} RECV .bufftimeer')
-            gen_time = process_comm.recv(source=self.remote_rank, tag=self.tag+1)
+            gen_time = iteras.process_comm.recv(source=self.remote_rank, tag=self.tag+1)
             self.cloned_value.generation_time = gen_time
             self.cloned_value.set_value(buffer)
 

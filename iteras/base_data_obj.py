@@ -3,7 +3,8 @@ import warnings
 from copy import copy
 from functools import cache
 
-from iteras import cp, np, array_types
+import iteras
+from iteras import np
 from iteras.base_time_obj import BaseTimeObj
 
 
@@ -60,13 +61,13 @@ class BaseDataObj(BaseTimeObj):
         for attr in attr_list:
             self_attr = getattr(self, attr)
             self_type = type(self_attr)
-            if self_type not in array_types:
+            if self_type not in iteras.array_types:
                 continue
 
             dest_attr = getattr(destobj, attr)
             dest_type = type(dest_attr)
 
-            if dest_type not in array_types:
+            if dest_type not in iteras.array_types:
                 self.logger.warning(f'destination attribute is not a cupy/numpy array, forcing reallocation ({destobj}.{attr})')
                 force_reallocation = True
 
@@ -75,9 +76,9 @@ class BaseDataObj(BaseTimeObj):
                 # Detect whether the array types are correct for all four cases:
                 # Device to CPU, CPU to device, device-to-device, and CPU-CPU. Also check whether
                 # the target_device_idx is set correctly for the destination object.
-                DtD = cp is not None and (self_type == cp.ndarray) and (dest_type == cp.ndarray) and destobj.target_device_idx >= 0
-                DtH = cp is not None and (self_type == cp.ndarray) and (dest_type == np.ndarray) and destobj.target_device_idx == -1
-                HtD = cp is not None and (self_type == np.ndarray) and (dest_type == cp.ndarray) and destobj.target_device_idx >= 0
+                DtD = iteras.cp is not None and (self_type == iteras.cp.ndarray) and (dest_type == iteras.cp.ndarray) and destobj.target_device_idx >= 0
+                DtH = iteras.cp is not None and (self_type == iteras.cp.ndarray) and (dest_type == np.ndarray) and destobj.target_device_idx == -1
+                HtD = iteras.cp is not None and (self_type == np.ndarray) and (dest_type == iteras.cp.ndarray) and destobj.target_device_idx >= 0
                 HtH = (self_type == np.ndarray) and (dest_type == np.ndarray) and destobj.target_device_idx == -1
                 if DtD:
                     # Performance warnings here are expected, because we might
@@ -103,8 +104,8 @@ class BaseDataObj(BaseTimeObj):
 
             # Otherwise, reallocate
             if force_reallocation:
-                DtD = cp is not None and (self_type == cp.ndarray) and destobj.target_device_idx >= 0
-                DtH = cp is not None and (self_type == cp.ndarray) and destobj.target_device_idx == -1
+                DtD = iteras.cp is not None and (self_type == iteras.cp.ndarray) and destobj.target_device_idx >= 0
+                DtH = iteras.cp is not None and (self_type == iteras.cp.ndarray) and destobj.target_device_idx == -1
                 HtD = (self_type == np.ndarray) and destobj.target_device_idx >= 0
                 HtH = (self_type == np.ndarray) and destobj.target_device_idx == -1
 
@@ -114,13 +115,13 @@ class BaseDataObj(BaseTimeObj):
                     with warnings.catch_warnings():
                         if self.PerformanceWarning:
                             warnings.simplefilter("ignore", category=self.PerformanceWarning)
-                        setattr(destobj, attr, cp.asarray(self_attr))
+                        setattr(destobj, attr, iteras.cp.asarray(self_attr))
                 if DtH:
                     # Do not set blocking=True for cupy 12.x compatibility.
                     # Blocking is True by default in later versions anyway
                     setattr(destobj, attr, self_attr.get())
                 if HtD:
-                    setattr(destobj, attr, cp.asarray(self_attr))
+                    setattr(destobj, attr, iteras.cp.asarray(self_attr))
                 if HtH:
                     setattr(destobj, attr, np.asarray(self_attr))
 
@@ -137,7 +138,7 @@ class BaseDataObj(BaseTimeObj):
             cloned = copy(self)
 
             if target_device_idx >= 0:
-                cloned.xp = cp
+                cloned.xp = iteras.cp
             else:
                 cloned.xp = np
             cloned.target_device_idx = target_device_idx

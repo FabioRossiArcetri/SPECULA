@@ -37,7 +37,7 @@ import logging
 import functools
 import contextlib
 
-from iteras import cp
+import iteras
 
 # NVTX color ids, one per phase, so that phases are
 # easy to tell apart in the Nsight Systems timeline.
@@ -136,9 +136,9 @@ class Tracer:
         self.close()
         self._filename = filename
         self._file = open(filename, 'w', buffering=1024 * 1024)
-        self._sync = sync and cp is not None
+        self._sync = sync and iteras.cp is not None
         self._skip = max(int(skip), 0)
-        self._gpu_events = gpu_events and cp is not None
+        self._gpu_events = gpu_events and iteras.cp is not None
         self._reset()
         self._file.write(f'# Simulation trace, device sync: {self._sync}, '
                          f'GPU events: {self._gpu_events}, '
@@ -230,8 +230,8 @@ class Tracer:
             # and the captured work does not run until the graph is launched.
             if self._sync and self._is_gpu_obj(obj):
                 with obj._target_device:
-                    if not cp.cuda.get_current_stream().is_capturing():
-                        cp.cuda.runtime.deviceSynchronize()
+                    if not iteras.cp.cuda.get_current_stream().is_capturing():
+                        iteras.cp.cuda.runtime.deviceSynchronize()
             t_end = time.perf_counter_ns()
             t_start = self._stack.pop()
             dur = t_end - t_start
@@ -278,13 +278,13 @@ class Tracer:
         '''
         if getattr(obj, 'cuda_graph', None) is not None:
             return obj.stream
-        return cp.cuda.get_current_stream()
+        return iteras.cp.cuda.get_current_stream()
 
     def _get_event(self, device_idx):
         pool = self._event_pool.setdefault(device_idx, [])
         if pool:
             return pool.pop()
-        return cp.cuda.Event()
+        return iteras.cp.cuda.Event()
 
     def _release_event(self, device_idx, event):
         self._event_pool.setdefault(device_idx, []).append(event)
@@ -304,7 +304,7 @@ class Tracer:
                     still_pending.append(entry)
                     continue
                 ev_end.synchronize()
-            elapsed_ms = cp.cuda.get_elapsed_time(ev_start, ev_end)
+            elapsed_ms = iteras.cp.cuda.get_elapsed_time(ev_start, ev_end)
             self._record(iteration, sim_time, obj, 'trigger_gpu', t_start, int(elapsed_ms * 1e6))
             self._release_event(obj.target_device_idx, ev_start)
             self._release_event(obj.target_device_idx, ev_end)
