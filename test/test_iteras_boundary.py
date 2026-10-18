@@ -20,7 +20,8 @@ ITERAS_ROOT = Path(iteras.__file__).resolve().parent
 
 def _imported_modules(path):
     '''Names of the modules imported by a Python source file'''
-    tree = ast.parse(path.read_text(), filename=str(path))
+    # Bytes: decoded as Python does (UTF-8 by default), whatever the platform encoding
+    tree = ast.parse(path.read_bytes(), filename=str(path))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
