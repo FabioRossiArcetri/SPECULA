@@ -3,9 +3,11 @@ iteras: a framework for end-to-end, time-domain simulations of systems made
 of data objects and processing objects, running on CPU (numpy) or GPU (cupy),
 optionally distributed over several processes with MPI.
 
-Call :func:`init` before creating any object, and before importing the
-other iteras modules: some of them read the device and precision settings
-when they are imported.
+Call :func:`init` before creating any object. The iteras modules read the
+device, precision and MPI settings when objects are created, so they can be
+imported before init(). Modules that copy these settings when they are imported
+(e.g. with ``from iteras import cp``) must be imported after init(): use the
+``xp`` and ``dtype`` attributes of the objects instead.
 '''
 import numpy as np
 import logging
@@ -173,19 +175,20 @@ def fuse(kernel_name=None):
     inside the function as usual.
 
     Parameters are the same as cp.fuse()
+
+    The fused kernel is created at the first call with xp=cupy,
+    so that functions can be decorated before init() is called.
     '''
     def decorator(f):
-        f_cp = functools.partial(f, xp=cp)
-        f_np = functools.partial(f, xp=np)
-        f_cpu = f_np
-        if cp:
-            f_gpu = cp.fuse(kernel_name=kernel_name)(f_cp)
-        else:
-            f_gpu = None
+        f_cpu = functools.partial(f, xp=np)
+        f_gpu = None
 
         @wraps(f)
         def wrapper(*args, xp, **kwargs):
-            if xp == cp:
+            nonlocal f_gpu
+            if cp is not None and xp is cp:
+                if f_gpu is None:
+                    f_gpu = cp.fuse(kernel_name=kernel_name)(functools.partial(f, xp=cp))
                 return f_gpu(*args, **kwargs)
             else:
                 return f_cpu(*args, **kwargs)
