@@ -22,24 +22,119 @@ def camelcase_to_snakecase(s):
     return ''.join(x.lower() for x in result)
 
 
+class AmbiguousClassError(ImportError):
+    '''
+    Raised by import_class() when a class name corresponds to different
+    classes in more than one package.
+    '''
+
+
+def _import_from_package(package, classname, modulename):
+    '''
+    Return the class *classname* from module *package.modulename*,
+    or None if that module does not exist.
+    Raises AttributeError if the module exists but does not define the class.
+    '''
+    module_to_import = f'{package}.{modulename}'
+    try:
+        mod = importlib.import_module(module_to_import)
+    except ModuleNotFoundError as e:
+        match = re.search(r"No module named '([^']+)'", str(e))
+        # Check if the failed import was for the wanted module (or one of its
+        # parent packages), or something else (e.g. imports of missing
+        # third-party packages inside that module)
+        if match:
+            missing = match.group(1)
+            if module_to_import == missing or module_to_import.startswith(missing + '.'):
+                return None
+        raise
+    try:
+        return getattr(mod, classname)
+    except AttributeError:
+        raise AttributeError(f'Class {classname} not found in file {modulename}.py') from None
+
+
+def _search_packages(packages, classname):
+    '''
+    Look for *classname* in all *packages*. Returns the class, or None if it
+    is not found. Raises AmbiguousClassError if different classes are found.
+    The same class found in more than one package (e.g. through a module
+    that is an alias of another one) is not ambiguous.
+    '''
+    modulename = camelcase_to_snakecase(classname)
+    found = {}
+    for package in packages:
+        klass = _import_from_package(package, classname, modulename)
+        if klass is not None:
+            found.setdefault(klass, []).append(f'{package}.{modulename}')
+    if len(found) > 1:
+        where = '; '.join(f'{klass.__module__}.{klass.__qualname__} (found in {", ".join(mods)})'
+                          for klass, mods in found.items())
+        raise AmbiguousClassError(
+            f'Class name {classname} is ambiguous, it corresponds to different classes: {where}. '
+            f'Use a qualified name to choose one, e.g. "<plugin>.{classname}" or the full '
+            f'module path "<package>.<module>.{classname}"')
+    return next(iter(found), None)
+
+
+def _find_class(classname, additional_modules):
+    '''import_class() without the automatic loading of plugins'''
+    packages = list(dict.fromkeys(registry.search_packages() + additional_modules))
+    prefix, _, name = classname.rpartition('.')
+    if not prefix:
+        return _search_packages(packages, name)
+
+    # Qualified name: look only in the packages of that plugin (or package)
+    candidates = [p for p in packages if p == prefix or p.startswith(prefix + '.')]
+    if candidates:
+        return _search_packages(candidates, name)
+
+    # Otherwise, a full module path
+    try:
+        mod = importlib.import_module(prefix)
+    except ModuleNotFoundError as e:
+        if e.name is not None and (prefix == e.name or prefix.startswith(e.name + '.')):
+            return None
+        raise
+    try:
+        return getattr(mod, name)
+    except AttributeError:
+        raise AttributeError(f'Class {name} not found in module {prefix}') from None
+
+
 def import_class(classname, additional_modules=None):
     '''
     Dynamically import a class by name from the registered packages.
 
-    Given a class name in CamelCase, this function attempts to import the class
-    from one of the following packages (in order):
+    Given a class name in CamelCase, this function looks for the class
+    in all the following packages:
         - iteras.processing_objects
         - iteras.data_objects
         - iteras.display
         - the packages registered by plugins (see iteras.registry)
         - user-defined additional modules, if any
 
-    The module name is inferred by converting the class name from CamelCase to snake_case.
+    The module name is inferred by converting the class name from CamelCase to
+    snake_case: class FooBar must be defined in a module called foo_bar.py.
+    If the class name corresponds to different classes in more than one package,
+    AmbiguousClassError is raised.
+
+    The class name can be qualified, to choose one of several classes with the same
+    name or to avoid searching all packages:
+        - "<prefix>.FooBar", where <prefix> is a plugin (e.g. "specula.FooBar") or
+          one of the searched packages: the class is searched only in the packages
+          equal to <prefix> or contained in it;
+        - otherwise, the full path of the module defining the class, e.g.
+          "mypackage.mymodule.FooBar".
+
+    If the class is not found, the plugins declared with an "iteras.plugins" entry
+    point are loaded (once per process, see iteras.registry) and the search is
+    repeated.
 
     Parameters
     ----------
     classname : str
-        The name of the class to import (in CamelCase).
+        The name of the class to import (in CamelCase), possibly qualified.
     additional_modules: list[str]
         List of additional module names to try
 
@@ -52,35 +147,21 @@ def import_class(classname, additional_modules=None):
     ------
     ImportError
         If the module containing the class cannot be found.
+    AmbiguousClassError
+        If the class name corresponds to different classes.
     AttributeError
         If the class is not found in the located module.
     '''
-    if additional_modules is None:
-        additional_modules = []
+    additional_modules = list(additional_modules or [])
 
-    modulename = camelcase_to_snakecase(classname)
-    module_paths = registry.search_packages() + additional_modules
-
-    for module_path in module_paths:
-        module_to_import = f'{module_path}.{modulename}'
-        try:
-            mod = importlib.import_module(module_to_import)
-            try:
-                return getattr(mod, classname)
-            except AttributeError:
-                raise AttributeError(f'Class {classname} not found in file {modulename}.py')
-        except ModuleNotFoundError as e:
-            match = re.search(r"No module named '([^']+)'", str(e))
-            # Check if the failed import was for the wanted module,
-            # or something else (e.g. imports of missing third-party
-            # packages inside that module)
-            if match:
-                this_module = match.group(1)
-                if this_module != module_to_import:
-                    # This is not an exception for our module, re-raise it
-                    raise
-
-    raise ImportError(f'Class {classname} must be defined in a file called {modulename}.py but it cannot be found')
+    klass = _find_class(classname, additional_modules)
+    if klass is None and registry.load_entry_point_plugins():
+        klass = _find_class(classname, additional_modules)
+    if klass is None:
+        modulename = camelcase_to_snakecase(classname.rpartition('.')[2])
+        raise ImportError(f'Class {classname} must be defined in a file called {modulename}.py '
+                          'but it cannot be found')
+    return klass
 
 
 def get_type_hints(type):

@@ -7,6 +7,9 @@ displays for a specific domain. It registers itself calling
 The iteras command line also loads the plugins declared with an
 ``iteras.plugins`` entry point (see :func:`load_entry_point_plugins`).
 
+Plugins are also loaded automatically, through their entry points, the
+first time a class is not found in the registered packages.
+
 The registry holds:
 
 - the packages searched, in order, when a class is looked up by name
@@ -131,12 +134,21 @@ def calib_subdirs():
 def load_entry_point_plugins():
     '''
     Import the plugins declared with an ``iteras.plugins`` entry point,
-    so that they register themselves. Called once, by the iteras command line.
+    so that they register themselves. Called by the iteras command line,
+    and by import_class() when a class is not found. Plugins are loaded
+    only once per process.
+
+    Returns
+    -------
+    bool
+        True if the plugins were loaded by this call, False if they had
+        already been loaded.
     '''
     global _entry_points_loaded
     if _entry_points_loaded:
-        return
+        return False
     _entry_points_loaded = True
     from importlib.metadata import entry_points
     for ep in entry_points(group='iteras.plugins'):
         ep.load()
+    return True

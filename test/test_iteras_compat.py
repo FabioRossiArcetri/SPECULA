@@ -140,7 +140,9 @@ class TestSpeculaPlugin(unittest.TestCase):
 
         self.assertEqual(SimulParams().logger.logger.name, 'specula.SimulParams')
         self.assertEqual(SimParams().logger.logger.name, 'iteras.SimParams')
-        self.assertEqual(LocalObj().logger.logger.name, 'iteras.LocalObj')
+        # Classes outside registered plugins log under their own top-level package
+        root = LocalObj.__module__.partition('.')[0]
+        self.assertEqual(LocalObj().logger.logger.name, f'{root}.LocalObj')
 
     def test_calib_subdirs(self):
         from iteras.calib_manager import CalibManager
