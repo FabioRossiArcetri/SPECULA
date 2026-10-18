@@ -12,12 +12,6 @@ class ElectricField(BaseDataObj):
     for each pixel in a rectangular grid.
     """
 
-    # Objects adding a phase-additive contribution to an electric field (e.g. an
-    # ElectricFieldCombinator or PhaseScreenCube feeding a WFS downstream of a
-    # captured AtmoPropagation) must not be silently left out of a targeted replay
-    # (SPECULA #696, see Simul.build_targeted_replay)
-    replay_track_consumers = True
-
     def __init__(self,
                  dimx: int,
                  dimy: int,
@@ -131,6 +125,14 @@ class ElectricField(BaseDataObj):
             f"Error: input array shape {v[1].shape} does not match phase shape {self.field[1].shape}"
 
         self.field[:] = self.to_xp(v)
+
+    @classmethod
+    def track_consumers_in_replay(cls):
+        # Objects adding a phase-additive contribution to an electric field (e.g. an
+        # ElectricFieldCombinator or PhaseScreenCube feeding a WFS downstream of a
+        # captured AtmoPropagation) must not be silently left out of a targeted replay
+        # (SPECULA #696, see Simul.build_targeted_replay)
+        return True
 
     def get_value(self):
         return self.field

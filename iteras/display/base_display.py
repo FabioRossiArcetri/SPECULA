@@ -17,10 +17,6 @@ class BaseDisplay(BaseProcessingObj):
 
     __plot_completed = {}
 
-    # With --async-displays, updates can be skipped when the display process is busy.
-    # Displays that accumulate a history set this to False
-    skip_updates = True
-
     # Override __new__ in order to remember constructor arguments,
     # even for derived classes
     def __new__(cls, *args, **kwargs):
@@ -28,6 +24,16 @@ class BaseDisplay(BaseProcessingObj):
         obj._init_args = args
         obj._init_kwargs = kwargs
         return obj
+
+    def can_skip_updates(self):
+        '''
+        With --async-displays, True if updates of this display can be dropped
+        when the display process is busy (the default, for displays that show
+        only the latest data). Displays that accumulate a history, like
+        PlotDisplay, override this method to return False, so that every
+        update is sent.
+        '''
+        return True
 
     def __init__(self,
                  title='',

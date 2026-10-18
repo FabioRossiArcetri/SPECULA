@@ -19,10 +19,6 @@ def get_properties(cls):
 
 class BaseDataObj(BaseTimeObj):
 
-    # True for data types whose producers must not be silently left out of
-    # a targeted replay, see Simul.build_targeted_replay()
-    replay_track_consumers = False
-
     def __init__(self, target_device_idx: int=None, precision: int=None):
         """
         Initialize the base data object.
@@ -37,6 +33,17 @@ class BaseDataObj(BaseTimeObj):
         super().__init__(target_device_idx, precision)
         self.generation_time = -1
         self.tag = ''
+
+    @classmethod
+    def track_consumers_in_replay(cls):
+        '''
+        Override to return True for data types whose producers must not be
+        silently left out of a targeted replay: Simul.build_targeted_replay()
+        reports the objects that produce an output of such a type, consume an
+        output of a replayed object, and are not part of the replay (for
+        example, an object adding a contribution to a propagated field).
+        '''
+        return False
 
     def debug_summary(self):
         '''
