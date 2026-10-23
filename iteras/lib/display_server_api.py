@@ -13,7 +13,6 @@ import multiprocessing as mp
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, join_room
 import socketio
-import socketio.exceptions
 from iteras.display.data_plotter import DataPlotter
 
 if os.name == 'nt':
@@ -174,7 +173,9 @@ class FlaskServer:
         self.last_request_time = 0
         self.last_request_outputs = []
         self.client_subscriptions = {}
-        
+        self._frontend_client = None
+        self._frontend_retry_at = 0.0
+
         self.response_handlers = {}
         self.response_handlers['terminator'] = self.terminator_response_handler
         self.response_handlers['image_terminator'] = self.terminator_response_handler
@@ -186,8 +187,7 @@ class FlaskServer:
         raise NotImplementedError("Subclasses must implement register_additional_response_handlers method")
     
     def run(self):
-        t = threading.Thread(target=self.status_update, args=(sio,))
-        t.start()
+        threading.Thread(target=self.watch_simulation, daemon=True).start()
 
         if self.port == 0:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -203,82 +203,89 @@ class FlaskServer:
     def shutdown(self):
         os._exit(0)
 
-    def status_update(self, sio):
-        sio_client = socketio.Client()
-        
-        def connect():
-            if not self.frontend_connected:
-                frontend_port = registry.getenv('ITERAS_PORT', '8080')
-                try:
-                    sio_client.connect(f'http://localhost:{frontend_port}')
-                    self.frontend_connected = True
-                except:
-                    pass
+    # Seconds between two checks that the simulation process is still running
+    SIMULATION_CHECK_INTERVAL = 2.0
+    # Seconds between two attempts to reach the iteras frontend
+    FRONTEND_RETRY_INTERVAL = 10.0
 
-        while True:
-            try:
-                item = self.status_queue.get(timeout=60)
-                
-                if isinstance(item, tuple) and len(item) == 2:
-                    name, data = item
-                    
-                    if name == 'data_response' or name == 'terminator':
-                        self.status_queue.put(item)
-                        continue
- 
-                    if data is None:
-                        break
-                    
-                    try:
-                        connect()
-                        sio_client.emit('simul_update', data={'name': name, 'status': data, 'port': self.actual_port})
-                    except (socketio.exceptions.ConnectionError, socketio.exceptions.BadNamespaceError):
-                        self.frontend_connected = False
-                        time.sleep(1)
-                else:
-                    self.status_queue.put(item)
-                    time.sleep(0.001)
-                    
-            except queue.Empty:
-                # After 60 seconds of inactivity, we assume
-                # that the simulation has ended and we can shut down the server.
-                break
-            except EOFError:
-                # This can happen if the main process has ended and closed the queue.
-                # In that case, we should also shut down the server.
-                break
-            except Exception:
-                break
+    def simulation_alive(self):
+        """True while the simulation process that started this server runs."""
+        parent = mp.parent_process()
+        return parent is None or parent.is_alive()
+
+    def watch_simulation(self):
+        """Stop the server when the simulation process has ended.
+
+        A paused simulation (stepping mode, a long step, a debugger) sends
+        nothing on the status queue, so silence is not a reason to stop: only
+        the end of the simulation process is.  A normal end calls
+        DisplayServer.finalize(), which terminates this process; this covers a
+        simulation that crashed or was killed.
+        """
+        while self.simulation_alive():
+            time.sleep(self.SIMULATION_CHECK_INTERVAL)
+        self.logger.info("[SERVER] Simulation process ended: stopping the display server")
         self.shutdown()
 
+    def forward_status(self, name, data):
+        """Send a simulation status report to the iteras frontend, if one runs."""
+        if not self.frontend_connected:
+            now = time.time()
+            if now < self._frontend_retry_at:
+                return
+            self._frontend_retry_at = now + self.FRONTEND_RETRY_INTERVAL
+        try:
+            if self._frontend_client is None:
+                self._frontend_client = socketio.Client()
+            if not self.frontend_connected:
+                frontend_port = registry.getenv('ITERAS_PORT', '8080')
+                self._frontend_client.connect(f'http://localhost:{frontend_port}')
+                self.frontend_connected = True
+            self._frontend_client.emit('simul_update', data={'name': name, 'status': data,
+                                                             'port': self.actual_port})
+        except Exception:
+            # No frontend, or it went away: try again later
+            self.frontend_connected = False
+
     def handle_responses(self):
+        """Read the status queue: the only consumer of it.
+
+        Status reports (name, status) go to the frontend; responses
+        (type, client_id, name, data) to the handler of their type.  An
+        unexpected error is logged and the server keeps serving.
+        """
         while True:
             try:
                 item = self.status_queue.get(timeout=1)
-
-                if isinstance(item, tuple) and len(item) == 2:
-                    self.status_queue.put(item)
-                    time.sleep(0.001)
-                    continue
-                
-                elif isinstance(item, tuple) and len(item) == 4:
-                    response_type, client_id, name, data = item
-                    
-                    if response_type not in self.response_handlers:
-                        self.logger.error(f"[SERVER] No handler for response type: {response_type}")
-                        continue
-
-                    try:
-                        self.response_handlers[response_type](client_id, name, data)
-                    except Exception as e:
-                        self.logger.error(f"[SERVER][{self.__class__.__name__}] Error handling response of type {response_type} for {name}: {e}")
-                else:
-                    self.logger.error(f"[SERVER][{self.__class__.__name__}] Unknown item format: {item}")
-                    
             except queue.Empty:
                 continue
+            except (EOFError, OSError):
+                # The queue is closed: the simulation process has ended
+                self.shutdown()
+                return
+
+            try:
+                if isinstance(item, tuple) and len(item) == 2:
+                    name, data = item
+                    if data is None:
+                        # Explicit end of the simulation
+                        self.shutdown()
+                        return
+                    self.forward_status(name, data)
+
+                elif isinstance(item, tuple) and len(item) == 4:
+                    response_type, client_id, name, data = item
+                    handler = self.response_handlers.get(response_type)
+                    if handler is None:
+                        self.logger.error(f"[SERVER] No handler for response type: {response_type}")
+                        continue
+                    handler(client_id, name, data)
+
+                else:
+                    self.logger.error(f"[SERVER][{self.__class__.__name__}] Unknown item format: {item}")
+
             except Exception as e:
-                self.logger.error(f"[SERVER][{self.__class__.__name__}] Error in response handler: {e}")
+                self.logger.error(f"[SERVER][{self.__class__.__name__}] Error handling {item[:3] if isinstance(item, tuple) else item!r}: {e}")
                 import traceback
                 traceback.print_exc()
 
