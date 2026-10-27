@@ -3,12 +3,14 @@ from __future__ import annotations
 import re
 import inspect
 import itertools
+import multiprocessing
 from copy import deepcopy
 from pathlib import Path
 import specula
 from specula import process_rank
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_data_obj import BaseDataObj
+from specula.base_time_obj import gpu_mem_report, mem_registry_mark, top_level_objs
 
 from specula.log import get_specula_logger
 from specula.loop_control import LoopControl
@@ -20,13 +22,6 @@ from specula.simul_diagram import SimulDiagram
 from specula.display import display_process
 
 import yaml
-import hashlib
-
-
-def computeTag(output_obj_name, dest_object, output_attr_name, input_attr_name):
-    s = output_obj_name + '%' + dest_object + '%' + str(output_attr_name) + '%' + str(input_attr_name)
-    rr = int(hashlib.sha256(s.encode('utf-8')).hexdigest(), 16) % 10**6
-    return rr
 
 
 class Simul():
@@ -186,10 +181,61 @@ class Simul():
                 self.remove_inputs(params, leaf, log=False)
             end = len(params)
             if start == end:
-                raise ValueError('Cannot determine trigger order: circular loop detected in {leaves}')
+                raise ValueError(f'Cannot determine trigger order: circular loop detected in {leaves}')
         if len(params) > 0:
             self.logger.warning(f'the following objects will not be triggered: {params.keys()}')
         return order, order_index
+
+    def build_setup_order(self, params, trigger_order):
+        '''
+        Order in which the objects in *trigger_order* are set up.
+
+        The trigger order ignores delayed inputs (:-1 syntax), since they come
+        from the previous iteration. Setup instead must follow them too:
+        objects read their inputs in setup(), for example to allocate outputs
+        with the input size or to capture a CUDA graph, so the producer of a
+        delayed input must be set up first, except when the producer itself
+        depends on the consumer: then the delayed input closes a feedback loop,
+        and the objects in the loop are set up in trigger order. Objects in
+        a feedback loop must not depend on their delayed inputs in setup().
+
+        Ties are broken by trigger order, so without delayed inputs
+        the setup order is the same as the trigger order.
+        '''
+        inputs = {name: [(self.output_owner(x), self.output_delay(x) < 0)
+                         for v in params[name].get('inputs', {}).values()
+                         for x in (v if isinstance(v, list) else [v])]
+                  for name in trigger_order}
+
+        def upstream(name):
+            '''Objects that *name* depends on, directly or indirectly, delayed inputs included'''
+            found, stack = set(), [name]
+            while stack:
+                for owner, _ in inputs.get(stack.pop(), []):
+                    if owner not in found:
+                        found.add(owner)
+                        stack.append(owner)
+            return found
+
+        up = {name: upstream(name) for name in trigger_order}
+
+        def ready(name):
+            '''
+            True if *name* can be set up now, that is, if the producers
+            of all its inputs have already been set up. A delayed input is
+            not waited for if its producer depends on *name*: the input
+            closes a feedback loop (or is the object's own delayed output),
+            and waiting for it would never end.
+            '''
+            return not any(owner in remaining and not (delayed and name in up[owner])
+                           for owner, delayed in inputs[name])
+
+        order, remaining = [], list(trigger_order)
+        while remaining:
+            name = next(n for n in remaining if ready(n))
+            order.append(name)
+            remaining.remove(name)
+        return order
 
     def validate_section_names(self, params):
         '''
@@ -273,11 +319,27 @@ class Simul():
             if pars['class'] == 'DataBuffer':
                 self.objs[key].setOutputs()
 
+    def restore_object(self, klass, tag, target_device_idx, name=None):
+        '''
+        Restore a data object of class *klass* from the calibration
+        file *tag*, found in the calibration subdirectory for the class name.
+        Data objects are restored into each process (multiple copies),
+        target_rank is not checked.
+        '''
+        filename = self.cm.filename(klass.__name__, tag)
+        self.logger.info(f'Restoring: {filename}')
+        obj = klass.restore(filename, target_device_idx=target_device_idx)
+        if name is not None:
+            obj.name = name
+        obj.init_logging(self.logger.getEffectiveLevel())
+        obj.tag = tag
+        return obj
+
     def build_objects(self, params):
 
         self.setSimulParams(params)
 
-        cm = CalibManager(self.mainParams['root_dir'])
+        self.cm = CalibManager(self.mainParams['root_dir'])
         skip_pars = 'class inputs outputs gui_pos'.split()
         if 'add_modules' in self.mainParams:
             additional_modules = self.mainParams['add_modules']
@@ -326,14 +388,7 @@ class Simul():
                 extra_pars = set(pars.keys()) - {'class', 'tag', 'gui_pos'}
                 if extra_pars:
                     raise ValueError(f'Extra parameters with "tag" are not allowed: {sorted(extra_pars)}')
-                filename = cm.filename(classname, pars['tag'])
-                # tags are restored into each process (multiple copies), target_rank is not checked
-                self.logger.info(f'Restoring: {filename}')
-                self.objs[key] = klass.restore(filename, target_device_idx=target_device_idx)
-                self.objs[key].name = key
-                self.objs[key].init_logging(self.logger.getEffectiveLevel())
-                self.objs[key].printMemUsage()
-                self.objs[key].tag = pars['tag']
+                self.objs[key] = self.restore_object(klass, pars['tag'], target_device_idx, name=key)
                 continue
 
             pars2 = {}
@@ -386,17 +441,8 @@ class Simul():
                             partype = resolve_type(hints[parname], require_list=True)
                         except TypeError:
                             raise ValueError(f'Parameter {parname} must be typed as List[DataObjType]')
-
-                        loaded = []
-                        for tag in value:
-                            filename = cm.filename(partype.__name__, tag)
-                            self.logger.info(f'Restoring: {filename}')
-                            obj = partype.restore(filename, target_device_idx=target_device_idx)
-                            obj.printMemUsage()
-                            obj.tag = tag
-                            loaded.append(obj)
-
-                        pars2[parname] = loaded
+                        pars2[parname] = [self.restore_object(partype, tag, target_device_idx)
+                                          for tag in value]
                     else:
                         raise ValueError(f'No type hint for parameter {parname} of class {classname}')
 
@@ -411,17 +457,8 @@ class Simul():
                             partype = resolve_type(hints[parname], require_dict=True)
                         except TypeError:
                             raise ValueError(f'Parameter {parname} must be typed as Dict[str, DataObjType]')
-
-                        loaded = {}
-                        for dict_key, tag in value.items():
-                            filename = cm.filename(partype.__name__, tag)
-                            self.logger.info(f'Restoring: {filename}')
-                            obj = partype.restore(filename, target_device_idx=target_device_idx)
-                            obj.printMemUsage()
-                            obj.tag = tag
-                            loaded[dict_key] = obj
-
-                        pars2[parname] = loaded
+                        pars2[parname] = {dict_key: self.restore_object(partype, tag, target_device_idx)
+                                          for dict_key, tag in value.items()}
                     else:
                         raise ValueError(f'No type hint for parameter {parname} of class {classname}')
                 elif name.endswith('_ref') and parname != name:
@@ -436,7 +473,7 @@ class Simul():
                     if value is None:
                         pars2[parname] = None
                     else:
-                        data = cm.read_data(value)
+                        data = self.cm.read_data(value)
                         pars2[parname] = data
 
                 # object fields are data objects which are loaded from a fits file
@@ -448,16 +485,7 @@ class Simul():
                     elif parname in hints:
                         partype = resolve_type(hints[parname])
 
-                        # data objects are restored into each process (multiple copies), target_rank is not checked
-                        filename = cm.filename(parname, value)  # TODO use partype instead of parname?
-                        self.logger.info(f'Restoring: {filename}')
-                        parobj = partype.restore(filename, target_device_idx=target_device_idx)
-                        parobj.init_logging(self.logger.getEffectiveLevel())
-                        parobj.printMemUsage()
-
-                        # Set data_tag
-                        parobj.tag = value
-                        pars2[parname] = parobj
+                        pars2[parname] = self.restore_object(partype, value, target_device_idx)
                     else:
                         raise ValueError(f'No type hint for parameter {parname} of class {classname}')
 
@@ -472,7 +500,7 @@ class Simul():
             my_params = {}
 
             if 'data_dir' in args and 'data_dir' not in my_params:  # TODO special case
-                my_params['data_dir'] = cm.root_subdir(classname)
+                my_params['data_dir'] = self.cm.root_subdir(classname)
 
             if 'params_dict' in args:
                 my_params['params_dict'] = params
@@ -494,18 +522,16 @@ class Simul():
             except Exception:
                 self.logger.error(f'Exception building {key}')
                 raise
-            if classname != 'SimulParams':
-                self.objs[key].stopMemUsageCount()
-
             # TODO this could be more general like the getters above
             if type(self.objs[key]) is DataStore:
                 self.objs[key].setParams(params)
 
-    def connect(self, output_name, input_name, dest_object):
+    def connect(self, output_name, input_name, dest_object, tag):
         '''
         Connect the output *output_name*, defined by object *output_obj_name*,
         and whose reference is *output_ref*, which might be None if the object is remote,
         to the input *input_name* of the object *dest_object*, which might be local or remote.
+        *tag* is the MPI tag of the connection, used if the two objects are on different ranks.
 
         This routine handles the three cases:
         1. local output to local input - use Python references
@@ -518,8 +544,6 @@ class Simul():
         send = output.ref is not None and local_dest_object is False
         recv = output.ref is None and local_dest_object is True
         local = output.ref is not None and local_dest_object is True
-        if send or recv:
-            tag = computeTag(output.obj_name, dest_object, output.output_key, input_name)
 
         self.logger.mpi_debug(f'{output.obj_name}.{output.output_key} -> {dest_object} : {send=} {recv=} {local=}')
 
@@ -541,7 +565,12 @@ class Simul():
                                                                             output.delay))
                 
     def connect_objects(self, params):
-        
+
+        # MPI tags are assigned sequentially to all connections, in the same order
+        # on all ranks, since all of them iterate over the same params.
+        # Each connection uses two tags: the data and its generation time (tag+1)
+        tags = itertools.count(start=0, step=2)
+
         for dest_object, pars in params.items():
 
             self.logger.mpi_debug(f'connect_objects for {dest_object}')
@@ -581,6 +610,7 @@ class Simul():
                 for single_output_name in output_name if isinstance(output_name, list) else [output_name]:
                     self.logger.mpi_debug(f'List input')
 
+                    tag = next(tags)
                     output = self.split_output(single_output_name, get_ref=True)
 
                     if self.diagram:
@@ -594,7 +624,7 @@ class Simul():
                         continue
                     
                     try:
-                        self.connect(single_output_name, input_name, dest_object)
+                        self.connect(single_output_name, input_name, dest_object, tag)
                     except ValueError:
                         self.logger.error(f'Exception while connecting {single_output_name} {dest_object}.{input_name}')
                         raise
@@ -944,6 +974,14 @@ class Simul():
                     raise ValueError(f"Invalid number of parts detected in override: {parts}. Did you add/forget a '.'?")
     
     def run(self, start_time=0, end_time=None):
+        # With the 'spawn' start method (default on macOS and Windows), child processes
+        # like the display server re-import the main script: an unguarded call would
+        # build the whole simulation again inside the child and then fail anyway.
+        if getattr(multiprocessing.current_process(), '_inheriting', False):
+            raise RuntimeError('A SPECULA simulation was started while a child process was being '
+                               'initialized. On macOS and Windows, a script that runs a simulation '
+                               'must protect it with:  if __name__ == "__main__":')
+
         # Forget the display windows of a previous simulation in the same process
         from specula.display.base_display import BaseDisplay
         BaseDisplay.reset_windows()
@@ -976,6 +1014,7 @@ class Simul():
             self.inject_recorded_seeds(params, recorded_seeds)
             replay_params = None
 
+        self._mem_mark = mem_registry_mark()
         display_process.init(self.async_displays)
         self.build_objects(params)
         self.create_input_list_inputs(params)
@@ -1002,6 +1041,7 @@ class Simul():
 
         # Initialize housekeeping objects
         self.loop = LoopControl(stepping=self.stepping)
+        self.loop.mem_report = self.gpu_mem_report
 
         # Build loop
         for name, idx in zip(self.trigger_order, self.trigger_order_idx):
@@ -1012,6 +1052,12 @@ class Simul():
         
         self.loop.max_global_order = max(self.trigger_order_idx)
         self.logger.debug(f'{self.loop.max_global_order=}')
+
+        setup_order = self.build_setup_order(params, self.trigger_order)
+        self.logger.info(f'{setup_order=}')
+        self.loop.set_setup_order([self.objs[name] for name in setup_order
+                                   if name not in self.remote_objs_ranks
+                                   and isinstance(self.objs.get(name), BaseProcessingObj)])
 
         # Default display web server
         if 'display_server' in self.mainParams and self.mainParams['display_server'] and process_rank in [0, None]:
@@ -1040,8 +1086,18 @@ class Simul():
             display_process.stop(self.logger)
 
         self.logger.debug(f'Simulation finished')
-#        if data_store.has_key('sr'):
-#            self.logger.info(f"Mean Strehl Ratio (@{params['psf']['wavelengthInNm']}nm) : {store.mean('sr', init=min([50, 0.1 * self.mainParams['total_time'] / self.mainParams['time_step']])) * 100.}")
+
+    #        if data_store.has_key('sr'):
+    #            self.logger.info(f"Mean Strehl Ratio (@{params['psf']['wavelengthInNm']}nm) : {store.mean('sr', init=min([50, 0.1 * self.mainParams['total_time'] / self.mainParams['time_step']])) * 100.}")
+
+    def gpu_mem_report(self, title):
+        '''Log the GPU memory used by the objects of this simulation'''
+        names = {id(obj): name for name, obj in self.objs.items()}
+        # Simulation objects first, then the ones restored for their parameters
+        objs = sorted(top_level_objs(since=self._mem_mark), key=lambda obj: id(obj) not in names)
+        report = gpu_mem_report(objs, names)
+        if report:
+            self.logger.info(f'GPU memory {title}:\n{report}')
 
     def _check_preroll_is_local(self, preroll_objs):
         '''
