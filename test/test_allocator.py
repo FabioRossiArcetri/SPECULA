@@ -1,0 +1,572 @@
+'''
+Tests of the allocator (iteras.allocator) and of the Simul features it uses.
+'''
+import specula
+specula.init(0)  # Default target device
+
+import os
+import sys
+import json
+import tempfile
+import textwrap
+import unittest
+from unittest import mock
+
+import yaml
+
+import iteras
+from iteras.simul import Simul
+from iteras.data_objects.architecture import Architecture
+from iteras.processing_objects.data_store import DataStore
+from iteras.processing_objects.data_print import DataPrint
+from iteras.processing_objects.display_server import DisplayServer
+from iteras.processing_objects.interactive_input import InteractiveInput
+from iteras.base_processing_obj import BaseProcessingObj
+from iteras.allocator import (Allocator, StaleAllocation, make_allocation, write_allocation,
+                              read_allocation, check_meta, apply_allocation)
+from iteras.allocator.model import SimGraph
+from iteras.allocator.machine import Machine, GiB, slurm_nodes
+from iteras.allocator.cost import Estimator, Proc
+from iteras.allocator.profiler import Cost, Profile, split_chunk
+from iteras.allocator.solver import Solver, Layout, Infeasible, build_groups
+from iteras.allocator.report import placement_from_params
+
+MiB = 1024 ** 2
+ms = 1e6
+
+OBJECTS = '''
+from iteras.base_processing_obj import BaseProcessingObj
+from iteras.base_data_obj import BaseDataObj
+from iteras.base_value import BaseValue
+from iteras.connections import InputValue
+
+
+class Table(BaseDataObj):
+    def __init__(self, value: list=None, other: 'Table'=None, target_device_idx=None, precision=None):
+        super().__init__(target_device_idx=target_device_idx, precision=precision)
+        self.value = self.to_xp(value or [1.0], dtype=self.dtype)
+        self.other = other
+
+
+class Gen(BaseProcessingObj):
+    def __init__(self, size: int=100, target_device_idx=None, precision=None):
+        super().__init__(target_device_idx=target_device_idx, precision=precision)
+        self.out = BaseValue(value=self.xp.zeros(size, dtype=self.dtype),
+                             target_device_idx=target_device_idx)
+        self.outputs['out_value'] = self.out
+
+    def trigger_code(self):
+        self.out.value += 1
+
+    def post_trigger(self):
+        super().post_trigger()
+        self.out.generation_time = self.current_time
+
+
+class Work(BaseProcessingObj):
+    def __init__(self, size: int=100, table: Table=None, partner: BaseProcessingObj=None,
+                 target_device_idx=None, precision=None):
+        super().__init__(target_device_idx=target_device_idx, precision=precision)
+        self.table = table
+        self.buf = self.xp.zeros(size, dtype=self.dtype)
+        self.out = BaseValue(value=self.xp.zeros(size, dtype=self.dtype),
+                             target_device_idx=target_device_idx)
+        self.inputs['in_value'] = InputValue(type=BaseValue)
+        self.outputs['out_value'] = self.out
+
+    def trigger_code(self):
+        scale = 1 if self.table is None else self.table.value[0]
+        self.out.value[:] = self.local_inputs['in_value'].value * scale
+
+    def post_trigger(self):
+        super().post_trigger()
+        self.out.generation_time = self.current_time
+'''
+
+
+class AllocatorTestCase(unittest.TestCase):
+    '''Temporary package with simple objects, and a parameter file using them'''
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = self.tmp.name
+        pkg = os.path.join(root, 'alloc_objs')
+        os.makedirs(pkg)
+        with open(os.path.join(pkg, '__init__.py'), 'w') as f:
+            f.write(textwrap.dedent(OBJECTS))
+        for name, klass in [('gen', 'Gen'), ('work', 'Work'), ('table', 'Table')]:
+            with open(os.path.join(pkg, f'{name}.py'), 'w') as f:
+                f.write(f'from alloc_objs import {klass}\n')
+        sys.path.insert(0, root)
+        self.addCleanup(sys.path.remove, root)
+        self.addCleanup(lambda: [sys.modules.pop(m) for m in list(sys.modules)
+                                 if m.split('.')[0] == 'alloc_objs'])
+        self.root = root
+        self.params = {
+            'main': {'class': 'SimParams', 'root_dir': root, 'total_time': 0.005,
+                     'time_step': 0.001, 'add_modules': ['alloc_objs']},
+            'table': {'class': 'Table', 'value': [2.0]},
+            'gen': {'class': 'Gen', 'size': 1000},
+            'work1': {'class': 'Work', 'size': 1000, 'table_ref': 'table',
+                      'inputs': {'in_value': 'gen.out_value'}},
+            'work2': {'class': 'Work', 'size': 1000, 'table_ref': 'table',
+                      'inputs': {'in_value': 'gen.out_value'}},
+            'last': {'class': 'Work', 'size': 1000, 'inputs': {'in_value': 'work1.out_value'}},
+            'store': {'class': 'DataStore', 'store_dir': os.path.join(root, 'store'),
+                      'create_tn': False,
+                      'inputs': {'input_list': ['a-last.out_value', 'b-work2.out_value:-1']}},
+        }
+
+    def write(self, params, name='params.yml'):
+        path = os.path.join(self.root, name)
+        with open(path, 'w') as f:
+            yaml.dump(params, f)
+        return path
+
+    def graph(self, params=None):
+        params = params or self.params
+        return SimGraph(params, Simul(self.write(params)))
+
+
+def cost(host_ms=0.1, gpu_ms=1.0, mem_mib=10, out_mib=1, syncs=False):
+    return Cost(h_trig=host_ms * ms, g=gpu_ms * ms, mem=mem_mib * MiB,
+                outputs={'out_value': out_mib * MiB}, syncs=syncs)
+
+
+def machine(ngpu=2, gpu_gib=10, nodes=1, cpu_gib=100):
+    spec = {'name': 'n', 'count': nodes, 'cpu': {'cores': 8, 'memory_gb': cpu_gib}}
+    if ngpu:
+        spec['gpus'] = {'count': ngpu, 'memory_gb': gpu_gib, 'model': 'test'}
+    return Machine([spec], {'bandwidth_gb_s': 10, 'latency_us': 10}, 0.0, 0.0)
+
+
+class TestClassFlags(unittest.TestCase):
+
+    def test_defaults(self):
+        self.assertFalse(BaseProcessingObj.runs_on_cpu_only())
+        self.assertFalse(BaseProcessingObj.runs_on_main_process_only())
+        self.assertFalse(BaseProcessingObj.is_schedule_barrier())
+
+    def test_flagged_classes(self):
+        for klass in (DataStore, DataPrint, DisplayServer, InteractiveInput):
+            self.assertTrue(klass.runs_on_cpu_only(), klass)
+        for klass in (DisplayServer, InteractiveInput):
+            self.assertTrue(klass.runs_on_main_process_only(), klass)
+            self.assertTrue(klass.is_schedule_barrier(), klass)
+        self.assertFalse(DataStore.runs_on_main_process_only())
+
+    def test_data_store_on_cpu(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = DataStore(store_dir=d, target_device_idx=-1)
+            self.assertEqual(store.target_device_idx, -1)
+
+
+class TestArchitecture(unittest.TestCase):
+
+    def node(self, **kw):
+        n = {'name': 'n', 'cpu': {'cores': 4, 'memory_gb': 10}}
+        n.update(kw)
+        return n
+
+    def test_defaults(self):
+        a = Architecture()
+        self.assertEqual(a.nodes, 'local')
+        self.assertEqual(a.profile_file, 'allocation_profile.json')
+        self.assertEqual(a.mode, 'apply')
+
+    def test_invalid_values(self):
+        with self.assertRaises(ValueError):
+            Architecture(objective='cheap')
+        with self.assertRaises(ValueError):
+            Architecture(memory_margin=1.5)
+        with self.assertRaises(ValueError):
+            Architecture(nodes=[self.node()], memory_source='probe')
+        with self.assertRaises(ValueError):
+            Architecture(nodes=[{'name': 'x'}])
+        with self.assertRaises(ValueError):
+            Architecture(nodes=[self.node(gpus={'count': 2})])
+        with self.assertRaises(ValueError):
+            Architecture(nodes=[self.node(links={'warp_speed': 1})])
+
+    def test_machine_from_declared_nodes(self):
+        arch = Architecture(nodes=[self.node(count=3, gpus={'count': 4, 'memory_gb': 64, 'model': 'A100'})],
+                            memory_margin=0.25)
+        m = Machine.from_architecture(arch)
+        self.assertEqual(len(m.nodes), 3)
+        self.assertEqual(len(m.gpu_slots()), 12)
+        self.assertEqual(len(m.slots), 15)
+        gpu = m.slots[m.nodes[2].gpu_slots[3]]
+        self.assertEqual((gpu.node, gpu.idx, gpu.kind), (2, 3, 'gpu:A100'))
+        self.assertAlmostEqual(gpu.memory, 48 * GiB)
+        cpu = m.slots[m.nodes[1].cpu_slot]
+        self.assertEqual((cpu.node, cpu.idx, cpu.kind), (1, -1, 'cpu'))
+
+    def test_slurm_nodes(self):
+        env = {'SLURM_JOB_NUM_NODES': '7', 'SLURM_CPUS_ON_NODE': '16',
+               'SLURM_MEM_PER_NODE': str(1024 * 100), 'SLURM_GPUS_ON_NODE': '2'}
+        old = dict(os.environ)
+        os.environ.update(env)
+        try:
+            nodes = slurm_nodes([self.node(gpus={'count': 4, 'memory_gb': 64})])
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+        self.assertEqual(nodes[0]['count'], 7)
+        self.assertEqual(nodes[0]['cpu']['cores'], 16)
+        self.assertAlmostEqual(nodes[0]['cpu']['memory_gb'], 100)
+        self.assertEqual(nodes[0]['gpus']['count'], 2)
+        self.assertEqual(nodes[0]['gpus']['memory_gb'], 64)
+
+
+class TestSimGraph(AllocatorTestCase):
+
+    def test_structure(self):
+        g = self.graph()
+        self.assertEqual(g.main_key, 'main')
+        self.assertEqual(set(g.procs), {'gen', 'work1', 'work2', 'last', 'store'})
+        self.assertLess(g.position['gen'], g.position['work1'])
+        self.assertLess(g.position['work1'], g.position['last'])
+        self.assertEqual(g.data_objs, ['table'])
+        self.assertEqual(g.ref_consumers['table'], ['work1', 'work2'])
+        delays = {(e.src, e.dst): e.delay for e in g.edges}
+        self.assertEqual(delays[('work2', 'store')], -1)
+        self.assertEqual(delays[('last', 'store')], 0)
+        self.assertTrue(g.device_settable['gen'])
+
+    def test_processing_object_reference(self):
+        params = dict(self.params)
+        params['last'] = dict(params['last'], partner_ref='work2')
+        g = self.graph(params)
+        self.assertEqual(g.proc_refs['last'], ['work2'])
+        groups = build_groups(g, mutable_refs=[])
+        self.assertIn({'work2', 'last'}, [set(g) for g in groups])
+
+    def test_mutable_reference_groups_users(self):
+        groups = build_groups(self.graph(), mutable_refs=['table'])
+        self.assertIn({'work1', 'work2'}, [set(g) for g in groups])
+
+    def test_keys_follow_upstream_changes(self):
+        g1 = self.graph()
+        params = json.loads(json.dumps(self.params))
+        params['gen']['size'] = 2000
+        g2 = self.graph(params)
+        self.assertNotEqual(g1.keys['gen'], g2.keys['gen'])
+        self.assertNotEqual(g1.keys['last'], g2.keys['last'])    # downstream of gen
+        # Placement and run length do not change the keys or the signature
+        params = json.loads(json.dumps(self.params))
+        params['work1']['target_device_idx'] = 1
+        params['main']['total_time'] = 10
+        g3 = self.graph(params)
+        self.assertEqual(g1.keys, g3.keys)
+        self.assertEqual(g1.signature(), g3.signature())
+        self.assertEqual(g3.pinned, {'work1': (None, 1)})
+
+
+class TestEstimator(AllocatorTestCase):
+
+    def estimator(self, m, gpu_ms=1.0, mem_mib=10, refs=None, shared=None, syncs=()):
+        g = self.graph()
+        costs = {}
+        for name in g.procs:
+            for kind in {s.kind for s in m.slots}:
+                c = cost(gpu_ms=0 if kind == 'cpu' else gpu_ms, mem_mib=mem_mib,
+                         syncs=name in syncs)
+                if kind == 'cpu':
+                    c.h_trig = 5 * gpu_ms * ms
+                costs[(name, kind)] = c
+        return Estimator(g, m, costs, refs or {'table': 100 * MiB}, shared or {})
+
+    def test_parallel_branches_on_two_gpus(self):
+        m = machine(ngpu=2)
+        est = self.estimator(m, gpu_ms=5.0)
+        p = Proc(0, 0)
+        one = {n: (p, 0) for n in est.graph.procs}
+        two = dict(one, work2=(p, 1))
+        t_one, comm_one = est.step_time(one)
+        t_two, comm_two = est.step_time(two)
+        self.assertEqual(comm_one, 0)
+        self.assertGreater(comm_two, 0)
+        self.assertLess(t_two, t_one)
+
+    def test_syncing_object_waits_for_queued_work(self):
+        m = machine(ngpu=1)
+        p = Proc(0, 0)
+        base = self.estimator(m, gpu_ms=5.0)
+        synced = self.estimator(m, gpu_ms=5.0, syncs=('last',))
+        place = {n: (p, 0) for n in base.graph.procs}
+        self.assertGreaterEqual(synced.step_time(place)[0], base.step_time(place)[0])
+
+    def test_remote_process_adds_messages(self):
+        m = machine(ngpu=2)
+        est = self.estimator(m)
+        p0, p1 = Proc(0, 0), Proc(1, 0)
+        local = {n: (p0, 0) for n in est.graph.procs}
+        local['work2'] = (p0, 1)
+        remote = dict(local, work2=(p1, 1))
+        self.assertGreater(est.step_time(remote)[0], est.step_time(local)[0])
+
+    def test_memory(self):
+        m = machine(ngpu=2)
+        est = self.estimator(m, mem_mib=10, shared={'gpu:test': [(['work1', 'work2'], 50 * MiB)]})
+        est.machine.context_overhead = 1 * MiB
+        p = Proc(0, 0)
+        place = {n: (p, 0) for n in est.graph.procs}
+        place['work2'] = (p, 1)
+        place['store'] = (p, 2)      # the CPU
+        mem = est.memory(place)
+        # gpu0: gen, work1, last + table + shared block + context
+        self.assertAlmostEqual(mem[0], (30 + 100 + 50 + 1) * MiB)
+        # gpu1: work2 + its copy of table + shared block + its input from gpu0 + context
+        self.assertAlmostEqual(mem[1], (10 + 100 + 50 + 1 + 1) * MiB)
+        ev = est.evaluate(place)
+        self.assertTrue(ev.feasible)
+        small = machine(ngpu=2, gpu_gib=0.1)
+        est.machine = small
+        self.assertFalse(est.evaluate(place).feasible)
+
+
+class TestSolver(AllocatorTestCase):
+
+    def solve(self, m, policy='single', pins=None, mem_mib=10, cpu=True, gpu_ms=5.0, mutable=()):
+        g = self.graph()
+        costs = {}
+        for name in g.procs:
+            for s in m.slots:
+                if s.kind == 'cpu' and not cpu and not g.cls(name).runs_on_cpu_only():
+                    continue
+                c = cost(gpu_ms=0 if s.kind == 'cpu' else gpu_ms, mem_mib=mem_mib)
+                if s.kind == 'cpu':
+                    c.h_trig = 20 * gpu_ms * ms
+                costs[(name, s.kind)] = c
+        est = Estimator(g, m, costs, {'table': 1 * MiB}, {})
+        solver = Solver(g, m, est, build_groups(g, list(mutable)), pins or {}, search_time=10)
+        return g, solver.solve(Layout(m, policy))
+
+    def test_uses_both_gpus_and_cpu_only_on_cpu(self):
+        m = machine(ngpu=2)
+        g, sol = self.solve(m)
+        slots = {n: sol.assign[n] for n in g.procs}
+        self.assertEqual(m.slots[slots['store']].idx, -1)
+        self.assertNotEqual(slots['work1'], slots['work2'])
+        self.assertTrue(sol.evaluation.feasible)
+
+    def test_memory_forces_split(self):
+        m = machine(ngpu=2, gpu_gib=2.5 * 10 * MiB / GiB)
+        g, sol = self.solve(m, gpu_ms=0.01, cpu=False)
+        used = {sol.assign[n] for n in g.procs if n != 'store'}
+        self.assertEqual(used, set(m.gpu_slots()))
+        self.assertTrue(sol.evaluation.feasible)
+
+    def test_cpu_spill_when_gpus_are_full(self):
+        m = machine(ngpu=1, gpu_gib=2.5 * 10 * MiB / GiB)
+        g, sol = self.solve(m)
+        on_cpu = [n for n in g.procs if m.slots[sol.assign[n]].idx == -1]
+        self.assertGreater(len(on_cpu), 1)
+        self.assertTrue(sol.evaluation.feasible)
+
+    def test_infeasible(self):
+        m = machine(ngpu=1, gpu_gib=5 * MiB / GiB)
+        with self.assertRaises(Infeasible):
+            self.solve(m, cpu=False)
+
+    def test_pins(self):
+        m = machine(ngpu=2)
+        g, sol = self.solve(m, pins={'work1': 1, 'work2': 1})
+        self.assertEqual(sol.assign['work1'], 1)
+        self.assertEqual(sol.assign['work2'], 1)
+
+    def test_groups_stay_together(self):
+        m = machine(ngpu=2)
+        g, sol = self.solve(m, mutable=['table'])
+        self.assertEqual(sol.assign['work1'], sol.assign['work2'])
+
+    def test_layouts(self):
+        m = machine(ngpu=2, nodes=2)
+        per_gpu = Layout(m, 'per_gpu')
+        self.assertEqual(len(per_gpu.procs), 4)
+        self.assertEqual(per_gpu.proc_of_slot[m.nodes[1].cpu_slot],
+                         per_gpu.proc_of_slot[m.nodes[1].gpu_slots[0]])
+        self.assertEqual([p.node for p in per_gpu.procs], [0, 0, 1, 1])
+        single = Layout(machine(ngpu=2), 'single')
+        self.assertEqual(len(single.procs), 1)
+
+    def test_main_process_only(self):
+        m = machine(ngpu=2, nodes=2)
+        with mock.patch.object(DataStore, 'runs_on_main_process_only', classmethod(lambda cls: True)):
+            g, sol = self.solve(m, policy='per_gpu')
+        self.assertEqual(sol.layout.proc_of_slot[sol.assign['store']].rank, 0)
+
+    def test_split_chunk_keeps_groups(self):
+        a, b = split_chunk(['a', 'b', 'c', 'd'], [('b', 'c')])
+        self.assertTrue({'b', 'c'} <= set(a) or {'b', 'c'} <= set(b))
+        self.assertEqual(sorted(a + b), ['a', 'b', 'c', 'd'])
+
+
+class TestAllocationFile(AllocatorTestCase):
+
+    def allocation(self, policy='per_gpu'):
+        m = machine(ngpu=2)
+        g = self.graph()
+        costs = {(n, s.kind): cost() for n in g.procs for s in m.slots}
+        est = Estimator(g, m, costs, {'table': MiB}, {})
+        layout = Layout(m, policy)
+        sol = Solver(g, m, est, build_groups(g, []), {}, search_time=5).solve(layout)
+        return g, make_allocation(g, m, sol)
+
+    def test_round_trip_and_apply(self):
+        g, alloc = self.allocation()
+        alloc['meta'] = {'signature': g.signature(), 'pins': {}, 'architecture': {}, 'precision': 1}
+        path = os.path.join(self.root, 'out', 'allocation.yml')
+        write_allocation(path, alloc, 'report text')
+        self.assertTrue(os.path.exists(os.path.join(self.root, 'out', 'allocation_report.txt')))
+        back = read_allocation(path)
+        self.assertEqual(back['n_ranks'], alloc['n_ranks'])
+        self.assertEqual(back['meta'], alloc['meta'])
+        params = json.loads(json.dumps(self.params))
+        apply_allocation(back, params)
+        for name in g.procs:
+            self.assertIn('target_rank', params[name])
+        # Data objects get the ranks and per-rank devices of their users
+        users = {params[u]['target_rank'] for u in ('work1', 'work2')}
+        if len(users) > 1:
+            self.assertEqual(sorted(params['table']['target_rank']), sorted(users))
+            self.assertIsInstance(params['table']['target_device_idx'], dict)
+        # The file is also a valid override file
+        with open(path) as f:
+            body = yaml.safe_load(f)
+        self.assertTrue(all(k.endswith('_override') for k in body))
+
+    def test_data_objects_follow_referencing_data_objects(self):
+        self.params['base'] = {'class': 'Table', 'value': [3.0]}
+        self.params['table']['other_ref'] = 'base'
+        g, alloc = self.allocation()
+        self.assertEqual(alloc['data_objects']['base'], alloc['data_objects']['table'])
+
+    def test_single_process_has_no_ranks(self):
+        g, alloc = self.allocation(policy='single')
+        self.assertEqual(alloc['n_ranks'], 1)
+        self.assertTrue(all('target_rank' not in p for p in alloc['objects'].values()))
+
+    def test_stale_allocation(self):
+        g = self.graph()
+        meta = {'signature': g.signature(), 'pins': {}, 'architecture': {'a': 1}, 'precision': 1}
+        check_meta(meta, json.loads(json.dumps(meta)), 'x')
+        params = json.loads(json.dumps(self.params))
+        params['work1']['size'] = 7
+        del params['work2']
+        params['store']['inputs']['input_list'] = ['a-last.out_value']
+        new = dict(meta, signature=self.graph(params).signature())
+        with self.assertRaises(StaleAllocation) as cm:
+            check_meta(meta, new, 'x')
+        self.assertIn('work1', str(cm.exception))
+        self.assertIn('removed objects', str(cm.exception))
+        with self.assertRaises(StaleAllocation):
+            check_meta(meta, dict(meta, architecture={'a': 2}), 'x')
+
+    def test_placement_from_params(self):
+        params = json.loads(json.dumps(self.params))
+        params['work2'].update({'target_rank': 1, 'target_device_idx': 1})
+        m = machine(ngpu=2)
+        place = placement_from_params(self.graph(params), m, ranks_per_node=2)
+        self.assertEqual(place['work2'][0].rank, 1)
+        self.assertEqual(place['work2'][1], m.nodes[0].gpu_slots[1])
+        self.assertEqual(place['gen'][0].rank, 0)
+
+
+class TestSimulPlacement(AllocatorTestCase):
+
+    def test_rank_list_and_per_rank_device(self):
+        params = json.loads(json.dumps(self.params))
+        params['table'].update({'target_rank': [0, 1], 'target_device_idx': {0: -1, 1: 0}})
+        simul = Simul(self.write(params), speed_report=False)
+        simul.run()
+        # Without MPI, rank 0 settings are used
+        self.assertEqual(simul.objs['table'].target_device_idx, -1)
+
+    def test_rank_list_not_allowed_for_processing_objects(self):
+        params = json.loads(json.dumps(self.params))
+        params['gen']['target_rank'] = [0, 1]
+        with self.assertRaises(ValueError):
+            Simul(self.write(params), speed_report=False).run()
+
+    @unittest.skipIf(iteras.cp is None, 'needs a GPU')
+    def test_reference_duplicated_on_consumer_device(self):
+        params = json.loads(json.dumps(self.params))
+        params['table']['target_device_idx'] = -1
+        params['work1']['target_device_idx'] = 0
+        params['work2']['target_device_idx'] = -1
+        simul = Simul(self.write(params), speed_report=False)
+        simul.run()
+        t1 = simul.objs['work1'].table
+        t2 = simul.objs['work2'].table
+        self.assertEqual(t1.target_device_idx, 0)
+        self.assertIs(t2, simul.objs['table'])
+
+
+class TestAllocatorRun(AllocatorTestCase):
+    '''Profiling, planning, reuse and stale allocation on a small simulation'''
+
+    def arch(self, **kw):
+        a = {'class': 'Architecture',
+             'nodes': [{'name': 'cpu', 'cpu': {'cores': 4, 'memory_gb': 4}}],
+             'allocation_file': os.path.join(self.root, 'alloc', 'allocation.yml'),
+             'search_time': 5, 'profile_steps': 3, 'warmup_steps': 2}
+        a.update(kw)
+        return a
+
+    def test_plan_reuse_and_stale(self):
+        params = json.loads(json.dumps(self.params))
+        params['architecture'] = self.arch(mode='plan')
+        path = self.write(params)
+        simul = Simul(path, speed_report=False)
+        simul.run()
+        alloc_file = params['architecture']['allocation_file']
+        self.assertTrue(os.path.exists(alloc_file))
+        self.assertTrue(os.path.exists(alloc_file.replace('.yml', '_profile.json')))
+        self.assertEqual(simul.allocation['n_ranks'], 1)
+        self.assertFalse(hasattr(simul, 'loop'))     # plan only: the simulation did not run
+        with open(alloc_file.replace('.yml', '_report.txt')) as f:
+            report = f.read()
+        self.assertIn('Estimated time per step', report)
+
+        # Apply mode reuses the allocation and runs the simulation
+        params['architecture'] = self.arch(mode='apply')
+        simul = Simul(self.write(params), speed_report=False)
+        simul.run()
+        self.assertTrue(hasattr(simul, 'loop'))
+        self.assertEqual(simul.objs['store'].target_device_idx, -1)
+
+        # A changed simulation is an error, unless a new allocation is requested
+        params['gen']['size'] = 500
+        params['work1']['size'] = params['work2']['size'] = params['last']['size'] = 500
+        path = self.write(params)
+        with self.assertRaises(StaleAllocation):
+            Simul(path, speed_report=False).run()
+        Simul(path, speed_report=False, reallocate=True).run()
+
+    def test_allocate_without_architecture(self):
+        with self.assertRaises(ValueError):
+            Simul(self.write(self.params), allocate=True).run()
+
+    @unittest.skipIf(iteras.cp is None, 'needs a GPU')
+    def test_gpu_profile(self):
+        params = json.loads(json.dumps(self.params))
+        params['architecture'] = self.arch(mode='plan', nodes='local', memory_source='probe')
+        simul = Simul(self.write(params), speed_report=False)
+        simul.run()
+        profile = Profile(params['architecture']['allocation_file'].replace('.yml', '_profile.json'))
+        kinds = {k.split('|')[1] for k in profile.entries}
+        self.assertTrue(any(k.startswith('gpu:') for k in kinds))
+        self.assertIn('cpu', kinds)     # the DataStore
+        g = self.graph()
+        gpu_kind = next(k for k in kinds if k.startswith('gpu:'))
+        c = profile.cost(g, 'work1', gpu_kind, iteras.global_precision)
+        self.assertGreater(c.outputs['out_value'], 0)
+        self.assertGreater(c.mem, 0)
+        self.assertGreater(profile.ref(g, 'table', iteras.global_precision)['bytes'], 0)
+        self.assertFalse(profile.ref(g, 'table', iteras.global_precision)['mutable'])
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -150,6 +150,18 @@ The default implementations do nothing; override them to change how
        inputs of the parameter file: Simul creates one input per item, named
        after its alias (``'alias-obj.output'``). Used by ``DataStore`` and
        ``DataBuffer``.
+   * - ``runs_on_cpu_only()``
+     - Class method. Return ``True`` for classes that must run on the CPU
+       (writing files, interacting with the user): the :doc:`allocator <allocator>`
+       never places them on a GPU. Used by ``DataStore``, ``DataPrint``,
+       ``DisplayServer`` and ``InteractiveInput``.
+   * - ``runs_on_main_process_only()``
+     - Class method. Return ``True`` for classes that must run in the main
+       process (MPI rank 0), like ``DisplayServer`` and ``InteractiveInput``.
+   * - ``is_schedule_barrier()``
+     - Class method. Return ``True`` for classes whose position in the trigger
+       order must never change, because they interact with the outside world
+       or modify shared state (``DisplayServer``, ``InteractiveInput``).
    * - ``input_list_created()``
      - Called after the inputs of ``input_list`` have been created.
    * - ``set_simulation_params(params)``

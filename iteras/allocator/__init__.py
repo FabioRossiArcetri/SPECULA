@@ -1,0 +1,522 @@
+'''
+Automatic placement of the objects of a simulation on nodes, processes,
+GPUs and CPUs.
+
+A section of the parameter file whose class is Architecture (see
+iteras.data_objects.architecture) describes the resources. Simul then calls
+Allocator.allocate() before building the objects:
+
+1. the costs of the objects (time per step, memory, size of the outputs) are
+   read from the profile file, or measured by running the simulation for a
+   few steps on a local GPU (see profiler);
+2. the solver searches the placement with the lowest estimated time per
+   step that fits in memory (see solver and cost);
+3. the placement is written to the allocation file as overrides
+   (target_rank, target_device_idx), with a report, and applied to the
+   parameters. Later runs read it back, unless a new allocation is requested;
+   if the simulation or the architecture changed, they stop with an error.
+'''
+import os
+import json
+import datetime
+import importlib.util
+
+import yaml
+
+import iteras
+from iteras.log import get_iteras_logger
+from iteras.data_objects.architecture import Architecture
+from .model import SimGraph, _hash
+from .machine import Machine, GiB
+from .profiler import Profile, profile_run, OutOfDeviceMemory, split_chunk
+from .cost import Estimator, Proc
+from .solver import Solver, Layout, Infeasible, build_groups
+
+META_PREFIX = '# meta: '
+
+
+class StaleAllocation(ValueError):
+    pass
+
+
+class Allocator:
+    '''
+    Parameters
+    ----------
+    simul : iteras.simul.Simul
+    arch_pars : dict
+        Parameters of the Architecture section (with or without "class").
+    plan_only : bool
+        Only compute and write the allocation (also set by mode: plan).
+    recompute : bool
+        Ignore a saved allocation (also set by recompute: true).
+    '''
+
+    def __init__(self, simul, arch_pars, plan_only=False, recompute=False):
+        self.simul = simul
+        self.logger = get_iteras_logger(__name__)
+        self.arch = Architecture(**{k: v for k, v in arch_pars.items() if k != 'class'})
+        self.plan_only = plan_only or self.arch.mode == 'plan'
+        self.recompute = recompute or self.arch.recompute
+        self.precision = iteras.global_precision
+        self.allocation = None
+        self.report = ''
+
+    # -- entry point -----------------------------------------------------
+
+    def allocate(self, params):
+        graph = SimGraph(params, self.simul)
+        comm = iteras.process_comm
+        if comm is not None and comm.Get_size() > 1:
+            allocation = None
+            error = None
+            if iteras.process_rank == 0:
+                try:
+                    allocation = self._load_or_compute(graph, params, n_ranks=comm.Get_size())
+                except Exception as e:
+                    error = e
+            allocation, failed = comm.bcast((allocation, error is not None), root=0)
+            if error is not None:
+                raise error
+            if failed:
+                raise RuntimeError('The allocation failed on rank 0')
+        else:
+            allocation = self._load_or_compute(graph, params, n_ranks=1)
+        self.allocation = allocation
+        apply_allocation(allocation, params)
+        return allocation
+
+    def _load_or_compute(self, graph, params, n_ranks):
+        path = self.arch.allocation_file
+        meta = self._meta(graph)
+        if os.path.exists(path) and not self.recompute:
+            allocation = read_allocation(path)
+            check_meta(allocation['meta'], meta, path)
+            self.logger.info(f'Using the allocation in {path}')
+        else:
+            allocation, self.report = self.compute(graph, params)
+            allocation['meta'] = meta
+            write_allocation(path, allocation, self.report)
+            self.logger.info(f'Allocation written to {path}:\n{self.report}')
+        if not self.plan_only and allocation['n_ranks'] != n_ranks and \
+                not (allocation['n_ranks'] == 1 and n_ranks == 1):
+            raise ValueError(f'The allocation in {path} needs {allocation["n_ranks"]} MPI ranks, '
+                             f'but {n_ranks} were launched: use mpirun -n {allocation["n_ranks"]} '
+                             '(and --mpi)')
+        return allocation
+
+    def _meta(self, graph):
+        return {'signature': graph.signature(),
+                'pins': graph.pins() if not self.arch.override_placement else {},
+                'architecture': self.arch.as_dict(),
+                'precision': self.precision}
+
+    # -- computation -----------------------------------------------------
+
+    def compute(self, graph, params):
+        machine = Machine.from_architecture(self.arch)
+        self.logger.info(f'Allocator: resources\n{machine.describe()}')
+        profile = Profile(self.arch.profile_file)
+        self._ensure_profile(graph, params, profile, machine)
+        est = self.estimator(graph, machine, profile)
+        try:
+            solution = self._solve(graph, machine, est, profile)
+        except Infeasible as e:
+            if iteras.cp is None or self._has_cpu_costs(graph, profile):
+                raise
+            self.logger.info(f'Allocator: {e}. Measuring candidate objects on the CPU')
+            self._profile_cpu_candidates(graph, params, profile, machine, est)
+            est = self.estimator(graph, machine, profile)
+            solution = self._solve(graph, machine, est, profile)
+        allocation = make_allocation(graph, machine, solution)
+        report = make_report(graph, machine, est, solution, profile, self, allocation)
+        return allocation, report
+
+    def estimator(self, graph, machine, profile):
+        '''Estimator built from the measured costs, for the slot kinds of *machine*'''
+        costs, refs, shared = self._tables(graph, machine, profile)
+        calib = profile.calibration.get(self._calib_key(graph))
+        est = Estimator(graph, machine, costs, refs, shared)
+        if calib:
+            predicted = self._predict_profile_run(graph, machine, profile, calib)
+            est.overhead_ns = max(calib['step_ns'] - predicted, 0.0)
+            est.calibration = (predicted, calib['step_ns'])
+        return est
+
+    def _tables(self, graph, machine, profile):
+        '''Costs, referenced data sizes and shared arrays for the slot kinds of *machine*'''
+        costs = {}
+        kinds = {s.kind: s for s in machine.slots}
+        for name in graph.procs:
+            measured = profile.kinds(graph, name, self.precision)
+            gpu_ref = next((k for k in measured if k.startswith('gpu:')), None)
+            for kind, slot in kinds.items():
+                c = profile.cost(graph, name, kind, self.precision)
+                if c is None and slot.is_gpu and gpu_ref is not None:
+                    # GPU model not profiled: scale the GPU time of the profiled one
+                    c = profile.cost(graph, name, gpu_ref, self.precision)
+                    c.g /= slot.speed
+                    c.measured = False
+                if c is not None:
+                    costs[(name, kind)] = c
+        refs = {}
+        for d in graph.data_objs:
+            info = profile.ref(graph, d, self.precision)
+            if info is not None:
+                refs[d] = info['bytes']
+        shared = {}
+        for kind, slot in kinds.items():
+            src = kind
+            if slot.is_gpu and not profile.shared_blocks(graph, kind, self.precision):
+                src = next((k for k in self._gpu_kinds(graph, profile)), kind)
+            shared[kind] = profile.shared_blocks(graph, src, self.precision)
+        return costs, refs, shared
+
+    def _gpu_kinds(self, graph, profile):
+        kinds = set()
+        for name in graph.procs:
+            kinds.update(k for k in profile.kinds(graph, name, self.precision) if k.startswith('gpu:'))
+        return sorted(kinds)
+
+    def _calib_key(self, graph):
+        return _hash([graph.keys[n] for n in graph.procs] + [self.precision])
+
+    def _predict_profile_run(self, graph, machine, profile, calib):
+        '''Estimated step time of the profiling run (all objects in one process, one GPU)'''
+        kind = calib['kind']
+        model = kind[4:] if kind.startswith('gpu:') else ''
+        m = Machine([{'name': 'profile', 'cpu': {'cores': 1, 'memory_gb': 1e6},
+                      'gpus': {'count': 1, 'memory_gb': 1e6, 'model': model}}],
+                    machine.inter_node, 0, 0)
+        m.nodes[0].links = machine.nodes[0].links
+        e = Estimator(graph, m, *self._tables(graph, m, profile))
+        p = Proc(0, 0)
+        placement = {n: (p, 0 if dev >= 0 else 1) for n, dev in calib['devices'].items()
+                     if n in graph.position}
+        return e.step_time(placement)[0]
+
+    def _solve(self, graph, machine, est, profile):
+        mutable = [d for d in graph.data_objs
+                   if (profile.ref(graph, d, self.precision) or {}).get('mutable')]
+        if mutable:
+            self.logger.info(f'Allocator: data objects modified during the run, their users stay '
+                             f'together: {mutable}')
+        groups = build_groups(graph, mutable)
+        policies = self._policies(machine)
+        best = None
+        for policy in policies:
+            layout = Layout(machine, policy)
+            pins = self._pins(graph, machine, layout)
+            solver = Solver(graph, machine, est, groups, pins, search_time=self.arch.search_time,
+                            log=self.logger.info, default_device=self._default_device())
+            try:
+                sol = solver.solve(layout)
+            except Infeasible as e:
+                self.logger.info(f'Allocator: layout {policy}: {e}')
+                if len(policies) == 1:
+                    raise
+                continue
+            self.logger.info(f'Allocator: layout {policy}: {sol.evaluation.step_ns / 1e6:.2f} ms '
+                             f'per step ({solver.n_evals} evaluations)')
+            if best is None or sol.evaluation.key() < best.evaluation.key():
+                best = sol
+        if best is None:
+            raise Infeasible('No layout fits in memory')
+        return best
+
+    def _policies(self, machine):
+        if self.arch.processes != 'auto':
+            if self.arch.processes == 'single' and len(machine.nodes) > 1:
+                raise ValueError("processes: 'single' needs a single node")
+            return [self.arch.processes]
+        if len(machine.nodes) > 1:
+            return ['per_gpu']
+        policies = ['single']
+        if len(machine.gpu_slots()) > 1:
+            if self.arch.nodes != 'local' or importlib.util.find_spec('mpi4py') is not None:
+                policies.append('per_gpu')
+            else:
+                self.logger.info('Allocator: mpi4py not available, only a single process is considered')
+        return policies
+
+    def _default_device(self):
+        '''Device of the objects whose class does not accept target_device_idx'''
+        if self.arch.nodes == 'local':
+            return max(iteras.default_target_device_idx, -1)
+        return 0
+
+    def _pins(self, graph, machine, layout):
+        '''Slots of the objects placed in the parameter file'''
+        if self.arch.override_placement:
+            return {}
+        pins = {}
+        per_node = max(len(machine.nodes[0].gpu_slots), 1) if layout.policy == 'per_gpu' else 1
+        for name, (rank, dev) in graph.pinned.items():
+            node = (rank or 0) // per_node
+            if node >= len(machine.nodes):
+                raise ValueError(f'Object {name} is placed on rank {rank}, which does not exist '
+                                 'in this architecture')
+            n = machine.nodes[node]
+            if dev is None:
+                dev = 0 if n.gpu_slots else -1
+            if dev < 0:
+                pins[name] = n.cpu_slot
+            elif dev < len(n.gpu_slots):
+                pins[name] = n.gpu_slots[dev]
+            else:
+                raise ValueError(f'Object {name} is placed on GPU {dev}, which does not exist')
+        return pins
+
+    # -- profiling -------------------------------------------------------
+
+    def _has_cpu_costs(self, graph, profile):
+        return all(profile.cost(graph, n, 'cpu', self.precision) is not None for n in graph.procs)
+
+    def _missing(self, graph, profile, machine):
+        '''Objects without the costs needed: on a GPU, or on the CPU if they cannot use one'''
+        missing = []
+        for name in graph.procs:
+            kinds = profile.kinds(graph, name, self.precision)
+            if graph.cls(name).runs_on_cpu_only() or not self._use_gpu(machine):
+                if 'cpu' not in kinds:
+                    missing.append(name)
+            elif not any(k.startswith('gpu:') for k in kinds):
+                missing.append(name)
+        return missing
+
+    @staticmethod
+    def _use_gpu(machine):
+        return iteras.cp is not None and bool(machine.gpu_slots())
+
+    def _profile_device(self):
+        cp = iteras.cp
+        if cp is None:
+            return -1
+        if self.arch.profile_device is not None:
+            return self.arch.profile_device
+        free = []
+        for i in range(cp.cuda.runtime.getDeviceCount()):
+            with cp.cuda.Device(i):
+                free.append((cp.cuda.runtime.memGetInfo()[0], -i))
+        return -max(free)[1]
+
+    def _profile_steps(self, graph):
+        '''
+        Warm-up and measured steps of the profiling runs. The warm-up goes past
+        the largest "start_time" parameter (objects often start working later),
+        and at least two periods of the slowest object (largest "dt") are measured.
+        '''
+        dt = graph.params[graph.main_key]['time_step']
+        start, period = 0.0, 1
+        for pars in graph.params.values():
+            if not isinstance(pars, dict):
+                continue
+            if isinstance(pars.get('start_time'), (int, float)):
+                start = max(start, pars['start_time'])
+            if isinstance(pars.get('dt'), (int, float)) and pars['dt'] > 0:
+                period = max(period, round(pars['dt'] / dt))
+        warmup = max(self.arch.warmup_steps, round(start / dt) + 2)
+        steps = max(self.arch.profile_steps, 2 * period)
+        return warmup, steps
+
+    def _workdir(self):
+        stem = self.arch.allocation_file.rsplit('.', 1)[0]
+        return stem + '_profiling'
+
+    def _ensure_profile(self, graph, params, profile, machine):
+        missing = self._missing(graph, profile, machine)
+        if self.arch.profile_cpu:
+            missing += [n for n in graph.procs if profile.cost(graph, n, 'cpu', self.precision) is None]
+        if not missing:
+            self.logger.info(f'Allocator: costs read from {self.arch.profile_file}')
+            return
+        dev = self._profile_device() if self._use_gpu(machine) else -1
+        gpu_model = ''
+        if dev >= 0:
+            gpu_model = iteras.cp.cuda.runtime.getDeviceProperties(dev)['name'].decode()
+        self.logger.info(f'Allocator: measuring {len(missing)} objects '
+                         f'on {"GPU " + str(dev) if dev >= 0 else "the CPU"}')
+        if self._missing(graph, profile, machine):
+            self._profile_gpu(graph, params, profile, dev, gpu_model)
+        if self.arch.profile_cpu and not self._has_cpu_costs(graph, profile):
+            devices = {n: -1 for n in graph.procs}
+            warmup, steps = self._profile_steps(graph)
+            res = profile_run(params, graph, devices, self._workdir(), steps, warmup)
+            profile.add_run(graph, res, self.precision)
+        profile.save()
+
+    def _profile_gpu(self, graph, params, profile, dev, gpu_model):
+        '''All objects on one GPU; if they do not fit, chunks on the GPU and the rest on the CPU'''
+        cpu_only = {n for n in graph.procs if graph.cls(n).runs_on_cpu_only() or dev < 0}
+        candidates = [n for n in graph.procs if n not in cpu_only]
+        groups = build_groups(graph, [])
+        pending = [candidates]
+        first = True
+        warmup, steps = self._profile_steps(graph)
+        while pending:
+            chunk = pending.pop(0)
+            devices = {n: (dev if n in chunk else -1) for n in graph.procs}
+            try:
+                res = profile_run(params, graph, devices, self._workdir(), steps, warmup,
+                                  gpu_model=gpu_model)
+            except OutOfDeviceMemory:
+                if len(chunk) <= 1:
+                    raise MemoryError(f'Allocator: object {chunk} does not fit alone on GPU {dev}')
+                a, b = split_chunk(chunk, groups)
+                self.logger.info(f'Allocator: the objects do not fit on GPU {dev}: profiling in '
+                                 f'chunks of {len(a)} and {len(b)} objects, the rest on the CPU')
+                pending = [a, b] + pending
+                first = False
+                continue
+            # Keep the GPU costs of the chunk, and the CPU costs of the others
+            res.costs = {n: kc for n, kc in res.costs.items()
+                         if n in chunk or n in cpu_only or kc[0] == 'cpu'}
+            profile.add_run(graph, res, self.precision)
+            if first and len(chunk) == len(candidates):
+                profile.calibration[self._calib_key(graph)] = {
+                    'step_ns': res.step_ns, 'kind': f'gpu:{gpu_model}' if dev >= 0 else 'cpu',
+                    'devices': res.devices}
+
+    def _profile_cpu_candidates(self, graph, params, profile, machine, est):
+        '''Measure on the CPU the objects that free most GPU memory per unit of GPU time'''
+        gpu_cap = sum(machine.slots[s].memory for s in machine.gpu_slots())
+        ref = machine.gpu_slots()[0]
+        objs = [n for n in graph.procs if est.cost(n, ref) is not None]
+        need = sum(est.cost(n, ref).mem for n in objs) + sum(est.refs.values())
+        deficit = max(need - gpu_cap, 0.0) + max(est.cost(n, ref).mem for n in objs)
+        ratio = sorted(objs, key=lambda n: -est.cost(n, ref).mem / (est.cost(n, ref).g + 1e4))
+        chosen, freed = [], 0.0
+        for n in ratio:
+            if freed >= 1.5 * deficit:
+                break
+            chosen.append(n)
+            freed += est.cost(n, ref).mem
+        dev = self._profile_device()
+        gpu_model = iteras.cp.cuda.runtime.getDeviceProperties(dev)['name'].decode()
+        devices = {n: (-1 if n in chosen or graph.cls(n).runs_on_cpu_only() else dev)
+                   for n in graph.procs}
+        warmup, steps = self._profile_steps(graph)
+        res = profile_run(params, graph, devices, self._workdir(), steps, warmup, gpu_model=gpu_model)
+        res.costs = {n: kc for n, kc in res.costs.items() if kc[0] == 'cpu'}
+        profile.add_run(graph, res, self.precision)
+        profile.save()
+
+
+# ---------------------------------------------------------------------------
+# Allocation: placement of every object, as overrides
+
+def make_allocation(graph, machine, solution):
+    layout = solution.layout
+    placement = solution.placement()
+    multi = len(layout.procs) > 1
+    objects = {}
+    for name in graph.procs:
+        if name not in placement:
+            continue
+        p, s = placement[name]
+        objects[name] = {'target_device_idx': machine.slots[s].idx} if graph.device_settable[name] else {}
+        if multi:
+            objects[name]['target_rank'] = p.rank
+    data = {}
+    devices = {}        # data object -> {rank: device}
+    for d in graph.data_objs:
+        for p, s in (placement[c] for c in graph.ref_consumers.get(d, []) if c in placement):
+            devices.setdefault(d, {}).setdefault(p.rank, machine.slots[s].idx)
+    changed = True
+    while changed:
+        changed = False
+        for d, refs in graph.data_data_refs.items():
+            for r in refs:
+                for rank, dev in devices.get(d, {}).items():
+                    if rank not in devices.setdefault(r, {}):
+                        devices[r][rank] = dev
+                        changed = True
+    for d, per_rank in devices.items():
+        if not per_rank:
+            continue
+        if multi:
+            ranks = sorted(per_rank)
+            data[d] = {'target_rank': ranks if len(ranks) > 1 else ranks[0],
+                       'target_device_idx': per_rank if len(ranks) > 1 else per_rank[ranks[0]]}
+        else:
+            data[d] = {'target_device_idx': per_rank[0]}
+    procs = [{'rank': p.rank, 'node': p.node,
+              'devices': sorted({machine.slots[s].idx for q, s in placement.values() if q == p})}
+             for p in layout.procs]
+    ev = solution.evaluation
+    return {'objects': objects, 'data_objects': data, 'n_ranks': len(layout.procs) if multi else 1,
+            'layout': layout.policy, 'processes': procs,
+            'estimated_step_ms': ev.step_ns / 1e6}
+
+
+def apply_allocation(allocation, params):
+    for name, place in list(allocation['objects'].items()) + list(allocation['data_objects'].items()):
+        if name in params:
+            params[name].update(place)
+
+
+def write_allocation(path, allocation, report):
+    if os.path.dirname(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    meta = {k: allocation[k] for k in ('meta', 'n_ranks', 'layout', 'processes', 'estimated_step_ms')}
+    lines = [f'# Allocation written by the iteras allocator on '
+             f'{datetime.datetime.now().isoformat(timespec="seconds")}.',
+             '# It can be passed as an additional parameter file. Recompute it with --reallocate.',
+             f'# Layout: {allocation["layout"]}, MPI ranks: {allocation["n_ranks"]}, '
+             f'estimated time per step: {allocation["estimated_step_ms"]:.2f} ms',
+             META_PREFIX + json.dumps(meta, sort_keys=True), '']
+    body = {}
+    for name, place in list(allocation['objects'].items()) + list(allocation['data_objects'].items()):
+        if place:
+            body[f'{name}_override'] = place
+    with open(path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+        yaml.safe_dump(body, f, sort_keys=False, default_flow_style=None)
+    if report:
+        with open(path.rsplit('.', 1)[0] + '_report.txt', 'w') as f:
+            f.write(report)
+
+
+def read_allocation(path):
+    meta = None
+    with open(path) as f:
+        text = f.read()
+    for line in text.splitlines():
+        if line.startswith(META_PREFIX):
+            meta = json.loads(line[len(META_PREFIX):])
+            break
+    if meta is None:
+        raise ValueError(f'{path} is not an allocation file written by the allocator')
+    body = yaml.safe_load(text) or {}
+    allocation = dict(meta)
+    allocation['objects'] = {key[:-len('_override')]: place for key, place in body.items()}
+    allocation['data_objects'] = {}
+    return allocation
+
+
+def check_meta(saved, current, path):
+    '''Raise StaleAllocation, naming what changed, if *saved* does not match *current*'''
+    problems = []
+    s_sig, c_sig = saved['signature'], current['signature']
+    added = sorted(set(c_sig) - set(s_sig))
+    removed = sorted(set(s_sig) - set(c_sig))
+    changed = sorted(k for k in set(s_sig) & set(c_sig) if s_sig[k] != c_sig[k])
+    if added:
+        problems.append(f'new objects {added}')
+    if removed:
+        problems.append(f'removed objects {removed}')
+    if changed:
+        problems.append(f'changed objects {changed}')
+    if saved['pins'] != current['pins']:
+        problems.append('different target_rank/target_device_idx in the parameter files')
+    if saved['architecture'] != current['architecture']:
+        problems.append('different architecture')
+    if saved['precision'] != current['precision']:
+        problems.append('different precision')
+    if problems:
+        raise StaleAllocation(f'The allocation in {path} was computed for a different simulation: '
+                              + '; '.join(problems) + '. Recompute it with --reallocate '
+                              '(or recompute: true in the Architecture section)')
+
+
+from .report import make_report     # noqa: E402

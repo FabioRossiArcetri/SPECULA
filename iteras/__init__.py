@@ -216,6 +216,8 @@ def main_simul(yml_files: list,
                trace_sync: bool=False,
                trace_skip: int=0,
                trace_gpu_events: bool=False,
+               allocate: bool=False,
+               reallocate: bool=False,
                ):
 
     # Set logging level for the "parent" loggers of iteras and its plugins
@@ -281,6 +283,8 @@ def main_simul(yml_files: list,
                 diagram_colors_on=diagram_colors_on,
                 speed_report=not no_speed_report,
                 log_level=log_level,
+                allocate=allocate,
+                reallocate=reallocate,
             ).run()
     except Exception:
         if mpi:
