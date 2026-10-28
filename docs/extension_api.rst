@@ -49,6 +49,12 @@ Helper methods: ``to_xp(v, dtype=None, force_copy=False)`` converts an array to
 the device of the object, ``seconds_to_t()`` and ``t_to_seconds()`` convert
 between seconds and the integer time used by the framework.
 
+Some scipy functions are available for the device of the object, from
+``scipy`` on the CPU and from ``cupyx.scipy`` on the GPU: ``ndimage_shift``,
+``ndimage_rotate``, ``ndimage_center_of_mass``, ``dct`` and ``idct``. They are
+read-only attributes, imported the first time they are used, and they follow
+the device of the object (for example after ``copyTo()``).
+
 Processing objects
 ------------------
 

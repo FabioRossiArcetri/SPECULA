@@ -1,5 +1,6 @@
 
 import weakref
+import functools
 from functools import wraps
 from inspect import signature
 
@@ -154,6 +155,28 @@ def gpu_mem_report(objs, names=None):
                      f' unattributed {(pool-tot)/MB:.2f} MB')
     return '\n'.join(lines)
 
+@functools.cache
+def _scipy_helpers(gpu):
+    '''
+    scipy functions offered to all objects as attributes (ndimage_shift, dct...),
+    from scipy or, if *gpu* is True, from cupyx.scipy. Imported at the first call
+    for each backend, so that creating objects does not import them.
+    '''
+    if gpu:
+        from cupyx.scipy.ndimage import rotate, shift, center_of_mass
+        from cupyx.scipy.fft import ifft2, idct, dct
+        from cupyx.scipy.linalg import lu_factor, lu_solve
+    else:
+        from scipy.ndimage import rotate, shift, center_of_mass
+        from scipy.fft import ifft2
+        # The legacy fftpack versions, as before on CPU
+        from scipy.fftpack import idct, dct
+        from scipy.linalg import lu_factor, lu_solve
+    return {'ndimage_rotate': rotate, 'ndimage_shift': shift,
+            'ndimage_center_of_mass': center_of_mass, 'ifft2': ifft2,
+            'dct': dct, 'idct': idct, 'lu_factor': lu_factor, 'lu_solve': lu_solve}
+
+
 def _check_initialized():
     # init() is the same function whether it is called as iteras.init()
     # or through a plugin package that re-exports it. The settings are read
@@ -223,13 +246,6 @@ class BaseTimeObj:
             self.xp_str = 'np'
 
         if self.target_device_idx >= 0:
-            from cupyx.scipy.ndimage import rotate as ndimage_rotate
-            from cupyx.scipy.ndimage import shift as ndimage_shift
-            from cupyx.scipy.ndimage import center_of_mass as ndimage_center_of_mass
-            from cupyx.scipy.fft import ifft2 as scipy_ifft2
-            from cupyx.scipy.fft import idct, dct
-            from cupyx.scipy.linalg import lu_factor, lu_solve
-
             self._target_device.use()
             _used_devices.add(self.target_device_idx)
             # If the count started before the device was known and could not
@@ -241,22 +257,42 @@ class BaseTimeObj:
             from cupy._util import PerformanceWarning
             self.PerformanceWarning = PerformanceWarning
         else:
-            from scipy.ndimage import rotate as ndimage_rotate
-            from scipy.ndimage import shift as ndimage_shift
-            from scipy.ndimage import center_of_mass as ndimage_center_of_mass
-            from scipy.fft import ifft2 as scipy_ifft2
-            from scipy.fftpack import idct, dct
-            from scipy.linalg import lu_factor, lu_solve
             self.PerformanceWarning = None
 
-        self.ndimage_rotate = ndimage_rotate
-        self.ndimage_shift = ndimage_shift
-        self.ndimage_center_of_mass = ndimage_center_of_mass
-        self._lu_factor = lu_factor
-        self._lu_solve = lu_solve
-        self._scipy_ifft2 = scipy_ifft2
-        self.dct = dct
-        self.idct = idct
+    # scipy (CPU) or cupyx (GPU) functions for the device of the object,
+    # imported the first time they are used (see _scipy_helpers())
+
+    @property
+    def ndimage_rotate(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['ndimage_rotate']
+
+    @property
+    def ndimage_shift(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['ndimage_shift']
+
+    @property
+    def ndimage_center_of_mass(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['ndimage_center_of_mass']
+
+    @property
+    def dct(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['dct']
+
+    @property
+    def idct(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['idct']
+
+    @property
+    def _lu_factor(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['lu_factor']
+
+    @property
+    def _lu_solve(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['lu_solve']
+
+    @property
+    def _scipy_ifft2(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['ifft2']
 
     def init_logging(self, level=None):
         name = getattr(self, 'name', None)
