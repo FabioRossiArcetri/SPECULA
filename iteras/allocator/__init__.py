@@ -144,8 +144,8 @@ class Allocator:
         '''
         Best placement on *machine*. With several identical nodes, the placement is
         searched on the first k nodes for each k, and the fastest one is kept (the
-        one with fewest nodes, if within 1% of the fastest): the search on all the
-        nodes alone may spread the objects more than useful.
+        one with fewest nodes, if within node_tolerance of the fastest): the search
+        on all the nodes alone may spread the objects more than useful.
         Return (machine used, estimator, solution, [(k, time per step)]).
         '''
         n = len(machine.nodes)
@@ -170,7 +170,8 @@ class Allocator:
         if not results:
             raise Infeasible('No number of nodes fits in memory')
         fastest = min(r[3].evaluation.step_ns for r in results)
-        k, sub, est, sol = min((r for r in results if r[3].evaluation.step_ns <= 1.01 * fastest),
+        limit = (1 + self.arch.node_tolerance) * fastest
+        k, sub, est, sol = min((r for r in results if r[3].evaluation.step_ns <= limit),
                                key=lambda r: r[0])
         return sub, est, sol, [(r[0], r[3].evaluation.step_ns) for r in results]
 

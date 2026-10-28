@@ -93,8 +93,9 @@ How it works
    are placed as a unit. An initial placement (memory-aware HEFT) is improved by
    moving and swapping objects, for each process layout. With several identical
    nodes, the search is made on the first k nodes for each k, and the fastest
-   placement is kept, with the fewest nodes if others are within 1%: the report
-   lists the time per step for each number of nodes.
+   placement is kept, with the fewest nodes if others are within
+   ``node_tolerance`` (5%): the report lists the time per step for each number
+   of nodes.
 
 Objects of classes that must run on the CPU or in the main process (see
 :doc:`extension_api`) are placed accordingly. Objects of classes whose

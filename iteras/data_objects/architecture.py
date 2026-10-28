@@ -86,6 +86,10 @@ class Architecture:
         'auto' (default): choose between one process for each GPU and one
         process per node driving all its GPUs; 'per_gpu'; 'single' (one process
         per node: no MPI with a single node).
+    node_tolerance : float, optional
+        With several identical nodes, the placement on fewer nodes is preferred
+        if its estimated time per step is within this fraction of the fastest
+        one (default 0.05).
     pin_ranks_per_node : int, optional
         Number of MPI ranks per node of the launch for which the target_rank of
         the objects placed in the parameter files were written (with slurm's
@@ -115,6 +119,7 @@ class Architecture:
                  warmup_steps: int=3,
                  processes: str='auto',
                  pin_ranks_per_node: int=None,
+                 node_tolerance: float=0.05,
                  schedule: str='fixed',
                  search_time: float=60.0,
                  ):
@@ -153,6 +158,7 @@ class Architecture:
         self.warmup_steps = warmup_steps
         self.processes = processes
         self.pin_ranks_per_node = pin_ranks_per_node
+        self.node_tolerance = node_tolerance
         self.schedule = schedule
         self.search_time = search_time
 
@@ -186,4 +192,5 @@ class Architecture:
         '''Parameters that change the result of the allocation (for the allocation file check)'''
         return {k: getattr(self, k) for k in ('nodes', 'inter_node', 'memory_source', 'memory_margin',
                                               'context_overhead_gb', 'objective', 'override_placement',
-                                              'processes', 'pin_ranks_per_node', 'schedule')}
+                                              'processes', 'pin_ranks_per_node', 'node_tolerance',
+                                              'schedule')}
