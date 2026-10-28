@@ -83,6 +83,22 @@ class Work(BaseProcessingObj):
     def post_trigger(self):
         super().post_trigger()
         self.out.generation_time = self.current_time
+
+
+class SplitWork(Work):
+    """Like Work, as if its work were split over *parts* devices"""
+    def __init__(self, size: int=100, parts: int=1, table: Table=None,
+                 target_device_idx=None, precision=None):
+        super().__init__(size=size, table=table, target_device_idx=target_device_idx,
+                         precision=precision)
+
+    @classmethod
+    def devices_used(cls, params):
+        return params.get('parts', 1)
+
+    @classmethod
+    def single_device_params(cls, params):
+        return {**params, 'parts': 1}
 '''
 
 
@@ -97,7 +113,8 @@ class AllocatorTestCase(unittest.TestCase):
         os.makedirs(pkg)
         with open(os.path.join(pkg, '__init__.py'), 'w') as f:
             f.write(textwrap.dedent(OBJECTS))
-        for name, klass in [('gen', 'Gen'), ('work', 'Work'), ('table', 'Table')]:
+        for name, klass in [('gen', 'Gen'), ('work', 'Work'), ('table', 'Table'),
+                            ('split_work', 'SplitWork')]:
             with open(os.path.join(pkg, f'{name}.py'), 'w') as f:
                 f.write(f'from alloc_objs import {klass}\n')
         sys.path.insert(0, root)
@@ -368,6 +385,32 @@ class TestEstimator(AllocatorTestCase):
         self.assertAlmostEqual(settled, one_pass)
         self.assertLess(settled, blocking)
 
+    def split_estimator(self, parts, gpu_ms=10.0):
+        self.params['work2'] = dict(self.params['work2'], **{'class': 'SplitWork', 'parts': parts})
+        self.params['store']['inputs']['input_list'] = ['a-last.out_value', 'b-work2.out_value']
+        m = machine(ngpu=4)
+        est = self.estimator(m, gpu_ms=0.01, mem_mib=40)
+        for kind in ('gpu:test', 'cpu'):
+            est.costs[('work2', kind)].g = gpu_ms * ms
+        p = Proc(0, 0)
+        place = {n: (p, 0) for n in est.graph.procs}
+        place['work2'] = (p, 1)
+        return m, est, place
+
+    def test_split_object_divides_memory_and_time(self):
+        m, est, place = self.split_estimator(parts=1)
+        self.assertEqual(est.devices('work2', 1), [1])
+        one_mem = est.memory(place)
+        one_time = est.step_time(place)[0]
+        m, est, place = self.split_estimator(parts=4)
+        self.assertEqual(est.graph.spread['work2'], 4)
+        self.assertEqual(est.devices('work2', 1), [1, 2, 3, 0])    # following GPUs, modulo
+        mem = est.memory(place)
+        # 40 MiB divided among four GPUs, and a copy of its 1 MiB input on each new one
+        self.assertAlmostEqual(mem[1], one_mem[1] - 30 * MiB)
+        self.assertAlmostEqual(mem[2], 10 * MiB + 1 * MiB + 100 * MiB)   # with table
+        self.assertLess(est.step_time(place)[0], one_time - 5 * ms)
+
     def test_memory_per_process(self):
         # work2 in a second process on the same GPU: that process has its own copy
         # of the referenced data object (100 MiB) and of its input from gen (1 MiB),
@@ -448,6 +491,44 @@ class TestSolver(AllocatorTestCase):
         with self.assertRaises(Infeasible):
             self.solve(m, cpu=False)
 
+    def test_split_object_on_gpus_only_and_pin_kept(self):
+        self.params['work2'] = dict(self.params['work2'], **{'class': 'SplitWork', 'parts': 2,
+                                                             'target_device_idx': 1})
+        g = self.graph()
+        self.assertEqual(g.spread['work2'], 2)
+        m = machine(ngpu=2)
+        costs = {(n, s.kind): cost() for n in g.procs for s in m.slots}
+        est = Estimator(g, m, costs, {'table': MiB}, {})
+        layout = Layout(m, 'single')
+        solver = Solver(g, m, est, build_groups(g, []), {}, search_time=5)
+        self.assertNotIn(m.nodes[0].cpu_slot, solver.eligible(('work2',), layout))
+        # A placement by hand of an object split over several devices is kept,
+        # even when the allocator may move the others
+        arch = {'nodes': [{'name': 'n', 'cpu': {'cores': 4, 'memory_gb': 10},
+                           'gpus': {'count': 2, 'memory_gb': 10, 'model': 'test'}}],
+                'override_placement': True}
+        params = json.loads(json.dumps(self.params))
+        params['work1']['target_device_idx'] = 0
+        g = self.graph(params)
+        alloc = Allocator(Simul(self.write(params)), arch, plan_only=True)
+        pins = alloc._pins(g, m, layout)
+        self.assertEqual(pins, {'work2': m.nodes[0].gpu_slots[1]})
+
+    def test_pin_ranks_per_node(self):
+        params = json.loads(json.dumps(self.params))
+        params['work1'].update({'target_rank': 3, 'target_device_idx': 0})
+        g = self.graph(params)
+        m = machine(ngpu=2, nodes=4)
+        arch = {'nodes': [{'name': 'n', 'count': 4, 'cpu': {'cores': 4, 'memory_gb': 10},
+                           'gpus': {'count': 2, 'memory_gb': 10, 'model': 'test'}}]}
+        sim = Simul(self.write(params))
+        # by default as in the layout: one rank per GPU (rank 3 on node 1), or per node
+        alloc = Allocator(sim, arch, plan_only=True)
+        self.assertEqual(alloc._pins(g, m, Layout(m, 'per_gpu'))['work1'], m.nodes[1].gpu_slots[0])
+        self.assertEqual(alloc._pins(g, m, Layout(m, 'single'))['work1'], m.nodes[3].gpu_slots[0])
+        alloc = Allocator(sim, dict(arch, pin_ranks_per_node=1), plan_only=True)
+        self.assertEqual(alloc._pins(g, m, Layout(m, 'per_gpu'))['work1'], m.nodes[3].gpu_slots[0])
+
     def test_pins(self):
         m = machine(ngpu=2)
         g, sol = self.solve(m, pins={'work1': 1, 'work2': 1})
@@ -488,6 +569,14 @@ class TestSolver(AllocatorTestCase):
         self.assertEqual(chosen[0], 'gen')
         self.assertNotIn('work1', chosen)
         self.assertNotIn('store', chosen)       # already on the CPU
+
+    def test_split_object_profiled_on_one_device(self):
+        self.params['work2'] = dict(self.params['work2'], **{'class': 'SplitWork', 'parts': 4})
+        g = self.graph()
+        p = profiler_module._profile_params(self.params, g, {n: 0 for n in g.procs},
+                                           self.root, steps=2, warmup=1)
+        self.assertEqual(p['work2']['parts'], 1)
+        self.assertEqual(self.params['work2']['parts'], 4)      # not modified
 
     def test_split_chunk_keeps_groups(self):
         a, b = split_chunk(['a', 'b', 'c', 'd'], [('b', 'c')])

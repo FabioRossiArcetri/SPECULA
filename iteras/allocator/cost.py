@@ -13,6 +13,9 @@ simulating a few steps of the loop as LoopControl runs it:
   a sequential stream, which runs while the host goes on, except for objects
   that wait for the GPU in trigger or post_trigger (see profiler) and before
   copying data out of a GPU;
+* an object that splits its work over k devices (graph.spread, e.g.
+  DistributedSH) launches k parts, each with 1/k of the measured GPU time and
+  memory, copies its inputs to its other devices and gathers the results;
 * MPI messages are sent as iteras.mpi_progress sends them. A small message
   (up to EAGER_BYTES) travels at once. The data of a larger one moves once
   both the send and the receive have been posted: on a single-copy link the
@@ -89,6 +92,18 @@ class Estimator:
     def cost(self, name, slot):
         return self.costs.get((name, self.machine.slots[slot].kind))
 
+    def devices(self, name, slot):
+        '''
+        Slots used by object *name* placed on *slot*: the following GPUs of the
+        node too (modulo their number) for objects that split their work.
+        '''
+        k = self.graph.spread.get(name, 1)
+        if k == 1 or not self.machine.slots[slot].is_gpu:
+            return [slot]
+        gpus = self.machine.nodes[self.machine.slots[slot].node].gpu_slots
+        first = gpus.index(slot)
+        return [gpus[(first + i) % len(gpus)] for i in range(k)]
+
     def out_bytes(self, edge, slot):
         '''Bytes of the output of *edge*, copied between devices'''
         c = self.cost(edge.src, slot)
@@ -112,9 +127,12 @@ class Estimator:
         slots = self.machine.slots
         use = defaultdict(float)
         on_proc_slot = defaultdict(set)
+        used = {name: self.devices(name, s) for name, (_, s) in placement.items()}
         for name, (p, s) in placement.items():
-            use[s] += self.cost(name, s).mem
-            on_proc_slot[(p, s)].add(name)
+            mem = self.cost(name, s).mem
+            for d in used[name]:
+                use[d] += mem / len(used[name])
+                on_proc_slot[(p, d)].add(name)
         for (p, s), names in on_proc_slot.items():
             for owners, size in self.shared.get(slots[s].kind, []):
                 if names.intersection(owners):
@@ -122,17 +140,19 @@ class Estimator:
             if slots[s].is_gpu:
                 use[s] += self.machine.context_overhead
         for d, consumers in self.ref_consumers.items():
-            for ps in {placement[c] for c in consumers if c in placement}:
-                use[ps[1]] += self.refs[d]
+            for p, slot in {(placement[c][0], x) for c in consumers if c in placement
+                            for x in used[c]}:
+                use[slot] += self.refs[d]
         clones = set()
         for name, (p, s) in placement.items():
             for e in self.graph.in_edges[name]:
                 if e.src not in placement:
                     continue
                 ps, ss = placement[e.src]
-                if (ps, ss) != (p, s) and (e.src, e.out, p, s) not in clones:
-                    clones.add((e.src, e.out, p, s))
-                    use[s] += self.out_bytes(e, ss)
+                for d in used[name]:
+                    if (ps, ss) != (p, d) and (e.src, e.out, p, d) not in clones:
+                        clones.add((e.src, e.out, p, d))
+                        use[d] += self.out_bytes(e, ss)
                 if ps != p:
                     # host copies: up to two steps in flight at the sender, one at the receiver
                     nbytes = self.mpi_bytes(e, ss)
@@ -212,6 +232,7 @@ class Estimator:
         sent = {}                       # (edge, step) -> (send time, bytes)
         events = defaultdict(list)      # process -> [(start, end)] inside MPI
         remote_out = {}
+        used = {name: self.devices(name, s) for name, (_, s) in placement.items()}
         comm_bytes = 0.0
         for name, (p, s) in placement.items():
             remote_out[name] = [e for e in self.graph.out_edges[name]
@@ -251,18 +272,25 @@ class Estimator:
                             elif ss != s:
                                 t = max(t, done.get((e.src, ks), 0.0))
                                 t += m.copy_ns(ss, s, self.out_bytes(e, ss))
+                            # the parts on other devices copy the input
+                            for d in set(used[name]) - {s}:
+                                t += m.copy_ns(s, d, self.out_bytes(e, ss))
                         t += c.h_in
                     # 2. trigger
                     for name in names:
                         s = placement[name][1]
                         c = self.cost(name, s)
-                        t += c.h_prep + c.h_trig
+                        parts = used[name]
+                        t += c.h_prep + c.h_trig * len(parts)
                         if slots[s].is_gpu:
-                            start = max(t, stream[s])
-                            stream[s] = start + c.g
-                            done[(name, k)] = stream[s]
+                            end = 0.0
+                            for d in parts:
+                                start = max(t, stream[d])
+                                stream[d] = start + c.g / len(parts)
+                                end = max(end, stream[d])
+                            done[(name, k)] = end
                             if c.syncs == 'trigger':
-                                t = max(t, stream[s])
+                                t = max(t, end)
                         else:
                             done[(name, k)] = t
                     # 3. post_trigger and sends
@@ -274,6 +302,13 @@ class Estimator:
                             t = max(t, done[(name, k)])
                             if c.graph and self.polling:
                                 events[p].append((t0, t))      # polls its sends meanwhile
+                        if len(used[name]) > 1:
+                            # gathers the results of the parts on the other devices
+                            t = max(t, done[(name, k)])
+                            nbytes = sum(c.outputs.values()) / len(used[name])
+                            for d in used[name]:
+                                if d != s:
+                                    t += m.copy_ns(d, s, nbytes)
                         t += c.h_post
                         if remote_out[name]:
                             t0 = t

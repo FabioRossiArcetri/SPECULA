@@ -164,6 +164,9 @@ def _profile_params(params, graph, devices, workdir, steps, warmup):
             del p[name]
             continue
         p[name].pop('target_rank', None)
+        if graph.spread.get(name, 1) > 1:
+            # Measured on one device; the estimator divides its work among its devices
+            p[name] = dict(klass.single_device_params(p[name]))
         if name in devices:
             if graph.device_settable[name]:
                 p[name]['target_device_idx'] = devices[name]

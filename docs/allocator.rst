@@ -53,11 +53,17 @@ for all of them):
     ``'apply'`` (default): allocate, then run the simulation. ``'plan'``: only
     write the allocation and its report (also ``--allocate`` on the command line).
 ``processes``
-    ``'auto'`` (default) compares one process per GPU with a single process
-    driving all the GPUs of the node; ``'per_gpu'``; ``'single'``.
+    ``'auto'`` (default) compares one process per GPU with one process per node
+    driving all its GPUs; ``'per_gpu'``; ``'single'`` (one process per node:
+    no MPI with a single node).
 ``override_placement``
     Objects with ``target_rank`` or ``target_device_idx`` in the parameter files
-    are not moved, unless this is ``true``.
+    are not moved, unless this is ``true`` (objects split over several devices
+    are never moved, see below).
+``pin_ranks_per_node``
+    How many ranks per node the ``target_rank`` of the parameter files assume
+    (rank r is on node r // pin_ranks_per_node). By default, as in each process
+    layout considered.
 ``allocation_file``
     Where the allocation is written (default ``allocation.yml``), with a report
     (``allocation_report.txt``) and the measured costs (``allocation_profile.json``).
@@ -95,6 +101,18 @@ Objects of classes that must run on the CPU or in the main process (see
 constructor does not accept ``target_device_idx`` stay on the default device of
 their process. A data object used by objects on several devices is duplicated
 on each of them.
+
+Some objects split their work over several devices, like ``DistributedSH``,
+which runs ``n_slices`` parts of a Shack-Hartmann sensor on the GPU given by
+``target_device_idx`` and on the following ones (see ``devices_used()`` in
+:doc:`extension_api`). They are measured on a single device (with
+``n_slices: 1``), and the estimate divides their memory and GPU time among their
+devices, with the copies of their inputs and the gathering of the results. When
+such an object is placed by hand (``target_rank`` and ``target_device_idx``), it
+stays there, even with ``override_placement``: for example, with the
+``DistributedSH`` objects of ``config/leonardo/overrides/ov_MORFEO_leonardo_ds4.yml``
+(one rank per node, so ``pin_ranks_per_node: 1``), the allocator places the
+other objects around them.
 
 Using the allocation
 --------------------

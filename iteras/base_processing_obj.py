@@ -426,6 +426,26 @@ class BaseProcessingObj(BaseTimeObj):
         return False
 
     @classmethod
+    def devices_used(cls, params):
+        '''
+        Number of devices used by an object of this class built with the
+        parameters *params* (a dictionary, as in the parameter file): the device
+        given by target_device_idx and the following ones, modulo the number of
+        devices of the node. Override for objects that split their work over
+        several devices. Used by the allocator.
+        '''
+        return 1
+
+    @classmethod
+    def single_device_params(cls, params):
+        '''
+        Parameters that build an equivalent object on a single device, for
+        objects whose devices_used() is more than 1: the allocator measures it
+        this way and divides its work among its devices.
+        '''
+        return params
+
+    @classmethod
     def is_schedule_barrier(cls):
         '''
         Override to return True for classes whose position in the trigger order

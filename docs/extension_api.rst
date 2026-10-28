@@ -158,6 +158,15 @@ The default implementations do nothing; override them to change how
    * - ``runs_on_main_process_only()``
      - Class method. Return ``True`` for classes that must run in the main
        process (MPI rank 0), like ``DisplayServer`` and ``InteractiveInput``.
+   * - ``devices_used(params)``
+     - Class method. Number of devices used by an object built with *params*
+       (1 by default): the device ``target_device_idx`` and the following ones,
+       for objects that split their work, like ``DistributedSH``. The allocator
+       divides their memory and GPU time among those devices.
+   * - ``single_device_params(params)``
+     - Class method. Parameters of an equivalent object on a single device, used
+       by the allocator to measure the objects whose ``devices_used()`` is more
+       than 1.
    * - ``is_schedule_barrier()``
      - Class method. Return ``True`` for classes whose position in the trigger
        order must never change, because they interact with the outside world

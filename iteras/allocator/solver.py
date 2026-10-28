@@ -32,8 +32,8 @@ class Layout:
     Processes of a run and the devices they drive.
 
     policy 'per_gpu': one process per GPU; the CPU of a node belongs to the
-    process of its first GPU. 'single': one process per node. Ranks are
-    numbered node by node.
+    process of its first GPU. 'single': one process per node, driving all its
+    GPUs (no MPI with a single node). Ranks are numbered node by node.
     '''
 
     def __init__(self, machine, policy):
@@ -138,6 +138,8 @@ class Solver:
                 continue
             klasses = [self.graph.cls(n) for n in group]
             if slot.is_gpu and any(k.runs_on_cpu_only() for k in klasses):
+                continue
+            if not slot.is_gpu and any(self.graph.spread[n] > 1 for n in group):
                 continue
             if any(k.runs_on_main_process_only() for k in klasses) and layout.proc_of_slot[s].rank != 0:
                 continue

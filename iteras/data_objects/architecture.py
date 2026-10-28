@@ -83,9 +83,14 @@ class Architecture:
     profile_steps, warmup_steps : int, optional
         Number of steps measured during profiling, and of steps run before them.
     processes : str, optional
-        'auto' (default): choose between one process for each GPU and a single
-        process driving all the GPUs of a node; 'per_gpu'; 'single' (no MPI,
-        one node only).
+        'auto' (default): choose between one process for each GPU and one
+        process per node driving all its GPUs; 'per_gpu'; 'single' (one process
+        per node: no MPI with a single node).
+    pin_ranks_per_node : int, optional
+        Number of MPI ranks per node of the launch for which the target_rank of
+        the objects placed in the parameter files were written (with slurm's
+        block distribution, rank r is on node r // pin_ranks_per_node). Default:
+        as in each process layout considered (one per GPU, or one per node).
     schedule : str, optional
         Execution order: only 'fixed' (the trigger order) for now.
     search_time : float, optional
@@ -109,6 +114,7 @@ class Architecture:
                  profile_steps: int=5,
                  warmup_steps: int=3,
                  processes: str='auto',
+                 pin_ranks_per_node: int=None,
                  schedule: str='fixed',
                  search_time: float=60.0,
                  ):
@@ -146,6 +152,7 @@ class Architecture:
         self.profile_steps = profile_steps
         self.warmup_steps = warmup_steps
         self.processes = processes
+        self.pin_ranks_per_node = pin_ranks_per_node
         self.schedule = schedule
         self.search_time = search_time
 
@@ -179,4 +186,4 @@ class Architecture:
         '''Parameters that change the result of the allocation (for the allocation file check)'''
         return {k: getattr(self, k) for k in ('nodes', 'inter_node', 'memory_source', 'memory_margin',
                                               'context_overhead_gb', 'objective', 'override_placement',
-                                              'processes', 'schedule')}
+                                              'processes', 'pin_ranks_per_node', 'schedule')}

@@ -60,6 +60,14 @@ class DistributedSH(SH):
             self.sub_sh.append( SH(**args))
 
     @classmethod
+    def devices_used(cls, params):
+        return int(params.get('n_slices', 1))
+
+    @classmethod
+    def single_device_params(cls, params):
+        return {**params, 'n_slices': 1}
+
+    @classmethod
     def input_names(cls):
         return super().input_names()
 

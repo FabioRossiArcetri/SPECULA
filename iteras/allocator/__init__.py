@@ -105,9 +105,18 @@ class Allocator:
                              '(and --mpi)')
         return allocation
 
+    def _kept_pins(self, graph):
+        '''
+        Objects placed in the parameter files that stay there: all of them, or
+        with override_placement only those that split their work over several
+        devices (their placement on a node is chosen by hand).
+        '''
+        return {name: pin for name, pin in graph.pinned.items()
+                if not self.arch.override_placement or graph.spread[name] > 1}
+
     def _meta(self, graph):
         return {'signature': graph.signature(),
-                'pins': graph.pins() if not self.arch.override_placement else {},
+                'pins': {name: list(pin) for name, pin in sorted(self._kept_pins(graph).items())},
                 'architecture': self.arch.as_dict(),
                 'precision': self.precision}
 
@@ -265,11 +274,9 @@ class Allocator:
 
     def _policies(self, machine):
         if self.arch.processes != 'auto':
-            if self.arch.processes == 'single' and len(machine.nodes) > 1:
-                raise ValueError("processes: 'single' needs a single node")
             return [self.arch.processes]
         if len(machine.nodes) > 1:
-            return ['per_gpu']
+            return ['per_gpu', 'single']
         policies = ['single']
         if len(machine.gpu_slots()) > 1:
             if self.arch.nodes != 'local' or importlib.util.find_spec('mpi4py') is not None:
@@ -285,12 +292,16 @@ class Allocator:
         return 0
 
     def _pins(self, graph, machine, layout):
-        '''Slots of the objects placed in the parameter file'''
-        if self.arch.override_placement:
-            return {}
+        '''
+        Slots of the objects placed in the parameter files. Their target_rank
+        is mapped to a node with pin_ranks_per_node ranks per node, or, if not
+        given, as in *layout*.
+        '''
         pins = {}
-        per_node = max(len(machine.nodes[0].gpu_slots), 1) if layout.policy == 'per_gpu' else 1
-        for name, (rank, dev) in graph.pinned.items():
+        per_node = self.arch.pin_ranks_per_node
+        if per_node is None:
+            per_node = max(len(machine.nodes[0].gpu_slots), 1) if layout.policy == 'per_gpu' else 1
+        for name, (rank, dev) in self._kept_pins(graph).items():
             node = (rank or 0) // per_node
             if node >= len(machine.nodes):
                 raise ValueError(f'Object {name} is placed on rank {rank}, which does not exist '

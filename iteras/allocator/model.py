@@ -74,6 +74,9 @@ class SimGraph:
         self.device_settable = {name: 'target_device_idx' in
                                 inspect.getfullargspec(self.classes[name].__init__).args
                                 for name in self.procs}
+        # Objects that split their work over several devices (e.g. DistributedSH)
+        self.spread = {name: max(int(self.classes[name].devices_used(params[name])), 1)
+                       for name in self.procs}
         self.data_objs = [key for key, klass in self.classes.items()
                           if issubclass(klass, BaseDataObj) and key != self.main_key]
 
