@@ -5,6 +5,7 @@ from contextlib import nullcontext
 
 from iteras.base_time_obj import BaseTimeObj
 import iteras
+from iteras import mpi_progress
 from iteras.tracing import tracer
 
 
@@ -207,6 +208,8 @@ class LoopControl(BaseTimeObj):
             tracer.begin_iteration(self.iter_counter, self.t_to_seconds(self.t))
 
         for i in sorted(self.trigger_lists.keys()):
+            # Let MPI move the data of the sends in flight
+            mpi_progress.progress()
             # all the objects having this trigger order could be remote
             self.logger.mpi_debug(f'before check_ready')
             for element in self.trigger_lists[i]:
@@ -282,6 +285,8 @@ class LoopControl(BaseTimeObj):
             self.mem_report(title)
 
     def finish(self):
+        # The receivers are still running: wait for them to get our last outputs
+        mpi_progress.wait_all()
         if self._mem_pending:
             never = sorted(el.name for el in self._mem_pending)
             self._report_mem(f'at the end (never triggered: {", ".join(never)})')

@@ -5,11 +5,12 @@ import re
 import weakref
 
 import iteras
-from iteras import cpuArray
+from iteras import cpuArray, np
+from iteras import mpi_progress
 from iteras.tracing import tracer
 from iteras.base_time_obj import BaseTimeObj
 from iteras.connections import InputList, InputValue
-from iteras.log import MPI_DBG_LEVEL
+from iteras.log import MPI_DBG_LEVEL, MPI_SEND_DBG_LEVEL
 
 
 InputDesc = namedtuple('InputDesc', 'type desc')
@@ -161,7 +162,8 @@ class BaseProcessingObj(BaseTimeObj):
         if self.target_device_idx>=0:
             self._target_device.use()
             if self.cuda_graph:
-                self.stream.synchronize()
+                # Like stream.synchronize(), but MPI sends in flight keep moving
+                mpi_progress.wait_stream(self.stream)
 
     def send_remote_output(self, item, dest_rank, dest_tag, first_mpi_send=True, out_name=''):
         self.logger.mpi_send_debug(f'SEND to rank {dest_rank} {dest_tag=} {(dest_tag in self.sent_valid)=} (from {self.name}.{out_name})')
@@ -173,15 +175,29 @@ class BaseProcessingObj(BaseTimeObj):
             item.xp = xp_orig
         else:
             buffer = item.get_value()
-            self.logger.mpi_send_debug(f'{dest_tag=}, SEND .device {buffer.device}')
-            self.logger.mpi_send_debug(f'SEND with Buffe {dest_tag=}, {type(buffer)=}, {buffer=}')
-            self.logger.mpi_send_debug(f'SEND with Buffer type {dest_tag=} {buffer.dtype=}')
+            # Formatting the array would copy it to the host: only when the message is printed
+            if self.logger.isEnabledFor(MPI_SEND_DBG_LEVEL):
+                self.logger.mpi_send_debug(f'{dest_tag=}, SEND .device {buffer.device}')
+                self.logger.mpi_send_debug(f'SEND with Buffe {dest_tag=}, {type(buffer)=}, {buffer=}')
+                self.logger.mpi_send_debug(f'SEND with Buffer type {dest_tag=} {buffer.dtype=}')
 
-            iteras.process_comm.Ibsend(cpuArray(buffer), dest=dest_rank, tag=dest_tag)
+            mpi_progress.isend(self._host_copy(buffer), dest_rank, dest_tag, self.current_time)
 
             iteras.process_comm.ibsend(item.generation_time, dest=dest_rank, tag=dest_tag+1)
         if item.get_value() is not None:
             self.sent_valid[dest_tag] = True
+
+    @staticmethod
+    def _host_copy(buffer):
+        '''
+        Copy of *buffer* in host memory, which can be sent while the object
+        goes on. For a GPU array, the work that produces it is waited for with
+        MPI sends in flight kept moving (see mpi_progress).
+        '''
+        if isinstance(buffer, np.ndarray):
+            return buffer.copy()
+        mpi_progress.wait_current_stream(buffer.device.id)
+        return cpuArray(buffer)
 
     # this method implements the mpi send call of the outputs connected to remote inputs
     def send_outputs(self, skip_delayed=False, delayed_only=False, first_mpi_send=True):
@@ -195,9 +211,10 @@ class BaseProcessingObj(BaseTimeObj):
         This is used while setting up the simulation to initialize outputs
         that are delayed and would not be received otherwise.
         '''
-        self.logger.mpi_debug(f'My outputs are:')
-        for out_name, out_value in self.outputs.items():
-            self.logger.mpi_debug(f'{out_name=}, {out_value=}')
+        if self.logger.isEnabledFor(MPI_DBG_LEVEL):
+            self.logger.mpi_debug(f'My outputs are:')
+            for out_name, out_value in self.outputs.items():
+                self.logger.mpi_debug(f'{out_name=}, {out_value=}')
 
         self.logger.mpi_debug(f'send_outputs')
         for out_name, remote_specs in self.remote_outputs.items():
