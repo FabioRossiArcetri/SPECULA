@@ -109,6 +109,26 @@ with MPI and the number of ranks given in the report::
 
     mpirun -n 8 specula --mpi params.yml architecture.yml
 
+Planning for another computer
+-----------------------------
+
+The costs depend on the GPU model. The profile file keeps them per model (the
+name reported by CUDA, like ``NVIDIA A100-SXM-64GB``), and a ``model`` given in
+the architecture matches a profiled model whose name contains it (``A100``).
+For a model that was never profiled, the GPU times of a profiled one are
+divided by ``relative_speed`` (for example 0.5 for a GPU twice as slow): useful
+for a first plan, but only an assumption.
+
+To measure the GPUs of a cluster, run the allocator there in plan mode, on one
+node, with the profile file of the other computer or without it: when the GPU of
+the node is one of the models of the architecture and the profile has no costs
+for it, the objects are measured on it. For example, in a slurm job on one node::
+
+    specula --allocate params.yml architecture.yml
+
+The plan for any number of nodes can then be computed from that profile file,
+anywhere.
+
 Limitations
 -----------
 

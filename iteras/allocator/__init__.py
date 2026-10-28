@@ -152,6 +152,12 @@ class Allocator:
             gpu_ref = next((k for k in measured if k.startswith('gpu:')), None)
             for kind, slot in kinds.items():
                 c = profile.cost(graph, name, kind, self.precision)
+                if c is None and slot.is_gpu:
+                    # The same model, named differently (e.g. 'A100' and 'NVIDIA A100-SXM-64GB')
+                    same = next((k for k in measured if k.startswith('gpu:')
+                                 and same_gpu_model(k[4:], slot.model)), None)
+                    if same is not None:
+                        c = profile.cost(graph, name, same, self.precision)
                 if c is None and slot.is_gpu and gpu_ref is not None:
                     # GPU model not profiled: scale the GPU time of the profiled one
                     c = profile.cost(graph, name, gpu_ref, self.precision)
@@ -273,16 +279,33 @@ class Allocator:
         return all(profile.cost(graph, n, 'cpu', self.precision) is not None for n in graph.procs)
 
     def _missing(self, graph, profile, machine):
-        '''Objects without the costs needed: on a GPU, or on the CPU if they cannot use one'''
+        '''
+        Objects without the costs needed: on the CPU if they cannot use a GPU;
+        on the local GPU if its model is one of those of *machine* (so that
+        planning on a node of the target computer measures its GPUs, even if
+        the profile file holds the costs measured on another GPU model);
+        otherwise on any GPU.
+        '''
+        local = self._local_gpu_model() if self._use_gpu(machine) else None
+        if local is not None and not any(same_gpu_model(local, machine.slots[s].model)
+                                         for s in machine.gpu_slots()):
+            local = None
         missing = []
         for name in graph.procs:
             kinds = profile.kinds(graph, name, self.precision)
             if graph.cls(name).runs_on_cpu_only() or not self._use_gpu(machine):
                 if 'cpu' not in kinds:
                     missing.append(name)
+            elif local is not None:
+                if f'gpu:{local}' not in kinds:
+                    missing.append(name)
             elif not any(k.startswith('gpu:') for k in kinds):
                 missing.append(name)
         return missing
+
+    def _local_gpu_model(self):
+        dev = self._profile_device()
+        return iteras.cp.cuda.runtime.getDeviceProperties(dev)['name'].decode()
 
     @staticmethod
     def _use_gpu(machine):
@@ -391,6 +414,12 @@ class Allocator:
         res.costs = {n: kc for n, kc in res.costs.items() if kc[0] == 'cpu'}
         profile.add_run(graph, res, self.precision)
         profile.save()
+
+
+def same_gpu_model(a, b):
+    '''True if two GPU model names designate the same model, one containing the other'''
+    a, b = a.lower().strip(), b.lower().strip()
+    return bool(a) and bool(b) and (a in b or b in a)
 
 
 def cpu_candidates(graph, machine, est):

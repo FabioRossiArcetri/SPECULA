@@ -7,7 +7,10 @@ import time
 from dataclasses import dataclass, field
 
 import iteras
+from iteras.log import get_iteras_logger
 from iteras.data_objects.architecture import DEFAULT_LINKS
+
+_logger = get_iteras_logger(__name__)
 
 GiB = 1024 ** 3
 
@@ -99,6 +102,13 @@ class Machine:
             return links['shm_gb_s'], links['shm_latency_us'] * 1e3
         return self.inter_node['bandwidth_gb_s'], self.inter_node['latency_us'] * 1e3
 
+    def single_copy(self, a, b):
+        '''True if the receiver of a large MPI message from slot *a* to slot *b* can pull it by itself'''
+        na, nb = self.slots[a].node, self.slots[b].node
+        if na == nb:
+            return bool(self.nodes[na].links['shm_single_copy'])
+        return bool(self.inter_node.get('single_copy', False))
+
     def copy_ns(self, a, b, nbytes):
         '''Time to copy *nbytes* between two devices of the same process'''
         if a == b:
@@ -161,8 +171,11 @@ def local_node(free, measure_links=True):
     return spec
 
 
-def measure_local_links(ngpu, nbytes=64 * 1024 * 1024, repeat=5):
-    '''Measure host <-> GPU and GPU <-> GPU copy speeds (GB/s), as Simul copies data'''
+def measure_local_links(ngpu, nbytes=16 * 1024 * 1024, repeat=5):
+    '''
+    Measure host <-> GPU and GPU <-> GPU copy speeds (GB/s), as Simul copies data.
+    If the GPUs have no room for the test arrays, the default speeds are kept.
+    '''
     cp = iteras.cp
     links = dict(DEFAULT_LINKS)
 
@@ -177,26 +190,35 @@ def measure_local_links(ngpu, nbytes=64 * 1024 * 1024, repeat=5):
 
     import numpy as np
     host = np.ones(nbytes // 4, dtype=np.float32)
-    with cp.cuda.Device(0):
-        dev0 = cp.asarray(host)
+    arrays = []
+    try:
+        with cp.cuda.Device(0):
+            dev0 = cp.asarray(host)
+            arrays.append(dev0)
 
-        def h2d():
-            dev0.set(host)
-            cp.cuda.Device(0).synchronize()
-        h2d_speed = best(h2d)
-        d2h_speed = best(lambda: dev0.get(out=host))
-    links['host_gpu_gb_s'] = round(min(h2d_speed, d2h_speed), 2)
-    if ngpu > 1:
-        with cp.cuda.Device(1):
-            dev1 = cp.empty_like(dev0)
+            def h2d():
+                dev0.set(host)
+                cp.cuda.Device(0).synchronize()
+            h2d_speed = best(h2d)
+            d2h_speed = best(lambda: dev0.get(out=host))
+        links['host_gpu_gb_s'] = round(min(h2d_speed, d2h_speed), 2)
+        if ngpu > 1:
+            with cp.cuda.Device(1):
+                dev1 = cp.empty_like(dev0)
+                arrays.append(dev1)
 
-            def d2d():
-                dev1[:] = dev0
-                cp.cuda.Device(1).synchronize()
-            links['gpu_gpu_gb_s'] = round(best(d2d), 2)
-        del dev1
-    del dev0
-    cp.get_default_memory_pool().free_all_blocks()
+                def d2d():
+                    dev1[:] = dev0
+                    cp.cuda.Device(1).synchronize()
+                links['gpu_gpu_gb_s'] = round(best(d2d), 2)
+    except cp.cuda.memory.OutOfMemoryError:
+        _logger.warning('Allocator: no GPU memory to measure the copy speeds, using the defaults')
+    finally:
+        arrays.clear()
+        dev0 = dev1 = None
+        for i in range(min(ngpu, 2)):
+            with cp.cuda.Device(i):
+                cp.get_default_memory_pool().free_all_blocks()
     return links
 
 

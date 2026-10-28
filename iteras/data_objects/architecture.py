@@ -17,12 +17,15 @@ PROCESS_POLICIES = ('auto', 'per_gpu', 'single')
 DEFAULT_LINKS = {
     'gpu_gpu_gb_s': 10.0,    # between GPUs of a node, through the host (PCIe)
     'host_gpu_gb_s': 12.0,   # host <-> GPU (PCIe)
-    'shm_gb_s': 4.0,         # MPI between processes of the same node (pickling + copies)
+    'shm_gb_s': 4.0,         # MPI between processes of the same node
     'shm_latency_us': 30.0,
+    'shm_single_copy': True, # the receiver can pull large MPI messages by itself (CMA, XPMEM)
+    'mpi_message_us': 30.0,  # host time to send or receive one MPI message, besides the copies
 }
 DEFAULT_INTER_NODE = {
     'bandwidth_gb_s': 10.0,
     'latency_us': 10.0,
+    'single_copy': False,    # the receiver can pull large MPI messages by itself
 }
 
 
@@ -42,9 +45,10 @@ class Architecture:
         - ``gpus``: ``{count: int, memory_gb: float, model: str, relative_speed: float}``,
           where ``relative_speed`` is the GPU speed relative to the GPU used for
           profiling, used only when no profile exists for that model (default 1);
-        - ``links``: optional, ``{gpu_gpu_gb_s, host_gpu_gb_s, shm_gb_s, shm_latency_us}``.
+        - ``links``: optional, ``{gpu_gpu_gb_s, host_gpu_gb_s, shm_gb_s, shm_latency_us,
+          shm_single_copy, mpi_message_us}`` (see DEFAULT_LINKS).
     inter_node : dict, optional
-        ``{bandwidth_gb_s: float, latency_us: float}`` between nodes.
+        ``{bandwidth_gb_s: float, latency_us: float, single_copy: bool}`` between nodes.
     memory_source : str, optional
         'declared' (default): the memory given above is fully available (like on
         HPC nodes granted by slurm). 'probe': the memory free right now on this

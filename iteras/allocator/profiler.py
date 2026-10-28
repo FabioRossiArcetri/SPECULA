@@ -34,7 +34,7 @@ from iteras.log import get_iteras_logger
 
 logger = get_iteras_logger(__name__)
 
-PROFILE_VERSION = 2
+PROFILE_VERSION = 3
 HOST_PHASES = ('inputs', 'prepare_trigger', 'trigger', 'post_trigger', 'send_outputs')
 
 
@@ -50,8 +50,11 @@ class Cost:
     active: float = 1.0     # fraction of the steps in which the object is triggered
     syncs: str = ''         # phase ('trigger' or 'post') in which the host waits for the
                             # GPU work of the object (and all the work queued before it)
+    graph: bool = False     # runs a CUDA graph: waits in post_trigger through mpi_progress,
+                            # which keeps the MPI sends of the process moving
     mem: float = 0.0        # memory not shared with other objects
-    outputs: dict = field(default_factory=dict)    # output name -> bytes
+    outputs: dict = field(default_factory=dict)    # output name -> bytes (all its arrays)
+    mpi_outputs: dict = field(default_factory=dict)    # output name -> bytes sent by MPI
     measured: bool = True   # False if derived from another device kind
 
     @property
@@ -230,9 +233,29 @@ def run_once(simul_cls, params, graph, devices, workdir, steps, warmup, sync, ta
     return sim, totals, triggers, loop_ns / max(n_iter, 1), max(n_iter, 1)
 
 
+def _mpi_bytes(value, default):
+    '''Bytes sent by MPI for an output: the get_value() of each data object'''
+    total = 0
+    for item in value if isinstance(value, list) else [value]:
+        try:
+            v = item.get_value()
+        except Exception:
+            return default
+        total += getattr(v, 'nbytes', 8)
+    return float(total)
+
+
 def _release(sim):
+    '''Drop the objects of a profiling run (the caller must drop *sim* too) and free their memory'''
     sim.objs.clear()
-    del sim
+    loop = getattr(sim, 'loop', None)
+    if loop is not None:
+        loop.trigger_lists.clear()
+        loop.setup_order = []
+    _free_memory()
+
+
+def _free_memory():
     gc.collect()
     cp = iteras.cp
     if cp is not None:
@@ -265,6 +288,21 @@ class RunResult:
     devices: dict           # name -> device index used
 
 
+def _run_or_oom(*args, **kwargs):
+    '''run_once(), raising OutOfDeviceMemory if the GPU memory is not enough'''
+    oom = None
+    try:
+        return run_once(*args, **kwargs)
+    except Exception as e:
+        if not _is_oom(e):
+            raise
+        oom = str(e)
+    # The traceback, which kept the objects of the failed run alive, is gone:
+    # release their memory before the next attempt
+    _free_memory()
+    raise OutOfDeviceMemory(oom)
+
+
 def profile_run(params, graph, devices, workdir, steps=5, warmup=3, gpu_model='', async_run=True):
     '''
     Measure the objects placed on *devices*. Raises OutOfDeviceMemory if they
@@ -278,15 +316,9 @@ def profile_run(params, graph, devices, workdir, steps=5, warmup=3, gpu_model=''
             if d in sim.objs and graph.ref_consumers.get(d):
                 checksums[d] = array_checksum(sim.objs[d])
 
-    simul_cls = _make_simul_cls(on_built)
-    try:
-        sim, totals, triggers, _, n_iter = run_once(simul_cls, params, graph, devices, workdir,
-                                                    steps, warmup, sync=True, tag='sync')
-    except Exception as e:
-        gc.collect()
-        if _is_oom(e):
-            raise OutOfDeviceMemory(str(e)) from e
-        raise
+    sim, totals, triggers, _, n_iter = _run_or_oom(_make_simul_cls(on_built), params, graph,
+                                                   devices, workdir, steps, warmup, sync=True,
+                                                   tag='sync')
 
     # Devices actually used (objects that do not accept target_device_idx use the default one)
     devices = {n: sim.objs[n].target_device_idx for n in graph.procs if n in sim.objs}
@@ -295,14 +327,16 @@ def profile_run(params, graph, devices, workdir, steps=5, warmup=3, gpu_model=''
                                        checksums, gpu_model)
     finally:
         _release(sim)
+        del sim
 
     if not async_run:
         return RunResult(costs, shared, refs, None, dict(devices))
     # Second run, without synchronization: real step time, and objects waiting for the GPU
-    sim2, totals2, _, step_ns, n_iter2 = run_once(_make_simul_cls(lambda s: None), params, graph,
-                                                  devices, workdir, steps, warmup,
-                                                  sync=False, tag='async')
+    sim2, totals2, _, step_ns, n_iter2 = _run_or_oom(_make_simul_cls(lambda s: None), params,
+                                                     graph, devices, workdir, steps, warmup,
+                                                     sync=False, tag='async')
     _release(sim2)
+    del sim2
     for name, (kind, c) in costs.items():
         if kind == 'cpu' or c.syncs:
             continue
@@ -338,7 +372,8 @@ def _measure(sim, graph, devices, totals, triggers, n_iter, checksums, gpu_model
                  h_trig=max(ph['trigger'] - g, 0.0), h_post=ph['post_trigger'],
                  h_send=ph['send_outputs'], g=g, active=triggers.get(name, 0) / n_iter)
         for out_name, value in obj.outputs.items():
-            c.outputs[out_name] = sum(array_blocks(value, stop).values())
+            c.outputs[out_name] = float(sum(array_blocks(value, stop).values()))
+            c.mpi_outputs[out_name] = _mpi_bytes(value, c.outputs[out_name])
         b = array_blocks(obj, stop)
         # Arrays of the referenced data objects are counted with them
         for d in graph.data_refs[name]:
@@ -348,6 +383,7 @@ def _measure(sim, graph, devices, totals, triggers, n_iter, checksums, gpu_model
         blocks[name] = {k: v for k, v in b.items() if k[0] == prefix}
         c._used = obj.gpu_bytes_used if dev >= 0 else 0
         if dev >= 0 and getattr(obj, 'cuda_graph', None) is not None:
+            c.graph = True
             c.syncs = 'post'        # BaseProcessingObj.post_trigger() waits for the graph
         costs[name] = (kind, c)
 

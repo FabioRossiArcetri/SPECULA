@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 import yaml
+from dataclasses import asdict
 
 import iteras
 from iteras.simul import Simul
@@ -26,7 +27,8 @@ from iteras.allocator import (Allocator, StaleAllocation, make_allocation, write
                               read_allocation, check_meta, apply_allocation, cpu_candidates)
 from iteras.allocator.model import SimGraph
 from iteras.allocator.machine import Machine, GiB, slurm_nodes
-from iteras.allocator.cost import Estimator, Proc
+from iteras.allocator.cost import Estimator, Proc, MPI_BUFFER_BYTES
+from iteras.allocator import profiler as profiler_module
 from iteras.allocator.profiler import Cost, Profile, split_chunk
 from iteras.allocator.solver import Solver, Layout, Infeasible, build_groups
 from iteras.allocator.report import placement_from_params
@@ -134,8 +136,10 @@ def cost(host_ms=0.1, gpu_ms=1.0, mem_mib=10, out_mib=1, syncs=''):
                 outputs={'out_value': out_mib * MiB}, syncs=syncs)
 
 
-def machine(ngpu=2, gpu_gib=10, nodes=1, cpu_gib=100):
+def machine(ngpu=2, gpu_gib=10, nodes=1, cpu_gib=100, links=None):
     spec = {'name': 'n', 'count': nodes, 'cpu': {'cores': 8, 'memory_gb': cpu_gib}}
+    if links:
+        spec['links'] = links
     if ngpu:
         spec['gpus'] = {'count': ngpu, 'memory_gb': gpu_gib, 'model': 'test'}
     return Machine([spec], {'bandwidth_gb_s': 10, 'latency_us': 10}, 0.0, 0.0)
@@ -326,20 +330,59 @@ class TestEstimator(AllocatorTestCase):
         remote = dict(local, work2=(p1, 1))
         self.assertGreater(est.step_time(remote)[0], est.step_time(local)[0])
 
-    def test_large_messages_wait_for_the_sender(self):
-        # work2 on another process: its large input from gen moves only when
-        # gen's process calls MPI again, after waiting for its GPU work
-        m = machine(ngpu=2)
-        est = self.estimator(m, gpu_ms=5.0)
+    def mpi_case(self, single_copy, env):
+        '''
+        gen sends a large output (1 MiB) to work2, in another process; then gen's
+        process waits for the GPU work of work1, which runs a CUDA graph.
+        Return (first simulation pass, settled) times per step.
+        '''
+        self.params['store']['inputs']['input_list'] = ['a-last.out_value', 'b-work2.out_value']
+        m = machine(ngpu=2, links={'shm_single_copy': single_copy})
+        with mock.patch.dict(os.environ, env):
+            est = self.estimator(m, gpu_ms=5.0)
         for n in est.graph.procs:
             for kind in ('gpu:test', 'cpu'):
                 est.costs[(n, kind)].syncs = 'post'
+                est.costs[(n, kind)].graph = True
         p0, p1 = Proc(0, 0), Proc(1, 0)
         place = {n: (p0, 0) for n in est.graph.procs}
         place['work2'] = (p1, 1)
-        one_pass, _, _ = est._simulate(place, None)
-        settled, _ = est.step_time(place)
+        one_pass = est._simulate(place, None)[0]
+        return one_pass, est.step_time(place)[0]
+
+    def test_large_messages_wait_for_the_sender(self):
+        # Buffered sends, no single-copy: the data moves only when gen's process
+        # calls MPI again, after waiting for its GPU
+        one_pass, settled = self.mpi_case(False, {'ITERAS_MPI_SEND_MODE': 'buffered'})
         self.assertGreater(settled, one_pass)
+
+    def test_polling_moves_large_messages(self):
+        # Non-blocking sends: the process polls them while it waits for its GPU
+        _, blocking = self.mpi_case(False, {'ITERAS_MPI_POLL': '0'})
+        _, polling = self.mpi_case(False, {'ITERAS_MPI_POLL': '1'})
+        self.assertLess(polling, blocking)
+
+    def test_single_copy_does_not_need_the_sender(self):
+        one_pass, settled = self.mpi_case(True, {'ITERAS_MPI_POLL': '0'})
+        _, blocking = self.mpi_case(False, {'ITERAS_MPI_POLL': '0'})
+        self.assertAlmostEqual(settled, one_pass)
+        self.assertLess(settled, blocking)
+
+    def test_memory_per_process(self):
+        # work2 in a second process on the same GPU: that process has its own copy
+        # of the referenced data object (100 MiB) and of its input from gen (1 MiB),
+        # and the first process receives a copy of work2's output for store (1 MiB)
+        m = machine(ngpu=1)
+        est = self.estimator(m, mem_mib=0)
+        p0, p1 = Proc(0, 0), Proc(1, 0)
+        place = {n: (p0, 0) for n in est.graph.procs}
+        one = est.memory(place)
+        place['work2'] = (p1, 0)
+        two = est.memory(place)
+        self.assertAlmostEqual(two[0] - one[0], (100 + 1 + 1) * MiB)
+        # host: two messages (gen -> work2, work2 -> store), each with two steps in flight
+        # at the sender and a receive buffer, and the MPI buffer of the second process
+        self.assertAlmostEqual(two[1] - one[1], 2 * (2 + 1) * MiB + MPI_BUFFER_BYTES)
 
     def test_memory(self):
         m = machine(ngpu=2)
@@ -450,6 +493,33 @@ class TestSolver(AllocatorTestCase):
         a, b = split_chunk(['a', 'b', 'c', 'd'], [('b', 'c')])
         self.assertTrue({'b', 'c'} <= set(a) or {'b', 'c'} <= set(b))
         self.assertEqual(sorted(a + b), ['a', 'b', 'c', 'd'])
+
+
+class TestGpuModels(AllocatorTestCase):
+
+    def test_same_model(self):
+        from iteras.allocator import same_gpu_model
+        self.assertTrue(same_gpu_model('A100', 'NVIDIA A100-SXM-64GB'))
+        self.assertTrue(same_gpu_model('NVIDIA A100-SXM-64GB', 'a100'))
+        self.assertFalse(same_gpu_model('A100', 'NVIDIA H100 80GB HBM3'))
+        self.assertFalse(same_gpu_model('', 'A100'))
+
+    def test_profiled_model_used_for_a_declared_name(self):
+        g = self.graph()
+        profile = Profile()
+        c = cost(gpu_ms=2.0)
+        for n in g.procs:
+            profile.entries[f'{g.keys[n]}|gpu:NVIDIA A100-SXM-64GB|p1'] = dict(asdict(c), name=n)
+            profile.entries[f'{g.keys[n]}|gpu:NVIDIA RTX PRO 5000|p1'] = dict(asdict(cost(gpu_ms=1.0)), name=n)
+        arch = {'nodes': [{'name': 'b', 'cpu': {'cores': 4, 'memory_gb': 10},
+                           'gpus': {'count': 2, 'memory_gb': 64, 'model': 'A100', 'relative_speed': 0.1}}]}
+        alloc = Allocator(Simul(self.write(self.params)), arch, plan_only=True)
+        alloc.precision = 1
+        m = Machine.from_architecture(alloc.arch)
+        costs, _, _ = alloc._tables(g, m, profile)
+        # measured on the A100: used as is, not scaled from the other model
+        self.assertAlmostEqual(costs[('work1', 'gpu:A100')].g, 2.0 * ms)
+        self.assertTrue(costs[('work1', 'gpu:A100')].measured)
 
 
 class TestAllocationFile(AllocatorTestCase):
@@ -640,6 +710,40 @@ class TestAllocatorRun(AllocatorTestCase):
     def test_allocate_without_architecture(self):
         with self.assertRaises(ValueError):
             Simul(self.write(self.params), allocate=True).run()
+
+    @unittest.skipIf(iteras.cp is None, 'needs a GPU')
+    def test_gpu_profile_in_chunks(self):
+        # The GPU memory pool is limited: all the objects do not fit at once, the
+        # profiler measures them in chunks (the others on the CPU)
+        size = 1_000_000        # 8 MB per array (double precision)
+        for name in ('gen', 'work1', 'work2', 'last'):
+            self.params[name]['size'] = size
+        params = json.loads(json.dumps(self.params))
+        params['architecture'] = self.arch(mode='plan', nodes='local', memory_source='probe',
+                                           profile_device=0, profile_steps=2, warmup_steps=1)
+        path = self.write(params)
+        pool = iteras.cp.get_default_memory_pool()
+        with iteras.cp.cuda.Device(0):
+            pool.free_all_blocks()
+            pool.set_limit(size=45 * 1024 ** 2)
+        calls = []
+        real_run = profiler_module.profile_run
+
+        def counting_run(*args, **kwargs):
+            calls.append(sorted(n for n, d in args[2].items() if d >= 0))
+            return real_run(*args, **kwargs)
+        try:
+            with mock.patch('iteras.allocator.profile_run', counting_run):
+                Simul(path, speed_report=False).run()
+        finally:
+            with iteras.cp.cuda.Device(0):
+                pool.set_limit(size=0)
+        self.assertGreater(len(calls), 2)
+        profile = Profile(params['architecture']['allocation_file'].replace('.yml', '_profile.json'))
+        g = self.graph()
+        for name in ('gen', 'work1', 'work2', 'last'):
+            kinds = profile.kinds(g, name, iteras.global_precision)
+            self.assertTrue(any(k.startswith('gpu:') for k in kinds), (name, kinds))
 
     @unittest.skipIf(iteras.cp is None, 'needs a GPU')
     def test_gpu_profile(self):
