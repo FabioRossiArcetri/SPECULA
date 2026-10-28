@@ -78,7 +78,7 @@ class SimulDiagram:
         # matplotlib window created afterwards in the same process (issue #397):
         # build the diagram in a separate process. This is done on all platforms
         # to have a single code path.
-        # The child gets our sys.path, in case specula is not installed,
+        # The child gets our sys.path, in case iteras or its plugins are not installed,
         # but not the current directory that "python -c" puts in front of it
         self.logger.info('Building diagram...')
         code = 'import sys; sys.path.pop(0); import pickle; d, kw = pickle.load(sys.stdin.buffer); d._build(**kw)'

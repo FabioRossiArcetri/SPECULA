@@ -1024,7 +1024,7 @@ class Simul():
         # like the display server re-import the main script: an unguarded call would
         # build the whole simulation again inside the child and then fail anyway.
         if getattr(multiprocessing.current_process(), '_inheriting', False):
-            raise RuntimeError('A SPECULA simulation was started while a child process was being '
+            raise RuntimeError('A simulation was started while a child process was being '
                                'initialized. On macOS and Windows, a script that runs a simulation '
                                'must protect it with:  if __name__ == "__main__":')
 
