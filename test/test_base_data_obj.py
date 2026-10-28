@@ -32,6 +32,29 @@ class TestBaseDataObj(unittest.TestCase):
         assert b.target_device_idx == -1
         np.testing.assert_array_equal(b.value, [0, 1])
 
+    def test_update_scalar_from_cpu_to_cpu(self):
+        '''
+        Test that transferDataTo() also copies 0-dimensional arrays in place
+        '''
+        a = BaseValue(value=np.array(3.0), target_device_idx=-1)
+        b = BaseValue(value=np.array(0.0), target_device_idx=-1)
+        dest = b.value
+        a.transferDataTo(b)
+        assert b.value is dest
+        assert float(b.value) == 3.0
+
+    @unittest.skipIf(cp is None, 'GPU not available')
+    def test_update_scalar_from_gpu_to_gpu(self):
+        '''
+        Test that transferDataTo() copies 0-dimensional GPU arrays in place
+        '''
+        a = BaseValue(value=cp.array(3.0), target_device_idx=0)
+        b = BaseValue(value=cp.array(0.0), target_device_idx=0)
+        dest = b.value
+        a.transferDataTo(b)
+        assert b.value is dest
+        assert float(b.value) == 3.0
+
     @unittest.skipIf(cp is None, 'GPU not available')
     def test_copy_from_cpu_to_gpu(self):
         '''

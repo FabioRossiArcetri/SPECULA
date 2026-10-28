@@ -94,7 +94,7 @@ class BaseDataObj(BaseTimeObj):
                         if self.PerformanceWarning:
                             warnings.simplefilter("ignore", category=self.PerformanceWarning)
                         try:
-                            dest_attr[:] = self_attr
+                            dest_attr[...] = self_attr
                         except:
                             dest_attr = self_attr
                 elif DtH:
@@ -104,7 +104,7 @@ class BaseDataObj(BaseTimeObj):
                 elif HtD:
                     dest_attr.set(self_attr)
                 elif HtH:
-                    dest_attr[:] = self_attr
+                    dest_attr[...] = self_attr
                 else:
                     self.logger.warning(f'mismatch between target_device_idx and array allocation, forcing reallocation ({destobj}.{attr})')
                     force_reallocation = True
