@@ -341,7 +341,7 @@ class Allocator:
         if self.arch.profile_cpu and not self._has_cpu_costs(graph, profile):
             devices = {n: -1 for n in graph.procs}
             warmup, steps = self._profile_steps(graph)
-            res = profile_run(params, graph, devices, self._workdir(), steps, warmup)
+            res = profile_run(params, graph, devices, self._workdir(), steps, warmup, async_run=False)
             profile.add_run(graph, res, self.precision)
         profile.save()
 
@@ -378,28 +378,54 @@ class Allocator:
                     'devices': res.devices}
 
     def _profile_cpu_candidates(self, graph, params, profile, machine, est):
-        '''Measure on the CPU the objects that free most GPU memory per unit of GPU time'''
-        gpu_cap = sum(machine.slots[s].memory for s in machine.gpu_slots())
-        ref = machine.gpu_slots()[0]
-        objs = [n for n in graph.procs if est.cost(n, ref) is not None]
-        need = sum(est.cost(n, ref).mem for n in objs) + sum(est.refs.values())
-        deficit = max(need - gpu_cap, 0.0) + max(est.cost(n, ref).mem for n in objs)
-        ratio = sorted(objs, key=lambda n: -est.cost(n, ref).mem / (est.cost(n, ref).g + 1e4))
-        chosen, freed = [], 0.0
-        for n in ratio:
-            if freed >= 1.5 * deficit:
-                break
-            chosen.append(n)
-            freed += est.cost(n, ref).mem
+        '''Measure on the CPU the objects that may have to run there (see cpu_candidates())'''
+        chosen = cpu_candidates(graph, machine, est)
+        self.logger.info(f'Allocator: measuring on the CPU: {chosen}')
         dev = self._profile_device()
         gpu_model = iteras.cp.cuda.runtime.getDeviceProperties(dev)['name'].decode()
         devices = {n: (-1 if n in chosen or graph.cls(n).runs_on_cpu_only() else dev)
                    for n in graph.procs}
         warmup, steps = self._profile_steps(graph)
-        res = profile_run(params, graph, devices, self._workdir(), steps, warmup, gpu_model=gpu_model)
+        res = profile_run(params, graph, devices, self._workdir(), steps, warmup, gpu_model=gpu_model,
+                          async_run=False)
         res.costs = {n: kc for n, kc in res.costs.items() if kc[0] == 'cpu'}
         profile.add_run(graph, res, self.precision)
         profile.save()
+
+
+def cpu_candidates(graph, machine, est):
+    '''
+    Objects to measure on the CPU when the GPUs are too small: starting from all
+    the objects on one GPU, they are moved to the CPU one at a time, each time
+    the one that frees most GPU memory (including the data objects only it uses)
+    per unit of GPU time, until what is left fits in the memory of all the GPUs,
+    with 20% to spare.
+    '''
+    gpus = machine.gpu_slots()
+    ref = gpus[0]
+    capacity = sum(machine.slots[s].memory for s in gpus)
+    p = Proc(0, 0)
+    # Only the objects left on the GPU: the CPU costs are not known yet
+    on_gpu = {n: (p, ref) for n in graph.procs
+              if not graph.cls(n).runs_on_cpu_only() and est.cost(n, ref) is not None}
+    chosen = []
+    used = est.memory(on_gpu).get(ref, 0.0)
+    while used > 0.8 * capacity:
+        best = None
+        for n in on_gpu:
+            if not graph.device_settable[n]:
+                continue
+            rest = {k: v for k, v in on_gpu.items() if k != n}
+            left = est.memory(rest).get(ref, 0.0)
+            ratio = (used - left) / (est.cost(n, ref).g + 1e5)
+            if best is None or ratio > best[0]:
+                best = (ratio, n, left)
+        if best is None:
+            break
+        _, n, used = best
+        del on_gpu[n]
+        chosen.append(n)
+    return chosen
 
 
 # ---------------------------------------------------------------------------

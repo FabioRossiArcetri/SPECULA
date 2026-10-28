@@ -23,7 +23,7 @@ from iteras.processing_objects.display_server import DisplayServer
 from iteras.processing_objects.interactive_input import InteractiveInput
 from iteras.base_processing_obj import BaseProcessingObj
 from iteras.allocator import (Allocator, StaleAllocation, make_allocation, write_allocation,
-                              read_allocation, check_meta, apply_allocation)
+                              read_allocation, check_meta, apply_allocation, cpu_candidates)
 from iteras.allocator.model import SimGraph
 from iteras.allocator.machine import Machine, GiB, slurm_nodes
 from iteras.allocator.cost import Estimator, Proc
@@ -396,6 +396,20 @@ class TestSolver(AllocatorTestCase):
         with mock.patch.object(DataStore, 'runs_on_main_process_only', classmethod(lambda cls: True)):
             g, sol = self.solve(m, policy='per_gpu')
         self.assertEqual(sol.layout.proc_of_slot[sol.assign['store']].rank, 0)
+
+    def test_cpu_candidates(self):
+        g = self.graph()
+        m = machine(ngpu=1, gpu_gib=60 * MiB / GiB)
+        costs = {}
+        for n in g.procs:
+            costs[(n, 'gpu:test')] = cost(gpu_ms=1.0, mem_mib=30 if n == 'gen' else 10)
+            costs[(n, 'cpu')] = cost(gpu_ms=0)
+        costs[('work1', 'gpu:test')].g = 10 * ms      # same memory, more GPU time: moved last
+        est = Estimator(g, m, costs, {'table': 1 * MiB}, {})
+        chosen = cpu_candidates(g, m, est)
+        self.assertEqual(chosen[0], 'gen')
+        self.assertNotIn('work1', chosen)
+        self.assertNotIn('store', chosen)       # already on the CPU
 
     def test_split_chunk_keeps_groups(self):
         a, b = split_chunk(['a', 'b', 'c', 'd'], [('b', 'c')])

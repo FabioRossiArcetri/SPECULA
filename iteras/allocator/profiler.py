@@ -210,6 +210,10 @@ def run_once(simul_cls, params, graph, devices, workdir, steps, warmup, sync, ta
     if tracer.recording:
         saved = dict(tracer.__dict__)
         tracer._file = None
+    # A profiling run is a single-process run, even inside an MPI job
+    # (only rank 0 profiles, while the other ranks wait for the allocation)
+    mpi = iteras.process_comm, iteras.process_rank
+    iteras.process_comm, iteras.process_rank = None, None
     sim = simul_cls(yml)
     loop_ns = n_iter = 0
     tracer.open(trace, sync=sync, skip=warmup, gpu_events=iteras.cp is not None)
@@ -220,6 +224,7 @@ def run_once(simul_cls, params, graph, devices, workdir, steps, warmup, sync, ta
         tracer.close()
         if saved is not None:
             tracer.__dict__.update(saved)
+        iteras.process_comm, iteras.process_rank = mpi
     totals, triggers = _parse_trace(trace)
     return sim, totals, triggers, loop_ns / max(n_iter, 1), max(n_iter, 1)
 
@@ -259,10 +264,11 @@ class RunResult:
     devices: dict           # name -> device index used
 
 
-def profile_run(params, graph, devices, workdir, steps=5, warmup=3, gpu_model=''):
+def profile_run(params, graph, devices, workdir, steps=5, warmup=3, gpu_model='', async_run=True):
     '''
     Measure the objects placed on *devices*. Raises OutOfDeviceMemory if they
-    do not fit.
+    do not fit. Without *async_run*, the second run (step time and objects
+    waiting for the GPU) is skipped: enough to measure objects on the CPU.
     '''
     checksums = {}
 
@@ -289,6 +295,8 @@ def profile_run(params, graph, devices, workdir, steps=5, warmup=3, gpu_model=''
     finally:
         _release(sim)
 
+    if not async_run:
+        return RunResult(costs, shared, refs, None, dict(devices))
     # Second run, without synchronization: real step time, and objects waiting for the GPU
     sim2, totals2, _, step_ns, n_iter2 = run_once(_make_simul_cls(lambda s: None), params, graph,
                                                   devices, workdir, steps, warmup,
