@@ -514,6 +514,18 @@ class TestSimulPlacement(AllocatorTestCase):
         # Without MPI, rank 0 settings are used
         self.assertEqual(simul.objs['table'].target_device_idx, -1)
 
+    def test_tag_object_on_another_rank(self):
+        params = json.loads(json.dumps(self.params))
+        params['table'] = {'class': 'Table', 'tag': 'only_on_rank_0', 'target_rank': 0}
+        for name in ('gen', 'work1', 'work2', 'last', 'store'):
+            params[name]['target_rank'] = 1
+            params[name].pop('table_ref', None)
+        simul = Simul(self.write(params), speed_report=False)
+        with mock.patch.object(iteras, 'process_rank', 1):
+            simul.build_objects(params)
+        self.assertNotIn('table', simul.objs)
+        self.assertIn('gen', simul.objs)
+
     def test_rank_list_not_allowed_for_processing_objects(self):
         params = json.loads(json.dumps(self.params))
         params['gen']['target_rank'] = [0, 1]

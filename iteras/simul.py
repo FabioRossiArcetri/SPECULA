@@ -472,7 +472,9 @@ class Simul():
             if not build_this_object:
                 self.remote_objs_ranks[key] = target_rank
 
-            if 'tag' in pars and build_this_object:
+            if 'tag' in pars:
+                if not build_this_object:       # restored on another rank
+                    continue
                 if 'target_device_idx' in pars:
                     del pars['target_device_idx']
                 extra_pars = set(pars.keys()) - {'class', 'tag', 'gui_pos'}
