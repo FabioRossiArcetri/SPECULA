@@ -129,7 +129,7 @@ class AllocatorTestCase(unittest.TestCase):
         return SimGraph(params, Simul(self.write(params)))
 
 
-def cost(host_ms=0.1, gpu_ms=1.0, mem_mib=10, out_mib=1, syncs=False):
+def cost(host_ms=0.1, gpu_ms=1.0, mem_mib=10, out_mib=1, syncs=''):
     return Cost(h_trig=host_ms * ms, g=gpu_ms * ms, mem=mem_mib * MiB,
                 outputs={'out_value': out_mib * MiB}, syncs=syncs)
 
@@ -271,7 +271,7 @@ class TestEstimator(AllocatorTestCase):
         for name in g.procs:
             for kind in {s.kind for s in m.slots}:
                 c = cost(gpu_ms=0 if kind == 'cpu' else gpu_ms, mem_mib=mem_mib,
-                         syncs=name in syncs)
+                         syncs='trigger' if name in syncs else '')
                 if kind == 'cpu':
                     c.h_trig = 5 * gpu_ms * ms
                 costs[(name, kind)] = c
@@ -296,6 +296,26 @@ class TestEstimator(AllocatorTestCase):
         synced = self.estimator(m, gpu_ms=5.0, syncs=('last',))
         place = {n: (p, 0) for n in base.graph.procs}
         self.assertGreaterEqual(synced.step_time(place)[0], base.step_time(place)[0])
+
+    def test_waiting_in_post_trigger_keeps_gpus_parallel(self):
+        # Two objects of the same level on two GPUs of one process: waiting in
+        # post_trigger lets both GPUs work, waiting in trigger serializes them
+        m = machine(ngpu=2)
+        p = Proc(0, 0)
+        self.params['store']['inputs']['input_list'] = ['a-last.out_value', 'b-work2.out_value']
+        est = self.estimator(m, gpu_ms=5.0)
+        self.assertEqual(est.graph.level['work1'], est.graph.level['work2'])
+        for n in ('gen', 'last', 'store'):
+            est.costs[(n, 'gpu:test')].g = 0.01 * ms
+        place = {n: (p, 0) for n in est.graph.procs}
+        place['work2'] = (p, 1)
+        times = {}
+        for phase in ('trigger', 'post'):
+            for n in ('work1', 'work2'):
+                for kind in ('gpu:test', 'cpu'):
+                    est.costs[(n, kind)].syncs = phase
+            times[phase] = est.step_time(place)[0]
+        self.assertLess(times['post'], times['trigger'])
 
     def test_remote_process_adds_messages(self):
         m = machine(ngpu=2)

@@ -34,7 +34,7 @@ from iteras.log import get_iteras_logger
 
 logger = get_iteras_logger(__name__)
 
-PROFILE_VERSION = 1
+PROFILE_VERSION = 2
 HOST_PHASES = ('inputs', 'prepare_trigger', 'trigger', 'post_trigger', 'send_outputs')
 
 
@@ -48,7 +48,8 @@ class Cost:
     h_send: float = 0.0     # sending outputs (only for remote outputs)
     g: float = 0.0          # GPU time of trigger
     active: float = 1.0     # fraction of the steps in which the object is triggered
-    syncs: bool = False     # waits for the GPU work queued before it
+    syncs: str = ''         # phase ('trigger' or 'post') in which the host waits for the
+                            # GPU work of the object (and all the work queued before it)
     mem: float = 0.0        # memory not shared with other objects
     outputs: dict = field(default_factory=dict)    # output name -> bytes
     measured: bool = True   # False if derived from another device kind
@@ -303,12 +304,19 @@ def profile_run(params, graph, devices, workdir, steps=5, warmup=3, gpu_model=''
                                                   sync=False, tag='async')
     _release(sim2)
     for name, (kind, c) in costs.items():
-        if kind == 'cpu':
+        if kind == 'cpu' or c.syncs:
             continue
-        a_host = sum(totals2.get((name, ph), 0.0) for ph in ('prepare_trigger', 'trigger', 'post_trigger'))
-        a_host /= n_iter2
-        s_host = c.h_prep + c.h_trig + c.h_post
-        c.syncs = (a_host - s_host) > max(2 * c.g, 0.5e6)
+        # Without synchronization, the host time of a phase that waits for the GPU
+        # work of the object includes that work (and, since the stream runs in order,
+        # all the work queued before it). Only the first object waiting in a trigger
+        # level can be detected this way: objects with a CUDA graph are known above.
+        threshold = max(0.5 * c.g, 0.2e6)
+        a_trig = (totals2.get((name, 'prepare_trigger'), 0.0) + totals2.get((name, 'trigger'), 0.0)) / n_iter2
+        a_post = totals2.get((name, 'post_trigger'), 0.0) / n_iter2
+        if a_trig - (c.h_prep + c.h_trig) > threshold:
+            c.syncs = 'trigger'
+        elif a_post - c.h_post > threshold:
+            c.syncs = 'post'
     return RunResult(costs, shared, refs, step_ns, dict(devices))
 
 
@@ -339,6 +347,8 @@ def _measure(sim, graph, devices, totals, triggers, n_iter, checksums, gpu_model
         prefix = 'g' if dev >= 0 else 'h'
         blocks[name] = {k: v for k, v in b.items() if k[0] == prefix}
         c._used = obj.gpu_bytes_used if dev >= 0 else 0
+        if dev >= 0 and getattr(obj, 'cuda_graph', None) is not None:
+            c.syncs = 'post'        # BaseProcessingObj.post_trigger() waits for the graph
         costs[name] = (kind, c)
 
     owners = {}

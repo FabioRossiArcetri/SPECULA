@@ -11,8 +11,8 @@ simulating a few steps of the loop as LoopControl runs it:
   them, then runs post_trigger and sends the outputs to other processes;
 * the host work of a process is sequential; the GPU work of each device is
   a sequential stream, which runs while the host goes on, except for objects
-  that wait for the GPU (measured, see profiler) and before copying data out
-  of a GPU.
+  that wait for the GPU in trigger or post_trigger (see profiler) and before
+  copying data out of a GPU.
 
 The estimate is taken in steady state, so that a process running ahead of
 the others (allowed by the asynchronous MPI sends) is accounted for.
@@ -172,7 +172,7 @@ class Estimator:
                             start = max(t, stream[s])
                             stream[s] = start + c.g
                             done[(name, k)] = stream[s]
-                            if c.syncs:
+                            if c.syncs == 'trigger':
                                 t = max(t, stream[s])
                         else:
                             done[(name, k)] = t
@@ -180,6 +180,8 @@ class Estimator:
                     for name in names:
                         s = placement[name][1]
                         c = self.cost(name, s)
+                        if c.syncs == 'post':
+                            t = max(t, done[(name, k)])
                         t += c.h_post
                         dests = remote_dests[name]
                         if dests:
