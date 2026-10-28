@@ -116,3 +116,9 @@ Limitations
 * GPUs of a model that was not profiled use the times of the profiled one,
   divided by ``relative_speed``.
 * Transfers between processes go through the host, as in the framework.
+* Estimates for several processes are less reliable than for one. Without
+  asynchronous MPI progress, a large message moves only when its sender calls
+  MPI again, after the receive has been posted; the processes can then settle
+  into a slower state than the estimated one. On a two-GPU computer, MORFEO with
+  two MPI ranks ran up to twice as slow as estimated, while single-process
+  estimates were within a few percent of the measured times.
