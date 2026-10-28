@@ -92,7 +92,7 @@ jobs:
     - name: Test optional packages and append to coverage report
       if: ${{ matrix.mpi == 'none' && matrix.os != 'windows-latest'}}
       run: |
-        pytest -k "diagram or control or iirfilter or hdf5" --cov=./ --cov-append
+        pytest -k "diagram or control or iirfilter or hdf5 or object_file_formats" --cov=./ --cov-append
   
     - name: Setup MPI
       if: ${{ matrix.mpi != 'none' }}

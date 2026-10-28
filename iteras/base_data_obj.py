@@ -1,11 +1,15 @@
 
+import os
+import inspect
+import tempfile
 import warnings
 from copy import copy
-from functools import cache
+from functools import cache, wraps
 
 import iteras
 from iteras import np
 from iteras.base_time_obj import BaseTimeObj
+from iteras.lib import storage
 
 
 @cache
@@ -17,7 +21,77 @@ def get_properties(cls):
     return result
 
 
+def _any_format_save(func):
+    '''
+    Wrap the save(filename, ...) method of a data object class, which writes
+    FITS files, so that it can also write npz and HDF5 files, chosen by the
+    extension of *filename* (see iteras.lib.storage): the FITS file is written
+    to a temporary directory and converted.
+    '''
+    signature = inspect.signature(func)
+
+    @wraps(func)
+    def save(self, filename, *args, **kwargs):
+        data_format = storage.object_format(filename)
+        if data_format in (None, 'fits'):
+            return func(self, filename, *args, **kwargs)
+        bound = signature.bind(self, filename, *args, **kwargs)
+        bound.apply_defaults()
+        if os.path.exists(filename) and not bound.arguments.get('overwrite', True):
+            raise OSError(f'File {filename} already exists. If you mean to replace it '
+                          'then use the argument "overwrite=True".')
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            fits_path = os.path.join(tmpdir, 'object.fits')
+            result = func(self, fits_path, *args, **kwargs)
+            storage.fits_to_object_file(fits_path, os.fspath(filename), data_format)
+        return result
+
+    return save
+
+
+def _any_format_restore(func):
+    '''
+    Wrap the restore(filename, ...) method of a data object class, which reads
+    FITS files, so that it can also read the npz and HDF5 files written by
+    save() (see _any_format_save()): the file is converted to FITS in a
+    temporary directory, read without memory mapping.
+    '''
+    signature = inspect.signature(func)
+
+    @wraps(func)
+    def restore(*args, **kwargs):
+        bound = signature.bind(*args, **kwargs)
+        filename = bound.arguments.get('filename')
+        data_format = None if filename is None else storage.object_format(filename)
+        if data_format in (None, 'fits'):
+            return func(*args, **kwargs)
+        from astropy.io import fits
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir, \
+             fits.conf.set_temp('use_memmap', False):
+            fits_path = os.path.join(tmpdir, 'object.fits')
+            storage.object_file_to_fits(os.fspath(filename), data_format, fits_path)
+            bound.arguments['filename'] = fits_path
+            return func(*bound.args, **bound.kwargs)
+
+    return restore
+
+
 class BaseDataObj(BaseTimeObj):
+
+    def __init_subclass__(cls, /, **kwargs):
+        '''
+        Make the save() and restore() methods defined by each data object class
+        accept npz and HDF5 files, besides FITS (see _any_format_save()).
+        '''
+        super().__init_subclass__(**kwargs)
+        for name, wrapper in (('save', _any_format_save), ('restore', _any_format_restore)):
+            attr = cls.__dict__.get(name)
+            if isinstance(attr, staticmethod):
+                setattr(cls, name, staticmethod(wrapper(attr.__func__)))
+            elif isinstance(attr, classmethod):
+                setattr(cls, name, classmethod(wrapper(attr.__func__)))
+            elif callable(attr):
+                setattr(cls, name, wrapper(attr))
 
     def __init__(self, target_device_idx: int=None, precision: int=None):
         """

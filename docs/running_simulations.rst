@@ -84,6 +84,16 @@ When ``data_format`` is not given, the format is taken from the
 ``fits`` if neither is set. ``DataSource``, and therefore the replays, detect the format of each
 file from its extension.
 
+Data objects (calibration files, the ``_object`` and ``tag`` parameters) can be
+saved and restored in the ``fits``, ``npz`` and ``hdf5`` formats too, chosen by
+the extension of the file name (``.fits``, ``.npz``, ``.h5``). The npz and HDF5
+files contain the same arrays and header entries as the FITS file, one entry
+or group per FITS HDU. Calibration files written without an extension, for
+example by the calibrators, get the extension of the default format, and are
+``fits`` files if the default format is ``pickle``. When a calibration file is
+read by its tag, the file of the default format is used if it exists,
+otherwise the file in any of the other formats.
+
 Output logging
 ==============
 

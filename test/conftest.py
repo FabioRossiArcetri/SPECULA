@@ -57,3 +57,102 @@ def _restore_init_state(request):
     yield
     for name, value in saved.items():
         setattr(iteras, name, value)
+
+
+
+def _assert_same_restored(a, b, path='object'):
+    '''Compare two restored data objects (or values) field by field'''
+    import numpy as np
+    from iteras import cpuArray
+    from iteras.base_time_obj import BaseTimeObj
+    if isinstance(a, BaseTimeObj) or hasattr(a, '__dict__') and not callable(a):
+        assert type(a) is type(b), f'{path}: {type(a)} != {type(b)}'
+        # Not data: device handles and GPU memory tracking (see BaseTimeObj)
+        skip = {'logger', 'xp', '_target_device', 'PerformanceWarning', '_mem_before',
+                '_mem_count_depth', '_mem_owner', '_mem_parent', 'gpu_bytes_used',
+                'gpu_bytes_children'}
+        for key in set(vars(a)) | set(vars(b)):
+            if key not in skip:
+                _assert_same_restored(getattr(a, key, None), getattr(b, key, None), f'{path}.{key}')
+    elif isinstance(a, (list, tuple)):
+        assert isinstance(b, (list, tuple)) and len(a) == len(b), f'{path}: {a!r} != {b!r}'
+        for i, (x, y) in enumerate(zip(a, b)):
+            _assert_same_restored(x, y, f'{path}[{i}]')
+    elif isinstance(a, dict):
+        assert isinstance(b, dict) and a.keys() == b.keys(), f'{path}: {a!r} != {b!r}'
+        for key in a:
+            _assert_same_restored(a[key], b[key], f'{path}[{key!r}]')
+    elif hasattr(a, 'shape') and hasattr(a, 'dtype'):
+        a, b = cpuArray(a), cpuArray(b)
+        assert a.dtype == b.dtype, f'{path}: dtype {a.dtype} != {b.dtype}'
+        np.testing.assert_array_equal(a, b, err_msg=path)
+    else:
+        assert a == b or (a != a and b != b), f'{path}: {a!r} != {b!r}'
+
+
+def _checking_save(make_wrapper):
+    '''
+    Replacement of iteras.base_data_obj._any_format_save for
+    ITERAS_TEST_CHECK_OBJECT_FORMATS=1: after saving an object to a FITS file,
+    also save it to npz and HDF5 files, restore the three files with the
+    restore() method of its class, and check that the results are equal.
+    '''
+    import functools
+    import tempfile
+    from iteras.lib import storage
+
+    def factory(func):
+        wrapped = make_wrapper(func)
+
+        @functools.wraps(func)
+        def save(self, filename, *args, **kwargs):
+            result = wrapped(self, filename, *args, **kwargs)
+            restore = getattr(type(self), 'restore', None)
+            if storage.object_format(filename) != 'fits' or restore is None:
+                return result
+            try:
+                reference = restore(filename)
+            except Exception:
+                return result       # not restorable by itself (e.g. needs extra arguments)
+            formats = ['npz'] + (['hdf5'] if _h5py_available() else [])
+            with tempfile.TemporaryDirectory() as tmpdir:
+                for data_format in formats:
+                    other = os.path.join(tmpdir, 'object' + storage.EXTENSIONS[data_format])
+                    kwargs_other = dict(kwargs)
+                    wrapped(self, other, *args, **kwargs_other)
+                    _assert_same_restored(reference, restore(other),
+                                          f'{type(self).__name__} restored from {data_format}')
+                    _checked_classes.add((type(self).__name__, data_format))
+            return result
+        return save
+    return factory
+
+
+def _h5py_available():
+    try:
+        import h5py  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+# Classes and formats checked in ITERAS_TEST_CHECK_OBJECT_FORMATS mode
+_checked_classes = set()
+
+
+def pytest_configure(config):
+    '''
+    With ITERAS_TEST_CHECK_OBJECT_FORMATS=1, each data object saved to a FITS
+    file by a test is also saved to npz and HDF5 files, and the objects
+    restored from the three files are compared (see test_object_file_formats.py).
+    '''
+    if os.environ.get('ITERAS_TEST_CHECK_OBJECT_FORMATS'):
+        import iteras.base_data_obj as base_data_obj
+        base_data_obj._any_format_save = _checking_save(base_data_obj._any_format_save)
+
+
+def pytest_terminal_summary(terminalreporter):
+    if _checked_classes:
+        checked = sorted(_checked_classes)
+        terminalreporter.write_line('Object formats checked: ' +
+                                    ', '.join(f'{name}/{fmt}' for name, fmt in checked))
