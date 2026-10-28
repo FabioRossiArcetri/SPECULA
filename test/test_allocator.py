@@ -326,6 +326,21 @@ class TestEstimator(AllocatorTestCase):
         remote = dict(local, work2=(p1, 1))
         self.assertGreater(est.step_time(remote)[0], est.step_time(local)[0])
 
+    def test_large_messages_wait_for_the_sender(self):
+        # work2 on another process: its large input from gen moves only when
+        # gen's process calls MPI again, after waiting for its GPU work
+        m = machine(ngpu=2)
+        est = self.estimator(m, gpu_ms=5.0)
+        for n in est.graph.procs:
+            for kind in ('gpu:test', 'cpu'):
+                est.costs[(n, kind)].syncs = 'post'
+        p0, p1 = Proc(0, 0), Proc(1, 0)
+        place = {n: (p0, 0) for n in est.graph.procs}
+        place['work2'] = (p1, 1)
+        one_pass, _, _ = est._simulate(place, None)
+        settled, _ = est.step_time(place)
+        self.assertGreater(settled, one_pass)
+
     def test_memory(self):
         m = machine(ngpu=2)
         est = self.estimator(m, mem_mib=10, shared={'gpu:test': [(['work1', 'work2'], 50 * MiB)]})

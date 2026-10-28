@@ -12,15 +12,19 @@ simulating a few steps of the loop as LoopControl runs it:
 * the host work of a process is sequential; the GPU work of each device is
   a sequential stream, which runs while the host goes on, except for objects
   that wait for the GPU in trigger or post_trigger (see profiler) and before
-  copying data out of a GPU.
+  copying data out of a GPU;
+* a large MPI message moves only while its sender is in an MPI call.
 
 The estimate is taken in steady state, so that a process running ahead of
 the others (allowed by the asynchronous MPI sends) is accounted for.
 '''
+import bisect
 from collections import defaultdict
 from dataclasses import dataclass
 
 MPI_BUFFER_BYTES = 40e6     # attached MPI buffer of each process (see iteras.__init__)
+EAGER_BYTES = 64 * 1024     # larger MPI messages need the sender to call MPI to progress
+MAX_PASSES = 10             # simulation passes to settle the MPI progress of large messages
 
 
 @dataclass(frozen=True)
@@ -118,13 +122,48 @@ class Estimator:
     # -- time ----------------------------------------------------------
 
     def step_time(self, placement):
-        '''Steady-state time per step (ns) and bytes exchanged between devices per step'''
+        '''
+        Steady-state time per step (ns) and bytes exchanged between devices per step.
+
+        A large MPI message (above EAGER_BYTES) moves only while its sender is
+        inside an MPI call (no asynchronous progress): it is delivered no earlier
+        than the next send or receive of the sender. Since those times depend on
+        the deliveries, the simulation is repeated with the MPI calls of the
+        previous pass, until the time per step settles.
+        '''
+        remote = any(placement[e.src][0] != placement[e.dst][0] for e in self.graph.edges
+                     if e.src in placement and e.dst in placement)
+        events = None
+        per_step = None
+        stable = 0
+        for _ in range(MAX_PASSES if remote else 1):
+            new_step, comm_bytes, events = self._simulate(placement, events)
+            if per_step is not None and abs(new_step - per_step) <= 0.005 * per_step:
+                stable += 1
+                if stable == 2:
+                    per_step = new_step
+                    break
+            else:
+                stable = 0
+            per_step = new_step
+        return per_step, comm_bytes
+
+    @staticmethod
+    def _next_progress(intervals, t):
+        '''First time >= t at which a process is inside an MPI call, or None'''
+        i = bisect.bisect_left(intervals, (t, t))
+        if i > 0 and intervals[i - 1][1] >= t:
+            return t
+        return intervals[i][0] if i < len(intervals) else None
+
+    def _simulate(self, placement, prev_events):
         m = self.machine
         slots = m.slots
         host = defaultdict(float)       # process -> time
         stream = defaultdict(float)     # GPU slot -> time when its queued work ends
         done = {}                       # (name, step) -> time when its results are ready
         arrival = {}                    # (name, step, process) -> time when its messages arrive
+        events = defaultdict(list)      # process -> [(start, end)] of its MPI calls
         remote_dests = {}
         proc_slot = {p: s for p, s in placement.values()}
         comm_bytes = 0.0
@@ -157,7 +196,9 @@ class Estimator:
                                 continue
                             ps, ss = placement[e.src]
                             if ps != p:
+                                t0 = t
                                 t = max(t, arrival.get((e.src, ks, p), 0.0))
+                                events[p].append((t0, t))
                                 t += m.host_gpu_ns(s, self.out_bytes(e, ss))
                             elif ss != s:
                                 t = max(t, done.get((e.src, ks), 0.0))
@@ -189,14 +230,23 @@ class Estimator:
                             for q, nbytes in dests.items():
                                 bw, lat = m.link(s, proc_slot[q])
                                 t += m.host_gpu_ns(s, nbytes) + c.h_send / len(dests)
-                                arrival[(name, k, q)] = t + lat + nbytes / bw
+                                events[p].append((t, t))
+                                deliver = t + lat + nbytes / bw
+                                if nbytes > EAGER_BYTES and prev_events is not None:
+                                    # the next MPI call after this send (1 ns later)
+                                    nxt = self._next_progress(prev_events.get(p, []), t + 1)
+                                    if nxt is not None:
+                                        deliver = max(deliver, nxt + lat + nbytes / bw)
+                                arrival[(name, k, q)] = deliver
                     host[p] = t
             for p in list(host):
                 host[p] += self.overhead_ns
             step_end.append(max(list(host.values()) + list(stream.values()) + [0.0]))
         half = self.steps // 2
         per_step = (step_end[-1] - step_end[half - 1]) / (self.steps - half)
-        return per_step, comm_bytes
+        for p in events:
+            events[p].sort()
+        return per_step, comm_bytes, events
 
     def evaluate(self, placement):
         mem = self.memory(placement)
