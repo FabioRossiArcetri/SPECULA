@@ -654,6 +654,14 @@ class Simul():
         output = self.split_output(output_name, get_ref=True)
         local_dest_object = dest_object in self.objs.keys()
 
+        # Data objects used as inputs are not sent: each rank uses its own copy
+        if self.is_dataobj.get(output.obj_name):
+            if not local_dest_object:
+                return
+            if output.ref is None:
+                raise ValueError(f'Data object {output.obj_name}, input of {dest_object}, is not built on '
+                                 f'rank {iteras.process_rank}: add this rank to its target_rank')
+
         send = output.ref is not None and local_dest_object is False
         recv = output.ref is None and local_dest_object is True
         local = output.ref is not None and local_dest_object is True

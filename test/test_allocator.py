@@ -561,6 +561,21 @@ class TestSimulPlacement(AllocatorTestCase):
         self.assertNotIn('table', simul.objs)
         self.assertIn('gen', simul.objs)
 
+    def test_data_object_input_on_another_rank(self):
+        # A data object connected as an input, built on every rank, whose consumer
+        # is on another rank: each rank uses its own copy, nothing is sent
+        params = json.loads(json.dumps(self.params))
+        params['table_user'] = {'class': 'Work', 'inputs': {'in_value': 'table'}, 'target_rank': 0}
+        for name in ('gen', 'work1', 'work2', 'last', 'store'):
+            params[name]['target_rank'] = 1
+        simul = Simul(self.write(params), speed_report=False)
+        with mock.patch.object(iteras, 'process_rank', 1):
+            simul.build_objects(params)
+            simul.create_input_list_inputs(params)
+            simul.connect_objects(params)
+        self.assertIn('table', simul.objs)
+        self.assertNotIn('table_user', simul.objs)
+
     def test_rank_list_not_allowed_for_processing_objects(self):
         params = json.loads(json.dumps(self.params))
         params['gen']['target_rank'] = [0, 1]
