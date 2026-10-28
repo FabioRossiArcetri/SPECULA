@@ -457,6 +457,22 @@ class TestAllocationFile(AllocatorTestCase):
         g, alloc = self.allocation()
         self.assertEqual(alloc['data_objects']['base'], alloc['data_objects']['table'])
 
+    def test_unused_nodes_are_not_launched(self):
+        m = machine(ngpu=2, nodes=3)
+        g = self.graph()
+        costs = {(n, s.kind): cost() for n in g.procs for s in m.slots}
+        est = Estimator(g, m, costs, {'table': MiB}, {})
+        layout = Layout(m, 'per_gpu')
+        node2 = m.nodes[2]
+        assign = {n: node2.gpu_slots[i % 2] for i, n in enumerate(g.procs)}
+        assign['store'] = node2.cpu_slot
+        from iteras.allocator.solver import Solution
+        alloc = make_allocation(g, m, Solution(assign, layout, est.evaluate(layout.placement(assign))))
+        self.assertEqual(alloc['n_nodes'], 1)
+        self.assertEqual(alloc['n_ranks'], 2)
+        self.assertEqual({p['node'] for p in alloc['processes']}, {0})
+        self.assertEqual({o['target_rank'] for o in alloc['objects'].values()}, {0, 1})
+
     def test_single_process_has_no_ranks(self):
         g, alloc = self.allocation(policy='single')
         self.assertEqual(alloc['n_ranks'], 1)

@@ -431,10 +431,31 @@ def cpu_candidates(graph, machine, est):
 # ---------------------------------------------------------------------------
 # Allocation: placement of every object, as overrides
 
+def _node_signature(machine, n):
+    node = machine.nodes[n]
+    return [(machine.slots[s].kind, machine.slots[s].memory) for s in node.gpu_slots + [node.cpu_slot]]
+
+
+def compact_processes(machine, layout, placement):
+    '''
+    Processes to launch: only the nodes that host objects are used. When all the
+    nodes are identical, the used ones are renumbered from 0, otherwise the nodes
+    up to the last used one are kept. Return {old rank: new rank}, {old node: new node}.
+    '''
+    used = sorted({p.node for p, _ in placement.values()})
+    same = all(_node_signature(machine, n) == _node_signature(machine, 0) for n in range(len(machine.nodes)))
+    nodes = used if same else list(range(used[-1] + 1))
+    node_map = {n: i for i, n in enumerate(nodes)}
+    procs = [p for p in layout.procs if p.node in node_map]
+    procs.sort(key=lambda p: (node_map[p.node], p.rank))
+    return {p.rank: i for i, p in enumerate(procs)}, node_map
+
+
 def make_allocation(graph, machine, solution):
     layout = solution.layout
     placement = solution.placement()
-    multi = len(layout.procs) > 1
+    rank_map, node_map = compact_processes(machine, layout, placement)
+    multi = len(rank_map) > 1
     objects = {}
     for name in graph.procs:
         if name not in placement:
@@ -442,12 +463,12 @@ def make_allocation(graph, machine, solution):
         p, s = placement[name]
         objects[name] = {'target_device_idx': machine.slots[s].idx} if graph.device_settable[name] else {}
         if multi:
-            objects[name]['target_rank'] = p.rank
+            objects[name]['target_rank'] = rank_map[p.rank]
     data = {}
     devices = {}        # data object -> {rank: device}
     for d in graph.data_objs:
         for p, s in (placement[c] for c in graph.ref_consumers.get(d, []) if c in placement):
-            devices.setdefault(d, {}).setdefault(p.rank, machine.slots[s].idx)
+            devices.setdefault(d, {}).setdefault(rank_map[p.rank], machine.slots[s].idx)
     changed = True
     while changed:
         changed = False
@@ -466,12 +487,13 @@ def make_allocation(graph, machine, solution):
                        'target_device_idx': per_rank if len(ranks) > 1 else per_rank[ranks[0]]}
         else:
             data[d] = {'target_device_idx': per_rank[0]}
-    procs = [{'rank': p.rank, 'node': p.node,
+    procs = [{'rank': rank_map[p.rank], 'node': node_map[p.node],
               'devices': sorted({machine.slots[s].idx for q, s in placement.values() if q == p})}
-             for p in layout.procs]
+             for p in layout.procs if p.rank in rank_map]
+    procs.sort(key=lambda p: p['rank'])
     ev = solution.evaluation
-    return {'objects': objects, 'data_objects': data, 'n_ranks': len(layout.procs) if multi else 1,
-            'layout': layout.policy, 'processes': procs,
+    return {'objects': objects, 'data_objects': data, 'n_ranks': len(rank_map) if multi else 1,
+            'n_nodes': len(node_map), 'layout': layout.policy, 'processes': procs,
             'estimated_step_ms': ev.step_ns / 1e6}
 
 
@@ -484,11 +506,13 @@ def apply_allocation(allocation, params):
 def write_allocation(path, allocation, report):
     if os.path.dirname(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-    meta = {k: allocation[k] for k in ('meta', 'n_ranks', 'layout', 'processes', 'estimated_step_ms')}
+    meta = {k: allocation[k] for k in ('meta', 'n_ranks', 'n_nodes', 'layout', 'processes',
+                                       'estimated_step_ms')}
     lines = [f'# Allocation written by the iteras allocator on '
              f'{datetime.datetime.now().isoformat(timespec="seconds")}.',
              '# It can be passed as an additional parameter file. Recompute it with --reallocate.',
-             f'# Layout: {allocation["layout"]}, MPI ranks: {allocation["n_ranks"]}, '
+             f'# Layout: {allocation["layout"]}, nodes: {allocation["n_nodes"]}, '
+             f'MPI ranks: {allocation["n_ranks"]}, '
              f'estimated time per step: {allocation["estimated_step_ms"]:.2f} ms',
              META_PREFIX + json.dumps(meta, sort_keys=True), '']
     body = {}

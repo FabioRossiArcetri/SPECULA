@@ -13,7 +13,8 @@ def make_report(graph, machine, est, solution, profile, allocator, allocation):
     placement = solution.placement()
     ev = solution.evaluation
     lines = ['Resources:', machine.describe(), '']
-    lines.append(f'Layout: {solution.layout.policy}, {allocation["n_ranks"]} MPI rank(s)')
+    lines.append(f'Layout: {solution.layout.policy}, {allocation["n_nodes"]} node(s), '
+                 f'{allocation["n_ranks"]} MPI rank(s)')
     for p in allocation['processes']:
         lines.append(f'  rank {p["rank"]}: node {p["node"]}, devices {p["devices"]}')
     lines.append('')
@@ -27,7 +28,7 @@ def make_report(graph, machine, est, solution, profile, allocator, allocation):
     lines.append('')
     lines.append(memory_table(machine, ev.memory))
     lines.append('')
-    lines.append(object_table(graph, machine, est, placement))
+    lines.append(object_table(graph, machine, est, placement, allocation))
     estimated = sorted({n for (n, k), c in est.costs.items()
                         if not c.measured and any(placement[n][1] == s for s, sl in enumerate(machine.slots)
                                                   if sl.kind == k)})
@@ -46,7 +47,7 @@ def memory_table(machine, memory):
     return '\n'.join(lines)
 
 
-def object_table(graph, machine, est, placement):
+def object_table(graph, machine, est, placement, allocation=None):
     lines = [f'{"object":24s} {"class":22s} {"rank":>4s} {"device":>6s} '
              f'{"host ms":>8s} {"GPU ms":>8s} {"mem MiB":>9s}']
     for name in graph.procs:
@@ -55,7 +56,8 @@ def object_table(graph, machine, est, placement):
         p, s = placement[name]
         c = est.cost(name, s)
         dev = machine.slots[s].idx
-        lines.append(f'{name[:24]:24s} {graph.cls(name).__name__[:22]:22s} {p.rank:4d} {dev:6d} '
+        rank = (allocation['objects'][name].get('target_rank', 0) if allocation else p.rank)
+        lines.append(f'{name[:24]:24s} {graph.cls(name).__name__[:22]:22s} {rank:4d} {dev:6d} '
                      f'{c.host / 1e6:8.3f} {c.g / 1e6:8.3f} {c.mem / MiB:9.1f}')
     return '\n'.join(lines)
 
@@ -66,7 +68,8 @@ def placement_from_params(graph, machine, ranks_per_node=1, default_device=0):
     as used by Estimator. Ranks are assumed to be numbered node by node, with
     *ranks_per_node* ranks per node (as with slurm's block distribution);
     objects without target_rank are on rank 0, objects without
-    target_device_idx on *default_device*.
+    target_device_idx on *default_device*, and objects of CPU-only classes on
+    the CPU (as the allocator would place them).
     '''
     placement = {}
     procs = {}
@@ -82,7 +85,7 @@ def placement_from_params(graph, machine, ranks_per_node=1, default_device=0):
         n = machine.nodes[node]
         if not graph.device_settable[name]:
             dev = default_device
-        if dev < 0:
+        if dev < 0 or graph.cls(name).runs_on_cpu_only():
             slot = n.cpu_slot
         else:
             if dev >= len(n.gpu_slots):
