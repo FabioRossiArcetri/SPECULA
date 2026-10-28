@@ -65,6 +65,25 @@ Main options (see ``specula_list_runs -h``):
 - ``--short``: shorten values longer than 50 characters (values longer than 1000 characters are always shortened)
 - ``--out FILE``: write the CSV elsewhere
 
+Data formats
+============
+
+``DataStore`` saves each of its inputs in a file named after the input, containing
+the data at each stored time step, the times, and a header describing the data
+object. Four formats are available, chosen with the ``data_format`` parameter:
+
+- ``fits`` (``.fits`` files): the default;
+- ``pickle`` (``.pickle`` files);
+- ``npz`` (``.npz`` files): numpy archives, readable with ``numpy.load()``
+  without pickle;
+- ``hdf5`` (``.h5`` files): readable with h5py or any HDF5 tool. Needs the
+  optional h5py package (``pip install h5py``, or the ``hdf5`` extra).
+
+When ``data_format`` is not given, the format is taken from the
+``ITERAS_DATA_FORMAT`` environment variable, and is ``fits`` if the variable is
+not set. ``DataSource``, and therefore the replays, detect the format of each
+file from its extension.
+
 Output logging
 ==============
 

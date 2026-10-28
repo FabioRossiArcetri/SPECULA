@@ -6,6 +6,7 @@ from astropy.io import fits
 from iteras.base_processing_obj import BaseProcessingObj
 from iteras.base_value import BaseValue
 from iteras.lib.utils import import_class
+from iteras.lib import storage
 
 
 class DataSource(BaseProcessingObj):
@@ -17,10 +18,27 @@ class DataSource(BaseProcessingObj):
     def __init__(self,
                 outputs: list,
                 store_dir: str,
-                data_format: str='fits',
+                data_format: str=None,
                 global_precision: int=None,
                 random_seeds: dict=None):
+        """
+        Parameters
+        ----------
+        outputs : list of str
+            Names of the stored inputs to read, which become the outputs.
+        store_dir : str
+            Directory containing the files written by DataStore.
+        data_format : str, optional
+            Format of the files: 'fits', 'pickle', 'npz' or 'hdf5' (see
+            iteras.lib.storage). Default: detected from the file of each output.
+        global_precision : int, optional
+            Precision of the stored run, used by the replay tools.
+        random_seeds : dict, optional
+            Random seeds of the stored run, used by the replay tools.
+        """
         super().__init__()
+        if data_format is not None:
+            storage.check_format(data_format)
         self.items = {}
         self.storage = {}
         self.data_filename = ''
@@ -50,10 +68,22 @@ class DataSource(BaseProcessingObj):
     def loadFromFile(self, name):
         if name in self.items:
             raise ValueError(f'Storing already has an object with name {name}')
-        if self.data_format=='fits':
+        data_format = self.data_format or storage.find_format(self.tn_dir, name) or 'fits'
+        if data_format == 'fits':
             self.load_fits(name)
-        elif self.data_format=='pickle':
+        elif data_format == 'pickle':
             self.load_pickle(name)
+        elif data_format == 'npz':
+            self._load_with(storage.read_npz, name, 'npz')
+        elif data_format == 'hdf5':
+            self._load_with(storage.read_hdf5, name, 'hdf5')
+
+    def _load_with(self, reader, name, data_format):
+        '''Load the file of *name* with *reader*(path) -> (data, times, header)'''
+        data, times, header = reader(storage.filename(self.tn_dir, name, data_format))
+        self.headers[name] = header
+        self.obj_type[name] = header['OBJ_TYPE']
+        self.storage[name] = {t: data[i] for i, t in enumerate(times.tolist())}
 
     def load_pickle(self, name):
         filename = os.path.join(self.tn_dir,name + '.pickle')

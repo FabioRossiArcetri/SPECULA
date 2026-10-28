@@ -10,6 +10,7 @@ import yaml
 from iteras import cpuArray
 from iteras.base_processing_obj import BaseProcessingObj
 from iteras.lib import utils
+from iteras.lib import storage
 
 
 class DataStore(BaseProcessingObj):
@@ -22,7 +23,7 @@ class DataStore(BaseProcessingObj):
                 store_dir: str,
                 split_size: int=0,
                 first_suffix: int=0,
-                data_format: str='fits',
+                data_format: str=None,
                 start_time: float=0,
                 create_tn: bool=True,
                 downsample_factor: int=1,
@@ -39,9 +40,11 @@ class DataStore(BaseProcessingObj):
             Default is 0 (no splitting, all data in one folder).
         first_suffix : int [1], optional
             Starting suffix for split folders. Default is 0.
-        data_format : str
-            Format for saved data files. Supported values are 'fits' and 'pickle'.
-            Default is 'fits'.
+        data_format : str, optional
+            Format for saved data files: 'fits', 'pickle', 'npz' or 'hdf5'
+            (see iteras.lib.storage; 'hdf5' needs the h5py package).
+            Default is the value of the ITERAS_DATA_FORMAT environment variable,
+            or 'fits' if it is not set.
         start_time : float [s], optional
             Time in seconds to wait before starting to store data.
             Default is 0 (store from the beginning).
@@ -64,6 +67,9 @@ class DataStore(BaseProcessingObj):
         self.today = utils.make_tn()
         self.tn_dir = store_dir
         self.tn_dir_orig = store_dir     # Extra copy needed when suffix is used
+        if data_format is None:
+            data_format = storage.default_format()
+        storage.check_format(data_format)
         self.data_format = data_format
         self.create_tn = create_tn
         self.replay_params = None
@@ -162,6 +168,8 @@ class DataStore(BaseProcessingObj):
         if hasattr(self, 'replay_params') and self.replay_params is not None:
             self.replay_params['data_source']['store_dir'] = self.tn_dir
             self.replay_params['data_source']['global_precision'] = int(self.precision)
+            # The format actually used, which may come from ITERAS_DATA_FORMAT
+            self.replay_params['data_source']['data_format'] = self.data_format
             filename = os.path.join(self.tn_dir, 'replay_params.yml')
             with open(filename, 'w') as outfile:
                 yaml.dump(self.replay_params, outfile, default_flow_style=False, sort_keys=False)
@@ -194,6 +202,36 @@ class DataStore(BaseProcessingObj):
             except Exception as e:
                 self.logger.error(f"Error saving FITS file for key '{k}': {str(e)}")
                 continue
+
+    def _save_with(self, writer, data_format):
+        '''Save the stored inputs with *writer*(path, data, times, header)'''
+        times = {k: np.array(list(v.keys()), dtype=np.uint64)
+            for k, v in self.storage.items() if isinstance(v, OrderedDict)}
+        data = {k: np.array(list(v.values()), dtype=self.dtype)
+            for k, v in self.storage.items() if isinstance(v, OrderedDict)}
+
+        for k in times:
+            try:
+                if k not in self.local_inputs or self.local_inputs[k] is None:
+                    self.logger.warning(f"Warning: skipping key '{k}'"
+                              f"- not in local_inputs or value is None")
+                    continue
+
+                hdr = self.local_inputs[k].get_fits_header()
+                self.update_header_with_storage_metadata(hdr, input_name=k)
+                writer(storage.filename(self.tn_dir, k, data_format), data[k], times[k], hdr)
+
+            except ImportError:
+                raise
+            except Exception as e:
+                self.logger.error(f"Error saving {data_format} file for key '{k}': {str(e)}")
+                continue
+
+    def save_npz(self):
+        self._save_with(storage.write_npz, 'npz')
+
+    def save_hdf5(self):
+        self._save_with(storage.write_hdf5, 'hdf5')
 
     def create_TN_folder(self, suffix=''):
         iter = None
@@ -251,6 +289,10 @@ class DataStore(BaseProcessingObj):
             self.save_pickle()
         elif self.data_format == 'fits':
             self.save_fits()
+        elif self.data_format == 'npz':
+            self.save_npz()
+        elif self.data_format == 'hdf5':
+            self.save_hdf5()
         else:
             raise TypeError(f"Error: unsupported file format {self.data_format}")
 
