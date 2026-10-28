@@ -80,8 +80,8 @@ object. Four formats are available, chosen with the ``data_format`` parameter:
   optional h5py package (``pip install h5py``, or the ``hdf5`` extra).
 
 When ``data_format`` is not given, the format is taken from the
-``ITERAS_DATA_FORMAT`` environment variable, and is ``fits`` if the variable is
-not set. ``DataSource``, and therefore the replays, detect the format of each
+``ITERAS_DATA_FORMAT`` environment variable (or ``SPECULA_DATA_FORMAT``), and is
+``fits`` if neither is set. ``DataSource``, and therefore the replays, detect the format of each
 file from its extension.
 
 Output logging

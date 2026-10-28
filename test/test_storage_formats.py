@@ -28,7 +28,8 @@ except ImportError:
 
 
 def _env_without_format():
-    return {k: v for k, v in os.environ.items() if k != 'ITERAS_DATA_FORMAT'}
+    return {k: v for k, v in os.environ.items()
+            if k not in ('ITERAS_DATA_FORMAT', 'SPECULA_DATA_FORMAT')}
 
 
 class TestDefaultFormat(unittest.TestCase):
@@ -39,11 +40,22 @@ class TestDefaultFormat(unittest.TestCase):
             self.assertEqual(DataStore(store_dir='unused').data_format, 'fits')
 
     def test_environment_variable(self):
-        with patch.dict(os.environ, {'ITERAS_DATA_FORMAT': 'npz'}):
+        env = _env_without_format()
+        env['ITERAS_DATA_FORMAT'] = 'npz'
+        with patch.dict(os.environ, env, clear=True):
             self.assertEqual(storage.default_format(), 'npz')
             self.assertEqual(DataStore(store_dir='unused').data_format, 'npz')
             # An explicit format wins
             self.assertEqual(DataStore(store_dir='unused', data_format='pickle').data_format, 'pickle')
+
+    def test_specula_environment_variable(self):
+        env = _env_without_format()
+        env['SPECULA_DATA_FORMAT'] = 'npz'
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(storage.default_format(), 'npz')
+            # ITERAS_DATA_FORMAT wins if both are set
+            os.environ['ITERAS_DATA_FORMAT'] = 'pickle'
+            self.assertEqual(storage.default_format(), 'pickle')
 
     def test_invalid_formats(self):
         with patch.dict(os.environ, {'ITERAS_DATA_FORMAT': 'xls'}):
