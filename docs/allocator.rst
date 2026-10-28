@@ -85,7 +85,10 @@ How it works
 3. **Search.** Objects that must stay together (an object and the processing
    objects it references, the users of a data object that some object modifies)
    are placed as a unit. An initial placement (memory-aware HEFT) is improved by
-   moving and swapping objects, for each process layout.
+   moving and swapping objects, for each process layout. With several identical
+   nodes, the search is made on the first k nodes for each k, and the fastest
+   placement is kept, with the fewest nodes if others are within 1%: the report
+   lists the time per step for each number of nodes.
 
 Objects of classes that must run on the CPU or in the main process (see
 :doc:`extension_api`) are placed accordingly. Objects of classes whose
@@ -136,9 +139,14 @@ Limitations
 * GPUs of a model that was not profiled use the times of the profiled one,
   divided by ``relative_speed``.
 * Transfers between processes go through the host, as in the framework.
-* Estimates for several processes are less reliable than for one. Without
-  asynchronous MPI progress, a large message moves only when its sender calls
-  MPI again, after the receive has been posted; the processes can then settle
-  into a slower state than the estimated one. On a two-GPU computer, MORFEO with
-  two MPI ranks ran up to twice as slow as estimated, while single-process
-  estimates were within a few percent of the measured times.
+* The MPI transfers are modeled as described in :ref:`running with MPI
+  <running_with_mpi>`: on links where the receiver cannot pull the data by
+  itself (``single_copy: false``, the default between nodes), the data of a
+  large message moves only while the sender is inside MPI, and the estimate is
+  less reliable. With TCP between two processes of the same computer, MORFEO ran
+  about 60% slower than with single-copy shared memory.
+* Accuracy: on a computer with two GPUs, the estimates of MORFEO for ten
+  placements, with one or two processes, were within 5% of the measured times,
+  except for the placements chosen by the allocator itself, which were
+  optimistic by up to 10% (the search favors the placements where the model
+  errs on the fast side), and for the old buffered MPI sends (15%).

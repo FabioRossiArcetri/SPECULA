@@ -707,6 +707,18 @@ class TestAllocatorRun(AllocatorTestCase):
             Simul(path, speed_report=False).run()
         Simul(path, speed_report=False, reallocate=True).run()
 
+    def test_fewest_nodes(self):
+        # Three identical nodes: the small simulation is fastest on one, without messages
+        params = json.loads(json.dumps(self.params))
+        params['architecture'] = self.arch(
+            mode='plan', nodes=[{'name': 'cpu', 'count': 3, 'cpu': {'cores': 4, 'memory_gb': 4}}])
+        simul = Simul(self.write(params), speed_report=False)
+        simul.run()
+        self.assertEqual(simul.allocation['n_nodes'], 1)
+        with open(params['architecture']['allocation_file'].replace('.yml', '_report.txt')) as f:
+            report = f.read()
+        self.assertIn('with the first k nodes: 1:', report)
+
     def test_allocate_without_architecture(self):
         with self.assertRaises(ValueError):
             Simul(self.write(self.params), allocate=True).run()

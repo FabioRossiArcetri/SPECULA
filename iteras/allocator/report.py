@@ -9,7 +9,7 @@ from .machine import GiB
 MiB = 1024 ** 2
 
 
-def make_report(graph, machine, est, solution, profile, allocator, allocation):
+def make_report(graph, machine, est, solution, profile, allocator, allocation, by_nodes=()):
     placement = solution.placement()
     ev = solution.evaluation
     lines = ['Resources:', machine.describe(), '']
@@ -18,6 +18,9 @@ def make_report(graph, machine, est, solution, profile, allocator, allocation):
     for p in allocation['processes']:
         lines.append(f'  rank {p["rank"]}: node {p["node"]}, devices {p["devices"]}')
     lines.append('')
+    if by_nodes:
+        lines.append('Estimated time per step with the first k nodes: ' +
+                     ', '.join(f'{k}: {t / 1e6:.2f} ms' for k, t in by_nodes))
     lines.append(f'Estimated time per step: {ev.step_ns / 1e6:.2f} ms '
                  f'(data copied between devices: {ev.comm_bytes / MiB:.1f} MiB per step)')
     calib = getattr(est, 'calibration', None)

@@ -118,19 +118,52 @@ class Allocator:
         self.logger.info(f'Allocator: resources\n{machine.describe()}')
         profile = Profile(self.arch.profile_file)
         self._ensure_profile(graph, params, profile, machine)
-        est = self.estimator(graph, machine, profile)
         try:
-            solution = self._solve(graph, machine, est, profile)
+            machine_used, est, solution, by_nodes = self._solve_nodes(graph, machine, profile)
         except Infeasible as e:
             if iteras.cp is None or self._has_cpu_costs(graph, profile):
                 raise
             self.logger.info(f'Allocator: {e}. Measuring candidate objects on the CPU')
-            self._profile_cpu_candidates(graph, params, profile, machine, est)
-            est = self.estimator(graph, machine, profile)
-            solution = self._solve(graph, machine, est, profile)
-        allocation = make_allocation(graph, machine, solution)
-        report = make_report(graph, machine, est, solution, profile, self, allocation)
+            self._profile_cpu_candidates(graph, params, profile, machine,
+                                         self.estimator(graph, machine, profile))
+            machine_used, est, solution, by_nodes = self._solve_nodes(graph, machine, profile)
+        allocation = make_allocation(graph, machine_used, solution)
+        report = make_report(graph, machine_used, est, solution, profile, self, allocation, by_nodes)
         return allocation, report
+
+    def _solve_nodes(self, graph, machine, profile):
+        '''
+        Best placement on *machine*. With several identical nodes, the placement is
+        searched on the first k nodes for each k, and the fastest one is kept (the
+        one with fewest nodes, if within 1% of the fastest): the search on all the
+        nodes alone may spread the objects more than useful.
+        Return (machine used, estimator, solution, [(k, time per step)]).
+        '''
+        n = len(machine.nodes)
+        if n == 1 or not machine.identical_nodes():
+            est = self.estimator(graph, machine, profile)
+            return machine, est, self._solve(graph, machine, est, profile), []
+        counts = list(range(1, n + 1)) if n <= 8 else \
+            sorted({2 ** i for i in range(n.bit_length()) if 2 ** i <= n} | {n})
+        results = []
+        for k in counts:
+            sub = machine.first_nodes(k)
+            est = self.estimator(graph, sub, profile)
+            try:
+                sol = self._solve(graph, sub, est, profile)
+            except (Infeasible, ValueError) as e:      # does not fit, or pinned to a further node
+                self.logger.info(f'Allocator: {k} node(s): {e}')
+                if k == n and not results:
+                    raise
+                continue
+            self.logger.info(f'Allocator: {k} node(s): {sol.evaluation.step_ns / 1e6:.2f} ms per step')
+            results.append((k, sub, est, sol))
+        if not results:
+            raise Infeasible('No number of nodes fits in memory')
+        fastest = min(r[3].evaluation.step_ns for r in results)
+        k, sub, est, sol = min((r for r in results if r[3].evaluation.step_ns <= 1.01 * fastest),
+                               key=lambda r: r[0])
+        return sub, est, sol, [(r[0], r[3].evaluation.step_ns) for r in results]
 
     def estimator(self, graph, machine, profile):
         '''Estimator built from the measured costs, for the slot kinds of *machine*'''

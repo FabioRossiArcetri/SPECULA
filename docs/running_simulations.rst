@@ -168,6 +168,8 @@ Notes
 - ``MPI_DBG`` and ``MPI_SEND_DBG`` are application-specific logging levels and are not part of the standard Python logging levels.
 - Lower verbosity levels (e.g., DEBUG) may produce large volumes of output.
 
+.. _running_with_mpi:
+
 Running with MPI
 ================
 

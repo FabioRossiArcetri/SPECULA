@@ -91,6 +91,25 @@ class Machine:
             nodes = arch.nodes
         return cls(nodes, arch.inter_node, arch.context_overhead_gb * GiB, arch.memory_margin)
 
+    def identical_nodes(self):
+        '''True if all the nodes have the same devices'''
+        def signature(node):
+            return [(self.slots[s].kind, self.slots[s].memory) for s in node.gpu_slots + [node.cpu_slot]]
+        return all(signature(n) == signature(self.nodes[0]) for n in self.nodes)
+
+    def first_nodes(self, k):
+        '''Machine made of the first *k* nodes of this one (same slots, same indices of the nodes)'''
+        m = Machine([], self.inter_node, self.context_overhead, self.memory_margin)
+        for node in self.nodes[:k]:
+            new = Node(name=node.name, links=node.links)
+            for s in node.gpu_slots:
+                new.gpu_slots.append(len(m.slots))
+                m.slots.append(self.slots[s])
+            new.cpu_slot = len(m.slots)
+            m.slots.append(self.slots[node.cpu_slot])
+            m.nodes.append(new)
+        return m
+
     def gpu_slots(self):
         return [i for i, s in enumerate(self.slots) if s.is_gpu]
 
