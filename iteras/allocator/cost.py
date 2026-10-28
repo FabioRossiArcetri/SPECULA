@@ -125,19 +125,20 @@ class Estimator:
         '''
         Steady-state time per step (ns) and bytes exchanged between devices per step.
 
-        A large MPI message (above EAGER_BYTES) moves only while its sender is
-        inside an MPI call (no asynchronous progress): it is delivered no earlier
-        than the next send or receive of the sender. Since those times depend on
-        the deliveries, the simulation is repeated with the MPI calls of the
+        A large MPI message (above EAGER_BYTES) uses a rendezvous: without
+        asynchronous progress, its data moves only when the sender enters an MPI
+        call after the receiver has posted the matching receive. It is delivered no
+        earlier than that call. Since those times depend on the deliveries, the
+        simulation is repeated with the MPI calls and receive times of the
         previous pass, until the time per step settles.
         '''
         remote = any(placement[e.src][0] != placement[e.dst][0] for e in self.graph.edges
                      if e.src in placement and e.dst in placement)
-        events = None
+        prev = None
         per_step = None
         stable = 0
         for _ in range(MAX_PASSES if remote else 1):
-            new_step, comm_bytes, events = self._simulate(placement, events)
+            new_step, comm_bytes, prev = self._simulate(placement, prev)
             if per_step is not None and abs(new_step - per_step) <= 0.005 * per_step:
                 stable += 1
                 if stable == 2:
@@ -156,7 +157,13 @@ class Estimator:
             return t
         return intervals[i][0] if i < len(intervals) else None
 
-    def _simulate(self, placement, prev_events):
+    def _simulate(self, placement, prev):
+        '''
+        One pass of the simulation. *prev* is (MPI calls, receive times) of the
+        previous pass, or None. Return the time per step, the bytes exchanged
+        between devices and (MPI calls, receive times) of this pass.
+        '''
+        prev_events, prev_posted = prev if prev is not None else (None, {})
         m = self.machine
         slots = m.slots
         host = defaultdict(float)       # process -> time
@@ -164,6 +171,7 @@ class Estimator:
         done = {}                       # (name, step) -> time when its results are ready
         arrival = {}                    # (name, step, process) -> time when its messages arrive
         events = defaultdict(list)      # process -> [(start, end)] of its MPI calls
+        posted = {}                     # (name, step, process) -> time when the receive is posted
         remote_dests = {}
         proc_slot = {p: s for p, s in placement.values()}
         comm_bytes = 0.0
@@ -197,6 +205,7 @@ class Estimator:
                             ps, ss = placement[e.src]
                             if ps != p:
                                 t0 = t
+                                posted.setdefault((e.src, ks, p), t0)
                                 t = max(t, arrival.get((e.src, ks, p), 0.0))
                                 events[p].append((t0, t))
                                 t += m.host_gpu_ns(s, self.out_bytes(e, ss))
@@ -233,8 +242,10 @@ class Estimator:
                                 events[p].append((t, t))
                                 deliver = t + lat + nbytes / bw
                                 if nbytes > EAGER_BYTES and prev_events is not None:
-                                    # the next MPI call after this send (1 ns later)
-                                    nxt = self._next_progress(prev_events.get(p, []), t + 1)
+                                    # the first MPI call of the sender after this send and
+                                    # after the receive is posted (1 ns later)
+                                    ready = max(t, prev_posted.get((name, k, q), t))
+                                    nxt = self._next_progress(prev_events.get(p, []), ready + 1)
                                     if nxt is not None:
                                         deliver = max(deliver, nxt + lat + nbytes / bw)
                                 arrival[(name, k, q)] = deliver
@@ -246,7 +257,7 @@ class Estimator:
         per_step = (step_end[-1] - step_end[half - 1]) / (self.steps - half)
         for p in events:
             events[p].sort()
-        return per_step, comm_bytes, events
+        return per_step, comm_bytes, (events, posted)
 
     def evaluate(self, placement):
         mem = self.memory(placement)
