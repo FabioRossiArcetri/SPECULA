@@ -391,6 +391,33 @@ class BaseProcessingObj(BaseTimeObj):
         '''
         return False
 
+    @classmethod
+    def runs_on_cpu_only(cls):
+        '''
+        Override to return True for classes that must run on the CPU, like
+        those writing files or interacting with the user. The allocator
+        (iteras.allocator) never places them on a GPU.
+        '''
+        return False
+
+    @classmethod
+    def runs_on_main_process_only(cls):
+        '''
+        Override to return True for classes that must run in the main process
+        (MPI rank 0), like those interacting with the user. Used by the allocator.
+        '''
+        return False
+
+    @classmethod
+    def is_schedule_barrier(cls):
+        '''
+        Override to return True for classes whose position in the trigger order
+        must never change, relative to all the other objects, because they
+        interact with the outside world or modify shared state. Used by the
+        allocator when it changes the execution order.
+        '''
+        return False
+
     def input_list_created(self):
         '''
         Called by Simul after creating the inputs listed in "input_list",

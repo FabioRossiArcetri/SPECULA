@@ -26,7 +26,9 @@ class DataStore(BaseProcessingObj):
                 start_time: float=0,
                 create_tn: bool=True,
                 downsample_factor: int=1,
-                downsample_factor_by_input: dict=None):
+                downsample_factor_by_input: dict=None,
+                target_device_idx: int=None,
+                precision: int=None):
         """
         Parameters
         ----------
@@ -60,8 +62,12 @@ class DataStore(BaseProcessingObj):
             values are integers >= 1. When using ``input_list``, the key is the
             alias before the dash, e.g. ``'comm'`` for ``'comm-control.out_comm'``.
             This option is mutually exclusive with ``downsample_factor != 1``.
+        target_device_idx : int [1], optional
+            Device of the object. The data is always stored in host memory.
+        precision : int [1], optional
+            Precision (0 = double, 1 = single).
         """
-        super().__init__()
+        super().__init__(target_device_idx=target_device_idx, precision=precision)
         self.data_filename = ''
         self.today = utils.make_tn()
         self.tn_dir = store_dir
@@ -99,6 +105,10 @@ class DataStore(BaseProcessingObj):
 
     @classmethod
     def accepts_input_list(cls):
+        return True
+
+    @classmethod
+    def runs_on_cpu_only(cls):
         return True
 
     @staticmethod
