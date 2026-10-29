@@ -90,50 +90,37 @@ def _assert_same_restored(a, b, path='object'):
         assert a == b or (a != a and b != b), f'{path}: {a!r} != {b!r}'
 
 
-def _checking_save(make_wrapper):
+def _checking_save(func):
     '''
-    Replacement of iteras.base_data_obj._any_format_save for
+    Wrapper of the save() method of a data object class, for
     ITERAS_TEST_CHECK_OBJECT_FORMATS=1: after saving an object to a FITS file,
-    also save it to npz and HDF5 files, restore the three files with the
+    also save it to npz, npy and HDF5 files, restore the four files with the
     restore() method of its class, and check that the results are equal.
     '''
     import functools
     import tempfile
     from iteras.lib import storage
 
-    def factory(func):
-        wrapped = make_wrapper(func)
-
-        @functools.wraps(func)
-        def save(self, filename, *args, **kwargs):
-            result = wrapped(self, filename, *args, **kwargs)
-            restore = getattr(type(self), 'restore', None)
-            if storage.object_format(filename) != 'fits' or restore is None:
-                return result
-            try:
-                reference = restore(filename)
-            except Exception:
-                return result       # not restorable by itself (e.g. needs extra arguments)
-            formats = ['npz'] + (['hdf5'] if _h5py_available() else [])
-            with tempfile.TemporaryDirectory() as tmpdir:
-                for data_format in formats:
-                    other = os.path.join(tmpdir, 'object' + storage.EXTENSIONS[data_format])
-                    kwargs_other = dict(kwargs)
-                    wrapped(self, other, *args, **kwargs_other)
-                    _assert_same_restored(reference, restore(other),
-                                          f'{type(self).__name__} restored from {data_format}')
-                    _checked_classes.add((type(self).__name__, data_format))
+    @functools.wraps(func)
+    def save(self, filename, *args, **kwargs):
+        result = func(self, filename, *args, **kwargs)
+        restore = getattr(type(self), 'restore', None)
+        if storage.object_format(filename) not in ('fits', None) or restore is None \
+                or not os.path.isfile(storage.object_filename(filename)):
             return result
-        return save
-    return factory
-
-
-def _h5py_available():
-    try:
-        import h5py  # noqa: F401
-        return True
-    except ImportError:
-        return False
+        try:
+            reference = restore(storage.object_filename(filename))
+        except Exception:
+            return result       # not restorable by itself (e.g. needs extra arguments)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for data_format in ('npz', 'npy', 'hdf5'):
+                other = os.path.join(tmpdir, 'object' + storage.EXTENSIONS[data_format])
+                func(self, other, *args, **kwargs)
+                _assert_same_restored(reference, restore(other),
+                                      f'{type(self).__name__} restored from {data_format}')
+                _checked_classes.add((type(self).__name__, data_format))
+        return result
+    return save
 
 
 # Classes and formats checked in ITERAS_TEST_CHECK_OBJECT_FORMATS mode
@@ -143,12 +130,19 @@ _checked_classes = set()
 def pytest_configure(config):
     '''
     With ITERAS_TEST_CHECK_OBJECT_FORMATS=1, each data object saved to a FITS
-    file by a test is also saved to npz and HDF5 files, and the objects
-    restored from the three files are compared (see test_object_file_formats.py).
+    file by a test is also saved to npz, npy and HDF5 files, and the objects
+    restored from the four files are compared (see test_object_file_formats.py).
+    The save() methods of the data object classes defined from now on are wrapped.
     '''
     if os.environ.get('ITERAS_TEST_CHECK_OBJECT_FORMATS'):
-        import iteras.base_data_obj as base_data_obj
-        base_data_obj._any_format_save = _checking_save(base_data_obj._any_format_save)
+        from iteras.base_data_obj import BaseDataObj
+
+        def init_subclass(cls, **kwargs):
+            super(BaseDataObj, cls).__init_subclass__(**kwargs)
+            if 'save' in cls.__dict__:
+                cls.save = _checking_save(cls.__dict__['save'])
+
+        BaseDataObj.__init_subclass__ = classmethod(init_subclass)
 
 
 def pytest_terminal_summary(terminalreporter):

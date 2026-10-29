@@ -68,31 +68,36 @@ Main options (see ``specula_list_runs -h``):
 Data formats
 ============
 
-``DataStore`` saves each of its inputs in a file named after the input, containing
-the data at each stored time step, the times, and a header describing the data
-object. Four formats are available, chosen with the ``data_format`` parameter:
+Data objects (calibration files, the ``_object`` and ``tag`` parameters) and the
+inputs saved by ``DataStore`` are stored as a header and a set of named arrays,
+in one of the following formats, chosen by the extension of the file name:
 
-- ``fits`` (``.fits`` files): the default;
-- ``pickle`` (``.pickle`` files);
+- ``fits`` (``.fits`` files): the default. The layout of the files of each
+  class is the same as in previous versions, and files written by previous
+  versions can still be read;
 - ``npz`` (``.npz`` files): numpy archives, readable with ``numpy.load()``
-  without pickle;
-- ``hdf5`` (``.h5`` files): readable with h5py or any HDF5 tool. Needs the
-  optional h5py package (``pip install h5py``, or the ``hdf5`` extra).
+  without pickle. Each array is an entry with its name, and the header is in
+  the ``__header__`` entry, as JSON;
+- ``npy`` (``.npy`` directories): one ``<array>.npy`` file per array and the
+  header in ``header.json``. Suited to large arrays, which can be read
+  without copies and are streamed to the GPU in chunks, like FITS files;
+- ``hdf5`` (``.h5`` files): one dataset per array, readable with h5py or any
+  HDF5 tool. The header keywords are also attributes of the file.
 
-When ``data_format`` is not given, the format is taken from the
-``ITERAS_DATA_FORMAT`` environment variable (or ``SPECULA_DATA_FORMAT``), and is
-``fits`` if neither is set. ``DataSource``, and therefore the replays, detect the format of each
-file from its extension.
+``DataStore`` saves each of its inputs in a file named after the input, with
+the data at each stored time step (array ``data``), the times (array ``times``)
+and the header of the data object. It can also use the ``pickle`` format
+(``.pickle`` files). The format is chosen with the ``data_format`` parameter.
+When it is not given, the format is taken from the ``ITERAS_DATA_FORMAT``
+environment variable (or ``SPECULA_DATA_FORMAT``), and is ``fits`` if neither is
+set. ``DataSource``, and therefore the replays, detect the format of each file
+from its extension.
 
-Data objects (calibration files, the ``_object`` and ``tag`` parameters) can be
-saved and restored in the ``fits``, ``npz`` and ``hdf5`` formats too, chosen by
-the extension of the file name (``.fits``, ``.npz``, ``.h5``). The npz and HDF5
-files contain the same arrays and header entries as the FITS file, one entry
-or group per FITS HDU. Calibration files written without an extension, for
-example by the calibrators, get the extension of the default format, and are
-``fits`` files if the default format is ``pickle``. When a calibration file is
-read by its tag, the file of the default format is used if it exists,
-otherwise the file in any of the other formats.
+Calibration files written without an extension, for example by the
+calibrators, get the extension of the default format, and are ``fits`` files
+if the default format is ``pickle``. When a calibration file is read by its
+tag, the file of the default format is used if it exists, otherwise the file
+in any of the other formats.
 
 Output logging
 ==============

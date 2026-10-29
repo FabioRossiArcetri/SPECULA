@@ -1,6 +1,5 @@
 
 import os
-from astropy.io import fits
 
 from iteras import registry
 from iteras.lib import storage
@@ -68,11 +67,8 @@ class CalibManager():
             data (array-like): The data to be written to the file.
         """
         filename = self.filename(subdir, name)
-        data_format = storage.object_format(filename)
-        if data_format == 'fits':
-            fits.writeto(filename, data, overwrite=True)
-        else:
-            storage.write_hdulist(filename, fits.HDUList([fits.PrimaryHDU(data)]), data_format)
+        # In FITS files, the data is in the primary HDU
+        storage.write_object(filename, {}, {'data': data}, layout='primary', overwrite=True)
 
     def readfits(self, subdir, name):
         """
@@ -89,10 +85,8 @@ class CalibManager():
         self.logger.info(f'Reading: {filename}')
         if not os.path.exists(filename):
             raise FileNotFoundError(filename)
-        data_format = storage.object_format(filename)
-        if data_format == 'fits':
-            return fits.getdata(filename)
-        return storage.read_hdulist(filename, data_format)[0].data
+        with storage.read_object(filename) as f:
+            return f.read('data', 0)
 
     def write_data(self, name, data):
         """

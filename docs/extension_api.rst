@@ -217,10 +217,12 @@ corresponding feature.
        ``DataSource``.
    * - ``save(filename)``, ``restore(filename, target_device_idx=None)``
      - Saving and loading: ``restore()`` is used for the ``_object`` and
-       ``tag`` parameters, through the calibration manager. Implement them for
-       FITS files: the base class makes them also accept npz and HDF5 files,
-       chosen by the extension of ``filename``, converting the FITS content.
-       The parameter with the file name must be called ``filename``.
+       ``tag`` parameters, through the calibration manager. Implement them
+       with ``iteras.lib.storage.write_object()`` and ``read_object()``, which
+       store the header keywords and named arrays in any of the supported
+       formats (FITS, npz, npy, HDF5), chosen by the extension of
+       ``filename``. ``read_object().load()`` puts an array on the device of
+       the object, streaming large FITS and npy arrays to the GPU.
    * - ``array_for_display()``
      - The array shown by the generic displays and the display server.
    * - ``debug_summary()``

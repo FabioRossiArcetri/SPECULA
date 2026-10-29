@@ -20,12 +20,6 @@ from iteras.processing_objects.data_store import DataStore
 from iteras.processing_objects.data_source import DataSource
 from iteras.base_value import BaseValue
 
-try:
-    import h5py  # noqa: F401
-    H5PY_AVAILABLE = True
-except ImportError:
-    H5PY_AVAILABLE = False
-
 
 def _env_without_format():
     return {k: v for k, v in os.environ.items()
@@ -154,7 +148,9 @@ class TestRoundTrip(unittest.TestCase):
     def test_round_trip_npz(self):
         self._check_round_trip('npz', '.npz')
 
-    @unittest.skipUnless(H5PY_AVAILABLE, 'h5py not installed')
+    def test_round_trip_npy(self):
+        self._check_round_trip('npy', '.npy')
+
     def test_round_trip_hdf5(self):
         self._check_round_trip('hdf5', '.h5')
 

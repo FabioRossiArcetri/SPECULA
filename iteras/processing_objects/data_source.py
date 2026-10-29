@@ -1,7 +1,6 @@
 
 import os
 import pickle
-from astropy.io import fits
 
 from iteras.base_processing_obj import BaseProcessingObj
 from iteras.base_value import BaseValue
@@ -29,7 +28,7 @@ class DataSource(BaseProcessingObj):
         store_dir : str
             Directory containing the files written by DataStore.
         data_format : str, optional
-            Format of the files: 'fits', 'pickle', 'npz' or 'hdf5' (see
+            Format of the files: 'fits', 'pickle', 'npz', 'npy' or 'hdf5' (see
             iteras.lib.storage). Default: detected from the file of each output.
         global_precision : int, optional
             Precision of the stored run, used by the replay tools.
@@ -69,20 +68,18 @@ class DataSource(BaseProcessingObj):
         if name in self.items:
             raise ValueError(f'Storing already has an object with name {name}')
         data_format = self.data_format or storage.find_format(self.tn_dir, name) or 'fits'
-        if data_format == 'fits':
-            self.load_fits(name)
-        elif data_format == 'pickle':
+        if data_format == 'pickle':
             self.load_pickle(name)
-        elif data_format == 'npz':
-            self._load_with(storage.read_npz, name, 'npz')
-        elif data_format == 'hdf5':
-            self._load_with(storage.read_hdf5, name, 'hdf5')
+        else:
+            self.load_data(name, data_format)
 
-    def _load_with(self, reader, name, data_format):
-        '''Load the file of *name* with *reader*(path) -> (data, times, header)'''
-        data, times, header = reader(storage.filename(self.tn_dir, name, data_format))
-        self.headers[name] = header
-        self.obj_type[name] = header['OBJ_TYPE']
+    def load_data(self, name, data_format):
+        '''Load the file of *name* written by DataStore.save_data() in *data_format*'''
+        with storage.read_object(storage.filename(self.tn_dir, name, data_format)) as f:
+            self.headers[name] = dict(f.header)
+            self.obj_type[name] = self.headers[name]['OBJ_TYPE']
+            data = f.read('data', 0)
+            times = f.read('times', 1)
         self.storage[name] = {t: data[i] for i, t in enumerate(times.tolist())}
 
     def load_pickle(self, name):
@@ -99,13 +96,7 @@ class DataSource(BaseProcessingObj):
         self.storage[name] = { t:data[i] for i, t in enumerate(times.tolist())}
 
     def load_fits(self, name):
-        filename = os.path.join(self.tn_dir, name+'.fits')
-        with fits.open(filename) as hdul:
-            self.headers[name] = dict(hdul[0].header)  # pylint: disable=no-member # (created dynamically by pyfits)
-            self.obj_type[name] = self.headers[name]['OBJ_TYPE']
-            times = hdul[1].data.copy()                # pylint: disable=no-member # (created dynamically by pyfits)
-            data = hdul[0].data.copy()                 # pylint: disable=no-member # (created dynamically by pyfits)
-        self.storage[name] = { t:data[i] for i, t in enumerate(times.tolist())}
+        self.load_data(name, 'fits')
 
     def size(self, name, dimensions=False):
         if name not in self.storage:
