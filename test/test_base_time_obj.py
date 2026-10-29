@@ -137,7 +137,7 @@ class TestBaseValue(unittest.TestCase):
     def test_scipy_helpers_follow_device(self, target_device_idx, xp):
         """The scipy helpers come from scipy on CPU and from cupyx on GPU"""
         obj = BaseTimeObj(target_device_idx=target_device_idx)
-        if target_device_idx >= 0:
+        if target_device_idx >= 0:  # pragma: gpu
             import cupyx.scipy.ndimage, cupyx.scipy.fft, cupyx.scipy.linalg
             expected = {'ndimage_rotate': cupyx.scipy.ndimage.rotate,
                         'ndimage_shift': cupyx.scipy.ndimage.shift,

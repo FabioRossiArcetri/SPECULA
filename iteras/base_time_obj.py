@@ -94,7 +94,7 @@ def _scipy_helpers(gpu):
     from scipy or, if *gpu* is True, from cupyx.scipy. Imported at the first call
     for each backend, so that creating objects does not import them.
     '''
-    if gpu:
+    if gpu:  # pragma: gpu
         from cupyx.scipy.ndimage import rotate, shift, center_of_mass
         from cupyx.scipy.fft import ifft2, idct, dct
         from cupyx.scipy.linalg import lu_factor, lu_solve

@@ -61,6 +61,36 @@ class TestDefaultFormat(unittest.TestCase):
             DataSource(outputs=[], store_dir='unused', data_format='xls')
 
 
+class TestSaveMethods(unittest.TestCase):
+    '''DataStore methods saving the stored data in each format'''
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = DataStore(store_dir=self.tmp.name, create_tn=False)
+        self.store.tn_dir = self.tmp.name
+        self.store.local_inputs = {'v': BaseValue(value=np.zeros(2), target_device_idx=-1)}
+        self.store.storage['v'][0] = np.zeros(2)
+        self.store.storage['v'][1] = np.ones(2)
+
+    def test_save_methods(self):
+        for method, data_format in [(self.store.save_fits, 'fits'), (self.store.save_npz, 'npz'),
+                                    (self.store.save_npy, 'npy'), (self.store.save_hdf5, 'hdf5')]:
+            with self.subTest(data_format=data_format):
+                method()
+                path = storage.filename(self.tmp.name, 'v', data_format)
+                with storage.read_object(path) as f:
+                    np.testing.assert_array_equal(f.read('data', 0), [[0, 0], [1, 1]])
+                    np.testing.assert_array_equal(f.read('times', 1), [0, 1])
+
+    def test_errors_are_logged(self):
+        '''An error saving one input is logged, and the other inputs are saved'''
+        with patch.object(storage, 'write_object', side_effect=OSError('disk full')), \
+                patch.object(self.store, 'logger') as logger:
+            self.store.save_npz()
+        self.assertIn('disk full', logger.error.call_args[0][0])
+
+
 class TestRoundTrip(unittest.TestCase):
     '''
     Store a counter with DataStore in a short simulation, then read it back
@@ -167,6 +197,16 @@ class TestRoundTrip(unittest.TestCase):
         analyser.tn_dir = store_dir
         with self.assertRaisesRegex(ValueError, 'DOWNSAMP=2'):
             analyser._validate_replay_inputs_are_not_downsampled(replay_params)
+
+    def test_unknown_format_not_checked_by_replay(self):
+        '''Files of unknown formats are left to DataSource, which rejects them'''
+        from iteras.base_replay_analyser import BaseReplayAnalyser
+        store_dir = self._store('npz', downsample_factor=2)
+        replay_params = {'data_source': {'store_dir': store_dir, 'outputs': ['v'],
+                                         'data_format': 'xls'}}
+        analyser = BaseReplayAnalyser.__new__(BaseReplayAnalyser)
+        analyser.tn_dir = store_dir
+        analyser._validate_replay_inputs_are_not_downsampled(replay_params)
 
 
 if __name__ == '__main__':

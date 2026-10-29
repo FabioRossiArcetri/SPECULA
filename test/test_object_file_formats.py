@@ -12,7 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -57,6 +57,81 @@ class TestAllClasses(unittest.TestCase):
                      'SubapData', 'PupData', 'M2C', 'IFuncInv', 'IirFilterData', 'SsrFilterData',
                      'Pupilstop', 'Layer', 'ConvolutionKernel', 'SpatioTempArray']:
             self.assertIn(name, classes)
+
+    def test_check_mode_helpers(self):
+        '''
+        The helpers of the check mode (conftest.py), in this process: the test
+        above runs them in a subprocess, which is not measured by coverage.
+        '''
+        import importlib
+        conftest = importlib.import_module(f'{__package__}.conftest' if __package__ else 'conftest')
+        from iteras.base_data_obj import BaseDataObj
+        from iteras.base_value import BaseValue
+        checked = set(conftest._checked_classes)
+        self.addCleanup(lambda: (conftest._checked_classes.clear(),
+                                 conftest._checked_classes.update(checked)))
+        conftest._checked_classes.clear()
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        recmat = Recmat(np.arange(6, dtype=np.float32).reshape(3, 2), target_device_idx=-1)
+
+        # A FITS file is saved and checked in the other formats; other files are not checked
+        save = conftest._checking_save(Recmat.save)
+        save(recmat, os.path.join(tmpdir.name, 'rec.npz'))
+        self.assertEqual(conftest._checked_classes, set())
+        save(recmat, os.path.join(tmpdir.name, 'rec.fits'))
+        self.assertEqual(conftest._checked_classes, {('Recmat', f) for f in FORMATS})
+
+        # Classes that cannot be restored from the file alone are not checked
+        class NeedsArguments(Recmat):
+            @staticmethod
+            def restore(filename, kernel_obj):
+                raise AssertionError('not called with the file alone')
+        conftest._checked_classes.clear()
+        save(NeedsArguments(recmat.recmat, target_device_idx=-1), os.path.join(tmpdir.name, 'n.fits'))
+        self.assertEqual(conftest._checked_classes, set())
+
+        # Differences between the restored objects are reported
+        class LosesData(Recmat):
+            @staticmethod
+            def restore(filename, target_device_idx=None):
+                obj = Recmat.restore(filename, target_device_idx=-1)
+                if not str(filename).endswith('.fits'):
+                    obj.recmat[0, 0] = -1
+                return obj
+        with self.assertRaisesRegex(AssertionError, 'recmat'):
+            save(LosesData(recmat.recmat, target_device_idx=-1), os.path.join(tmpdir.name, 'l.fits'))
+
+        # Field by field comparison
+        same = conftest._assert_same_restored
+        same({'a': [1, (2.0, float('nan'))], 'b': np.ones(2)}, {'a': [1, (2.0, float('nan'))], 'b': np.ones(2)})
+        for a, b in [(1, 2), ([1], [1, 2]), ({'a': 1}, {'b': 1}), (np.ones(2), np.ones(2, dtype=np.float32)),
+                     (np.ones(2), np.zeros(2)), (recmat, BaseValue(value=np.ones(2), target_device_idx=-1))]:
+            with self.subTest(a=a, b=b), self.assertRaises(AssertionError):
+                same(a, b)
+
+        # pytest_configure() wraps the save() methods of the classes defined
+        # afterwards, only in check mode
+        saved = BaseDataObj.__dict__.get('__init_subclass__')
+        try:
+            with patch.dict(os.environ, {'ITERAS_TEST_CHECK_OBJECT_FORMATS': '1'}):
+                conftest.pytest_configure(None)
+
+            class Saved(BaseDataObj):
+                def save(self, filename):
+                    pass
+            self.assertTrue(hasattr(Saved.save, '__wrapped__'))
+        finally:
+            if saved is None:
+                del BaseDataObj.__init_subclass__
+            else:
+                BaseDataObj.__init_subclass__ = saved
+
+        # Summary of the checked classes at the end of the tests
+        reporter = MagicMock()
+        conftest._checked_classes.update({('Recmat', 'npz'), ('IFunc', 'npz')})
+        conftest.pytest_terminal_summary(reporter)
+        reporter.write_line.assert_called_once_with('Object formats checked: IFunc/npz, Recmat/npz')
 
     def test_ifunc_round_trip(self):
         # IFunc is not saved by its tests
@@ -206,7 +281,7 @@ class TestStorageAPI(unittest.TestCase):
                     b = f.load('b', 2, target_device_idx=target)
                     self.assertEqual((a32.dtype, a64.dtype, b.dtype),
                                      (np.float32, np.float64, np.int32))
-                    if target >= 0:
+                    if target >= 0:  # pragma: gpu
                         self.assertIsInstance(a32, specula.cp.ndarray)
                     np.testing.assert_array_equal(cpuArray(a64), self.a)
                     np.testing.assert_array_equal(cpuArray(b), self.b)
@@ -219,6 +294,77 @@ class TestStorageAPI(unittest.TestCase):
         with self.assertRaisesRegex(OSError, 'not a directory written'):
             storage.write_object(path, self.header, {'a': self.a})
 
+    def test_npy_overwrite(self):
+        path = self._path('over', 'npy')
+        storage.write_object(path, self.header, {'a': self.a, 'b': self.b})
+        storage.write_object(path, self.header, {'b': self.b})
+        with storage.read_object(path) as f:
+            self.assertFalse(f.has('a'))
+        self.assertFalse(os.path.exists(os.path.join(path, 'a.npy')))
+
+    def test_no_header(self):
+        for data_format in storage.OBJECT_FORMATS:
+            with self.subTest(data_format=data_format):
+                path = self._path('nohdr', data_format)
+                storage.write_object(path, None, {'a': self.a})
+                with storage.read_object(path) as f:
+                    self.assertNotIn('VERSION', f.header)
+                    np.testing.assert_array_equal(f.read('a', 1), self.a)
+
+    def test_header_values_from_dictionary(self):
+        '''numpy scalars are stored as numbers, other types as strings'''
+        header = {'NUM': np.float32(1.5), 'LIST': [1, 2], 'NONE': None}
+        for data_format in ('npz', 'npy', 'hdf5'):
+            with self.subTest(data_format=data_format):
+                path = self._path('dict', data_format)
+                storage.write_object(path, header, {'a': self.a})
+                with storage.read_object(path) as f:
+                    self.assertEqual(f.header['NUM'], 1.5)
+                    self.assertEqual(f.header['LIST'], '[1, 2]')
+
+    def test_read_without_extension(self):
+        '''Files without a known extension are FITS files or npy directories'''
+        for data_format in ('fits', 'npy'):
+            with self.subTest(data_format=data_format):
+                path = os.path.join(self.tmp.name, 'noext_' + data_format)
+                storage.write_object(self._path('tmp', data_format), self.header, {'a': self.a})
+                os.rename(self._path('tmp', data_format), path)
+                with storage.read_object(path) as f:
+                    np.testing.assert_array_equal(f.read('a', 1), self.a)
+
+    def test_load_on_default_device(self):
+        for data_format in storage.OBJECT_FORMATS:
+            with self.subTest(data_format=data_format):
+                path = self._path('default', data_format)
+                storage.write_object(path, self.header, {'a': self.a})
+                with storage.read_object(path) as f:
+                    np.testing.assert_array_equal(cpuArray(f.load('a', 1)), self.a)
+
+    def test_load_missing_arrays(self):
+        for data_format in storage.OBJECT_FORMATS:
+            with self.subTest(data_format=data_format):
+                path = self._path('missing', data_format)
+                storage.write_object(path, self.header, {'a': self.a})
+                with storage.read_object(path) as f:
+                    with self.assertRaises(KeyError):
+                        f.load('missing', 5, target_device_idx=-1)
+                    if data_format == 'fits':
+                        # The primary HDU has no data
+                        with self.assertRaises(KeyError):
+                            f.load(None, 0, target_device_idx=-1)
+
+    def test_find_format(self):
+        self.assertIsNone(storage.find_format(self.tmp.name, 'none'))
+        storage.write_object(self._path('found', 'npz'), self.header, {'a': self.a})
+        self.assertEqual(storage.find_format(self.tmp.name, 'found'), 'npz')
+
+    def test_reader_base_class(self):
+        reader = storage.ObjectReader('path')
+        with self.assertRaises(NotImplementedError):
+            reader.has('a')
+        with self.assertRaises(NotImplementedError):
+            reader.read('a')
+
 
 class TestRestore(unittest.TestCase):
     '''Checks made by restore() on the files it reads, and optional contents'''
@@ -226,6 +372,28 @@ class TestRestore(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+
+    def _write(self, name, header, arrays=None):
+        path = os.path.join(self.tmp.name, name + '.npz')
+        storage.write_object(path, header, arrays or {'a': np.zeros(2)})
+        return path
+
+    def test_wrong_object_type_or_version(self):
+        from specula.data_objects.convolution_kernel import ConvolutionKernel
+        from specula.data_objects.gaussian_convolution_kernel import GaussianConvolutionKernel
+        from specula.data_objects.electric_field import ElectricField
+        from specula.data_objects.layer import Layer
+        from specula.data_objects.time_history import TimeHistory
+        cases = [(ConvolutionKernel, {'VERSION': 1.0}, 'version'),
+                 (GaussianConvolutionKernel, {'VERSION': 1.0}, 'version'),
+                 (ElectricField, {'OBJ_TYPE': 'Layer'}, 'ElectricField'),
+                 (Layer, {'OBJ_TYPE': 'ElectricField'}, 'Layer'),
+                 (TimeHistory, {'VERSION': 2}, 'version')]
+        for klass, header, message in cases:
+            with self.subTest(klass=klass.__name__):
+                path = self._write(klass.__name__, header)
+                with self.assertRaisesRegex(ValueError, message):
+                    klass.restore(path, target_device_idx=-1)
 
     def test_intmat_with_slope_statistics(self):
         from specula.data_objects.intmat import Intmat
@@ -241,6 +409,29 @@ class TestRestore(unittest.TestCase):
         np.testing.assert_array_equal(restored.slope_rms, intmat.slope_rms)
         self.assertEqual((restored.pupdata_tag, restored.subapdata_tag, restored.norm_factor),
                          ('pup', 'subap', 2.0))
+
+    def test_gaussian_kernel(self):
+        '''Restore into a new object, or into an existing one with the same parameters'''
+        from specula.data_objects.convolution_kernel import ConvolutionKernel
+        from specula.data_objects.gaussian_convolution_kernel import GaussianConvolutionKernel
+
+        def make(dimx=4, spot_size=1.0):
+            return GaussianConvolutionKernel(dimx=dimx, dimy=4, pxscale=0.2, dimension=16,
+                                             spot_size=spot_size, pupil_size_m=8.0,
+                                             data_dir=self.tmp.name, target_device_idx=-1)
+        kernel = make()
+        kernel.prepare_for_sh(current_time=1)       # computes and saves the file
+        files = [p for p in Path(self.tmp.name).iterdir() if storage.object_format(p)]
+        self.assertEqual(len(files), 1)
+        restored = GaussianConvolutionKernel.restore(files[0], target_device_idx=-1)
+        self.assertEqual((restored.dimx, restored.spot_size), (4, 1.0))
+        self.assertEqual(restored.real_kernels.shape[-2:], (16, 16))
+        with self.assertRaisesRegex(ValueError, 'spot size'):
+            GaussianConvolutionKernel.restore(files[0], kernel_obj=make(spot_size=2.0))
+        with self.assertRaisesRegex(ValueError, 'dimensions'):
+            GaussianConvolutionKernel.restore(files[0], kernel_obj=make(dimx=2))
+        with self.assertRaisesRegex(ValueError, 'dimensions'):
+            ConvolutionKernel.restore(files[0], kernel_obj=make(dimx=2))
 
 
 class TestCalibrationFiles(unittest.TestCase):
