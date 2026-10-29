@@ -220,6 +220,29 @@ class TestStorageAPI(unittest.TestCase):
             storage.write_object(path, self.header, {'a': self.a})
 
 
+class TestRestore(unittest.TestCase):
+    '''Checks made by restore() on the files it reads, and optional contents'''
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_intmat_with_slope_statistics(self):
+        from specula.data_objects.intmat import Intmat
+        intmat = Intmat(np.arange(6, dtype=np.float32).reshape(3, 2),
+                        slope_mm=np.array([[-1.0, 1.0]] * 3), slope_rms=np.arange(3.0),
+                        pupdata_tag='pup', subapdata_tag='subap', norm_factor=2.0,
+                        target_device_idx=-1)
+        path = os.path.join(self.tmp.name, 'im.npz')
+        intmat.save(path)
+        restored = Intmat.restore(path, target_device_idx=-1)
+        np.testing.assert_array_equal(cpuArray(restored.intmat), cpuArray(intmat.intmat))
+        np.testing.assert_array_equal(restored.slope_mm, intmat.slope_mm)
+        np.testing.assert_array_equal(restored.slope_rms, intmat.slope_rms)
+        self.assertEqual((restored.pupdata_tag, restored.subapdata_tag, restored.norm_factor),
+                         ('pup', 'subap', 2.0))
+
+
 class TestCalibrationFiles(unittest.TestCase):
 
     def setUp(self):
