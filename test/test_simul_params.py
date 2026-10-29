@@ -79,4 +79,16 @@ class TestSimulParams(unittest.TestCase):
             self.assertFalse(simul.is_main_params(params, 'other'))
             self.assertFalse(simul.is_main_params(params, 'broken'))
             simul.setSimulParams(params)
-            self.assertIs(simul.mainParams, params['main'])
+            self.assertEqual(simul.mainParams['root_dir'], 'dummy')
+
+    def test_main_params_defaults(self):
+        """The main parameters not in the parameter file have the default values of their class"""
+        params = {'main': {'class': 'SimParams', 'time_step': 0.01}}
+        simul = Simul('dummy.yml')
+        simul.setSimulParams(params)
+        self.assertEqual(simul.mainParams['time_step'], 0.01)
+        self.assertEqual(simul.mainParams['root_dir'], '.')
+        self.assertEqual(simul.mainParams['total_time'], SimParams().total_time)
+        self.assertEqual(simul.mainParams['add_modules'], [])
+        # The parameters are not modified
+        self.assertEqual(params['main'], {'class': 'SimParams', 'time_step': 0.01})

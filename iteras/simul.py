@@ -295,9 +295,16 @@ class Simul():
         return self.param_is(params, key, SimParams)
 
     def setSimulParams(self, params):
+        '''
+        Set mainParams: the main parameters, completed with the default values
+        of the constructor of their class for the parameters not given.
+        '''
         for key in params:
             if self.is_main_params(params, key):
-                self.mainParams = params[key]
+                signature = inspect.signature(self.param_class(params, key).__init__)
+                defaults = {name: p.default for name, p in signature.parameters.items()
+                            if p.default is not inspect.Parameter.empty}
+                self.mainParams = {**defaults, **params[key]}
 
     def build_order(self, params):
         '''
