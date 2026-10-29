@@ -25,6 +25,9 @@ CALIB_SUBDIRS = {
     'rec': 'rec/',
     'recmat': 'rec/',
     'Recmat': 'rec/',
+    # Generic matrices (iteras's Matrix, used by MVM and SoftLimiter) are
+    # reconstruction matrices in SPECULA, as before
+    'Matrix': 'rec/',
     'intmat': 'im/',
     'Intmat': 'im/',
     'ImCalibrator': 'im/',

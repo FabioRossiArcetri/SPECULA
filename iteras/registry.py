@@ -33,6 +33,7 @@ _plugin_roots = ['iteras']
 _calib_subdirs = {
     'data': 'data/',
     'filter': 'filter/',
+    'Matrix': 'matrix/',
     'iir_filter_data': 'filter/',
     'IirFilterData': 'filter/',
     'ssr_filter_data': 'filter/',
