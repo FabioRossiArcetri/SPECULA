@@ -45,8 +45,7 @@ dependencies = { file = "requirements.txt" }
 [project.optional-dependencies]
 control = ["control"]
 diagrams = ["orthogram"]
-hdf5 = ["h5py"]
-all = ["control", "orthogram", "h5py"]
+all = ["control", "orthogram"]
 
 [tool.setuptools_scm]
 write_to = "specula/_version.py"
