@@ -125,15 +125,6 @@ def find_object_file(path):
     return None
 
 
-def _h5py():
-    try:
-        import h5py
-    except ImportError:
-        raise ImportError('The hdf5 data format needs the h5py package (pip install h5py), '
-                          'a requirement of iteras') from None
-    return h5py
-
-
 # ---------------------------------------------------------------------------
 # Headers
 # ---------------------------------------------------------------------------
@@ -234,7 +225,7 @@ def write_object(path, header, arrays, layout='extensions', overwrite=True):
         with open(path, 'wb') as f:
             np.savez(f, __header__=np.array(json.dumps(cards)), **arrays)
     elif data_format == 'hdf5':
-        h5py = _h5py()
+        import h5py
         with h5py.File(path, 'w') as f:
             f.attrs['__header__'] = json.dumps(cards)
             f.attrs['__arrays__'] = json.dumps(list(arrays))
@@ -429,8 +420,9 @@ class _NpzReader(ObjectReader):
 class _Hdf5Reader(ObjectReader):
 
     def __init__(self, path):
+        import h5py
         super().__init__(path)
-        self._file = _h5py().File(path, 'r')
+        self._file = h5py.File(path, 'r')
         self.header = header_from_cards(json.loads(self._file.attrs['__header__']))
 
     def close(self):

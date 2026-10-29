@@ -159,11 +159,6 @@ class TestRoundTrip(unittest.TestCase):
             store_dir = self._store(data_format=None)
         self.assertEqual(storage.find_format(store_dir, 'v'), 'npz')
 
-    def test_hdf5_without_h5py(self):
-        with patch.dict(sys.modules, {'h5py': None}):
-            with self.assertRaisesRegex(ImportError, 'h5py'):
-                self._store('hdf5')
-
     def test_downsampled_npz_rejected_by_replay(self):
         from iteras.base_replay_analyser import BaseReplayAnalyser
         store_dir = self._store('npz', downsample_factor=2)

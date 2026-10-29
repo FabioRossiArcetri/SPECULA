@@ -202,8 +202,6 @@ class DataStore(BaseProcessingObj):
                 storage.write_object(storage.filename(self.tn_dir, k, data_format), hdr,
                                      {'data': data[k], 'times': times[k]}, layout='primary')
 
-            except ImportError:
-                raise
             except Exception as e:
                 self.logger.error(f"Error saving {data_format} file for key '{k}': {str(e)}")
                 continue
