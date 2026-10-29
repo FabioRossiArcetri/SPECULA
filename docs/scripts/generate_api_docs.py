@@ -72,6 +72,7 @@ def generate_simple_api_doc(category_name, modules, description="", include_memb
 def main():
     # Base paths
     specula_path = Path(__file__).parent.parent.parent / "specula"
+    iteras_path = Path(__file__).parent.parent.parent / "iteras"
     api_docs_path = Path(__file__).parent.parent / "api"
 
     # Create api directory if it doesn't exist
@@ -104,8 +105,12 @@ def main():
     for category_name, config in directories.items():
         print(f"Scanning {config['path']} for modules...")
 
-        # Scan for all modules in the package
-        all_modules = scan_package_modules(config["path"], config["package"])
+        # Scan for all modules in the package, and in the iteras package of
+        # the same kind (the modules moved there are found in both)
+        iteras_package = config["package"].replace("specula.", "iteras.", 1)
+        iteras_modules = scan_package_modules(iteras_path / config["path"].name, iteras_package)
+        all_modules = sorted(set(scan_package_modules(config["path"], config["package"])) |
+                             set(iteras_modules), key=lambda m: m.split('.')[-1])
 
         if all_modules:
             print(f"  Found modules: {[m.split('.')[-1] for m in all_modules]}")
