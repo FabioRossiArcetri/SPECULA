@@ -13,7 +13,7 @@ to perform stability and frequency response analysis of an Adaptive Optics (AO) 
 Transfer Function Convention
 ----------------------------
 
-In SPECULA, the IIR filters are defined using the following convention:
+In iteras and SPECULA, the IIR filters are defined using the following convention:
 
 .. math::
     H(z) = \frac{num[0] + num[1]z + num[2]z^2 + \dots}{den[0] + den[1]z + den[2]z^2 + \dots}
@@ -57,9 +57,9 @@ The following script computes the RTF, NTF, and the Nyquist plot for stability v
 
     import numpy as np
     import matplotlib.pyplot as plt
-    import specula
-    specula.init(-1)  # CPU execution
-    from specula.data_objects.iir_filter_data import IirFilterData
+    import iteras
+    iteras.init(-1)  # CPU execution
+    from iteras.data_objects.iir_filter_data import IirFilterData
 
     # --- Configuration ---
     fs = 1000.0         # Sampling frequency [Hz]
