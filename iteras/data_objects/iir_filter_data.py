@@ -1,8 +1,8 @@
 import numpy as np
 from functools import lru_cache
 
-from specula import cpuArray
-from specula.base_data_obj import BaseDataObj
+from iteras import cpuArray
+from iteras.base_data_obj import BaseDataObj
 
 from astropy.io import fits
 from iteras.lib import storage
@@ -30,7 +30,7 @@ class IirFilterData(BaseDataObj):
                  target_device_idx: int=None,
                  precision: int=None):
         """
-        :class:`~specula.data_objects.iir_filter_data.IirFilterData` - IIR Filter Data representation.
+        :class:`~iteras.data_objects.iir_filter_data.IirFilterData` - IIR Filter Data representation.
  
         This class stores IIR filter coefficients in the following format:
         - Coefficients are stored with lowest order terms first

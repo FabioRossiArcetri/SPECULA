@@ -1,5 +1,5 @@
-from specula import cpuArray
-from specula.base_data_obj import BaseDataObj
+from iteras import cpuArray
+from iteras.base_data_obj import BaseDataObj
 from scipy.linalg import block_diag
 from astropy.io import fits
 import numpy as np
@@ -19,7 +19,7 @@ class SsrFilterData(BaseDataObj):
                  target_device_idx: int=None,
                  precision: int=None):
         """
-        :class:`~specula.data_objects.ssr_filter_data.SsrFilterData`
+        :class:`~iteras.data_objects.ssr_filter_data.SsrFilterData`
         
         Note
         ----

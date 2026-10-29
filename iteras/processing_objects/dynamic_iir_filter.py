@@ -1,10 +1,10 @@
-from specula.processing_objects.iir_filter import IirFilter
-from specula.base_processing_obj import InputDesc
-from specula.data_objects.iir_filter_data import IirFilterData
-from specula.connections import InputValue
-from specula.base_value import BaseValue
-from specula import cpuArray
-from specula.scalar_values import FloatValue, IntValue
+from iteras.processing_objects.iir_filter import IirFilter
+from iteras.base_processing_obj import InputDesc
+from iteras.data_objects.iir_filter_data import IirFilterData
+from iteras.connections import InputValue
+from iteras.base_value import BaseValue
+from iteras import cpuArray
+from iteras.scalar_values import FloatValue, IntValue
 
 
 class DynamicIirFilter(IirFilter):

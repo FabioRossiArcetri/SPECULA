@@ -1,6 +1,6 @@
-from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
-from specula.base_value import BaseValue
-from specula.connections import InputValue
+from iteras.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
+from iteras.base_value import BaseValue
+from iteras.connections import InputValue
 
 
 class RoundToMultiple(BaseProcessingObj):
@@ -9,11 +9,10 @@ class RoundToMultiple(BaseProcessingObj):
 
     Computes, element-wise: ``gain * multiple * round(in_value / multiple)``.
 
-    Primary application:
-    Resolving an integer number-of-wavelengths ambiguity in a continuous
-    residual (e.g. a petal-piston estimate expressed in nm), by snapping it
-    to the nearest multiple of ``multiple`` (e.g. lambda_wfs). Typically fed
-    from a ground-truth signal (not available to a real WFS) and gated in
+    Typical application:
+    Resolving an integer-number-of-periods ambiguity in a continuous
+    estimate (e.g. a phase difference measured modulo a wavelength), by
+    snapping it to the nearest multiple of ``multiple``. It can be gated in
     time (e.g. via a ScheduleGenerator) to apply the correction once, after
     the closed-loop transient, rather than every frame.
     """

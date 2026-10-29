@@ -4,11 +4,11 @@ def fast_pinv(a, xp):
     of the two Gram matrices (A A^T or A^T A) rather than an SVD of the
     full, generally much more rectangular, matrix A itself.
 
-    For an (m, n) matrix with m << n (e.g. an influence function with far
-    more pixels than modes), this reduces an SVD over the full (m, n)
+    For an (m, n) matrix with m << n (e.g. a basis of m vectors sampled on
+    many more points), this reduces an SVD over the full (m, n)
     matrix to a matrix product plus a pseudoinverse of the much smaller
     (m, m) matrix A @ A.T -- in practice a large speedup (measured 3x-8x
-    on real influence-function bases, growing with n), since the SVD of a
+    on real bases of this kind, growing with n), since the SVD of a
     tall/wide matrix costs roughly O(min(m, n)^2 * max(m, n)), dominated by
     the larger dimension, while here that dimension only ever appears
     inside a matrix product, not inside an SVD.
@@ -28,9 +28,9 @@ def fast_pinv(a, xp):
     A's singular values, its condition number is the square of A's --
     forming it loses roughly half of the singular-value dynamic range
     representable in the working precision. This is a real trade-off
-    (accuracy for speed), invisible for the well-conditioned bases typical
-    in adaptive optics (verified to agree with a direct ``pinv`` to
-    machine precision on real KL/zonal influence functions), but worth
+    (accuracy for speed), invisible for well-conditioned bases (verified
+    to agree with a direct ``pinv`` to machine precision on real modal and
+    zonal bases), but worth
     keeping in mind for a deliberately ill-conditioned or near-singular
     input, where a direct ``xp.linalg.pinv(a)`` remains the safer choice.
 

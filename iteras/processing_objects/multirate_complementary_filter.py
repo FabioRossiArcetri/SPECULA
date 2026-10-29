@@ -1,9 +1,9 @@
-from specula import np
-from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
-from specula.processing_objects.base_filter import BaseFilter
-from specula.base_value import BaseValue
-from specula.connections import InputValue, InputList
-from specula.data_objects.iir_filter_data import IirFilterData
+from iteras import np
+from iteras.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
+from iteras.processing_objects.base_filter import BaseFilter
+from iteras.base_value import BaseValue
+from iteras.connections import InputValue, InputList
+from iteras.data_objects.iir_filter_data import IirFilterData
 
 class MultirateComplementaryFilter(BaseFilter):
     '''

@@ -1,9 +1,9 @@
 from abc import abstractmethod
 
-from specula import np
-from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
-from specula.connections import InputValue
-from specula.base_value import BaseValue
+from iteras import np
+from iteras.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
+from iteras.connections import InputValue
+from iteras.base_value import BaseValue
 
 
 class BaseFilter(BaseProcessingObj):
@@ -58,7 +58,7 @@ class BaseFilter(BaseProcessingObj):
         self.outputs['out_comm'] = self.out_comm
         # This output provides the non-delayed command.
         # POLC requires the non-delayed command.
-        # DMs and actuators are usually driven with the delayed output.
+        # Actuators are usually driven with the delayed output.
         self.outputs['out_comm_no_delay'] = self.out_comm_no_delay
 
     def prepare_trigger(self, t):

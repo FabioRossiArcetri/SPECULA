@@ -1,5 +1,5 @@
 from typing import List
-from specula.processing_objects.base_generator import BaseGenerator
+from iteras.processing_objects.base_generator import BaseGenerator
 import numpy as np
 
 

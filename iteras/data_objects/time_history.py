@@ -1,14 +1,14 @@
 
 from astropy.io import fits
 
-from specula.base_data_obj import BaseDataObj
+from iteras.base_data_obj import BaseDataObj
 from iteras.lib import storage
 
 
 class TimeHistory(BaseDataObj):
     """
     Time history data object.
-    This class holds the time history of a variable, such as the seeing value, during the simulation.
+    This class holds the time history of a variable, such as a parameter changing during the simulation.
     The time history is stored as a 1D array,
     """
     def __init__(self,
@@ -16,7 +16,7 @@ class TimeHistory(BaseDataObj):
                  target_device_idx: int=None,
                  precision:int =None):
         """
-        Initialize a :class:`~specula.data_objects.time_history.TimeHistory` object.
+        Initialize a :class:`~iteras.data_objects.time_history.TimeHistory` object.
         """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
@@ -29,13 +29,13 @@ class TimeHistory(BaseDataObj):
         self.time_history[...] = self.to_xp(val)
 
     def save(self, filename):
-        """Saves the :class:`~specula.data_objects.time_history.TimeHistory` data to a file."""
+        """Saves the :class:`~iteras.data_objects.time_history.TimeHistory` data to a file."""
         storage.write_object(filename, self.get_fits_header(), {'time_history': self.time_history},
                              layout='primary', overwrite=False)
 
     @staticmethod
     def restore(filename, target_device_idx=None):
-        """Restores the :class:`~specula.data_objects.time_history.TimeHistory` data from a file."""
+        """Restores the :class:`~iteras.data_objects.time_history.TimeHistory` data from a file."""
         with storage.read_object(filename) as f:
             version = f.header.get('VERSION')
             if version != 1:

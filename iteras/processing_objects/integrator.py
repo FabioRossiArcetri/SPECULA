@@ -1,7 +1,7 @@
 from typing import List
 
-from specula.processing_objects.iir_filter import IirFilter
-from specula.data_objects.iir_filter_data import IirFilterData
+from iteras.processing_objects.iir_filter import IirFilter
+from iteras.data_objects.iir_filter_data import IirFilterData
 
 
 class Integrator(IirFilter):

@@ -1,5 +1,5 @@
 import numpy as np
-from specula.processing_objects.base_generator import BaseGenerator
+from iteras.processing_objects.base_generator import BaseGenerator
 from typing import List
 
 class RandomGenerator(BaseGenerator):

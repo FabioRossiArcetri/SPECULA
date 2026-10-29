@@ -1,5 +1,5 @@
-from specula.processing_objects.base_generator import BaseGenerator
-from specula.data_objects.time_history import TimeHistory
+from iteras.processing_objects.base_generator import BaseGenerator
+from iteras.data_objects.time_history import TimeHistory
 
 
 class TimeHistoryGenerator(BaseGenerator):

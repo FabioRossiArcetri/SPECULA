@@ -1,7 +1,7 @@
 
-from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
-from specula.base_value import BaseValue
-from specula.connections import InputValue
+from iteras.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
+from iteras.base_value import BaseValue
+from iteras.connections import InputValue
 
 
 sum_ = sum  # Preserve built-in

@@ -1,8 +1,8 @@
 
-from specula.data_objects.simul_params import SimulParams
-from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
-from specula.connections import InputValue
-from specula.base_value import BaseValue
+from iteras.data_objects.sim_params import SimParams
+from iteras.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
+from iteras.connections import InputValue
+from iteras.base_value import BaseValue
 
 
 class WindowedIntegration(BaseProcessingObj):
@@ -11,7 +11,7 @@ class WindowedIntegration(BaseProcessingObj):
     Implements a simple windowed integration of a signal.
     """
     def __init__(self,
-                 simul_params: SimulParams,
+                 simul_params: SimParams,
                  n_elem: int,
                  dt: float,
                  start_time: float=0,

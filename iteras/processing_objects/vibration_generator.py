@@ -1,7 +1,7 @@
 import numpy as np
-from specula.processing_objects.base_generator import BaseGenerator
-from specula.data_objects.simul_params import SimulParams
-from specula.lib.utils import psd_to_signal
+from iteras.processing_objects.base_generator import BaseGenerator
+from iteras.data_objects.sim_params import SimParams
+from iteras.lib.utils import psd_to_signal
 
 
 def get_vibrations_time_hist(nmodes, psd, freq, seed=1987, samp_freq=1000,
@@ -86,7 +86,7 @@ class VibrationGenerator(BaseGenerator):
     Generates vibration signals from PSD specifications.
     """
     def __init__(self,
-                 simul_params: SimulParams,
+                 simul_params: SimParams,
                  nmodes: int,
                  psd,
                  freq,
@@ -102,7 +102,7 @@ class VibrationGenerator(BaseGenerator):
 
         Parameters
         ----------
-        simul_params: SimulParams object
+        simul_params: SimParams object
             main simulation parameters. Only the *total_time* and *time_step* members are accessed
         nmodes: int [1]
             number of modes to generate

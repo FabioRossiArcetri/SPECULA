@@ -1,5 +1,5 @@
-from specula.processing_objects.base_filter import BaseFilter
-from specula.data_objects.ssr_filter_data import SsrFilterData
+from iteras.processing_objects.base_filter import BaseFilter
+from iteras.data_objects.ssr_filter_data import SsrFilterData
 
 
 class SsrFilter(BaseFilter):

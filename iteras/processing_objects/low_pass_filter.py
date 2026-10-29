@@ -1,8 +1,8 @@
 from typing import List
 
-from specula.processing_objects.iir_filter import IirFilter
-from specula.data_objects.iir_filter_data import IirFilterData
-from specula.data_objects.simul_params import SimulParams
+from iteras.processing_objects.iir_filter import IirFilter
+from iteras.data_objects.iir_filter_data import IirFilterData
+from iteras.data_objects.sim_params import SimParams
 
 
 class LowPassFilter(IirFilter):
@@ -11,7 +11,7 @@ class LowPassFilter(IirFilter):
     Specialization of the IirFilter class, implementing a low pass filter.
     """
     def __init__(self,
-                 simul_params: SimulParams,
+                 simul_params: SimParams,
                  cutoff_freq: float | List[float],
                  amplif_fact: float | List[float]=None,
                  n_ord: int=None,

@@ -1,8 +1,8 @@
 from typing import List
-from specula.processing_objects.integrator import Integrator
-from specula.base_processing_obj import InputDesc
-from specula.connections import InputValue
-from specula.scalar_values import FloatValue, IntValue
+from iteras.processing_objects.integrator import Integrator
+from iteras.base_processing_obj import InputDesc
+from iteras.connections import InputValue
+from iteras.scalar_values import FloatValue, IntValue
 
 
 class DynamicIntegrator(Integrator):

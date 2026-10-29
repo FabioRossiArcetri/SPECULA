@@ -1,8 +1,8 @@
 import numpy as np
 from functools import cache
 
-import specula
-from specula import to_xp
+import iteras
+from iteras import to_xp
 from scipy.interpolate import RegularGridInterpolator
 
 class Interp2D():
@@ -160,7 +160,7 @@ class Interp2D():
         # Use on-the-fly ONLY when:
         # 1. On GPU (xp is cp)
         # 2. No custom coordinates provided (xx, yy are None)
-        use_onthefly = (self.xp is specula.cp and xx is None and yy is None)
+        use_onthefly = (self.xp is iteras.cp and xx is None and yy is None)
 
         if use_onthefly:
             self.use_precomputed = False
@@ -266,8 +266,8 @@ class Interp2D():
         if out is None:
             out = self.xp.empty(shape=self.output_shape, dtype=self.dtype)
 
-        if self.xp == specula.cp: # pragma: no cover
-            cp = specula.cp
+        if self.xp == iteras.cp: # pragma: no cover
+            cp = iteras.cp
             kernels = _interp2_kernels()
             block = (16, 16)
             # Calculate grid size for non-square arrays correctly
@@ -327,7 +327,7 @@ def _interp2_kernels():  # pragma: no cover
     The interpolation kernels for float and double, created at the first
     GPU call, so that this module can be imported before init()
     '''
-    cp = specula.cp
+    cp = iteras.cp
     return {
         'interp2_kernel_float': cp.RawKernel(Interp2D.interp2_kernel.replace('TYPE', 'float'), name='interp2_kernel_float'),
         'interp2_kernel_double': cp.RawKernel(Interp2D.interp2_kernel.replace('TYPE', 'double'), name='interp2_kernel_double'),

@@ -1,8 +1,8 @@
-from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
-from specula.connections import InputValue
-from specula.base_value import BaseValue
-from specula.data_objects.simul_params import SimulParams
-from specula.lib.demodulate_signal import demodulate_signal
+from iteras.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
+from iteras.connections import InputValue
+from iteras.base_value import BaseValue
+from iteras.data_objects.sim_params import SimParams
+from iteras.lib.demodulate_signal import demodulate_signal
 
 
 class Demodulator(BaseProcessingObj):
@@ -12,7 +12,7 @@ class Demodulator(BaseProcessingObj):
     representing modal amplitudes.
     """
     def __init__(self,
-                 simul_params: SimulParams,
+                 simul_params: SimParams,
                  mode_numbers: list,
                  carrier_frequencies: list,
                  demod_dt: float,  # Demodulation time interval

@@ -1,5 +1,5 @@
-from specula.base_value import BaseValue
-from specula.base_processing_obj import BaseProcessingObj, OutputDesc
+from iteras.base_value import BaseValue
+from iteras.base_processing_obj import BaseProcessingObj, OutputDesc
 
 
 class BaseGenerator(BaseProcessingObj):
