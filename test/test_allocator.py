@@ -826,7 +826,8 @@ class TestAllocatorRun(AllocatorTestCase):
         pool = iteras.cp.get_default_memory_pool()
         with iteras.cp.cuda.Device(0):
             pool.free_all_blocks()
-            pool.set_limit(size=45 * 1024 ** 2)
+            # 45 MB more than what the objects of other tests may still hold
+            pool.set_limit(size=pool.total_bytes() + 45 * 1024 ** 2)
         calls = []
         real_run = profiler_module.profile_run
 
