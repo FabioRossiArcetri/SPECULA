@@ -46,6 +46,8 @@ MOVED_MODULES = {
     'specula.display.display_recorder': 'iteras.display.display_recorder',
     'specula.lib.display_server_api': 'iteras.lib.display_server_api',
     'specula.lib.fits_io': 'iteras.lib.fits_io',
+    'specula.processing_objects.mvm': 'iteras.processing_objects.mvm',
+    'specula.processing_objects.soft_limiter': 'iteras.processing_objects.soft_limiter',
     'specula.data_objects.iir_filter_data': 'iteras.data_objects.iir_filter_data',
     'specula.data_objects.ssr_filter_data': 'iteras.data_objects.ssr_filter_data',
     'specula.data_objects.time_history': 'iteras.data_objects.time_history',
