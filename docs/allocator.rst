@@ -185,7 +185,7 @@ Limitations
   less reliable. With TCP between two processes of the same computer, MORFEO ran
   about 60% slower than with single-copy shared memory.
 * Small, host-bound simulations: without the :doc:`accelerator <accelerator>`,
-  the placements on two GPUs of SCAO, space8m and SOUL ran 10-15% slower than
+  the placements on two GPUs of SCAO, space8m and SOUL ran 4-14% slower than
   all the objects on one GPU, although the copy times are measured and
   ``device_tolerance`` prefers one GPU for small estimated gains: the host time
   of these runs is not modeled accurately enough. With the accelerator, the
