@@ -13,7 +13,8 @@ from pathlib import Path
 
 import yaml
 
-TUTORIALS = Path(__file__).resolve().parent.parent / 'docs' / 'tutorials'
+REPO_ROOT = Path(__file__).resolve().parent.parent
+TUTORIALS = REPO_ROOT / 'docs' / 'tutorials'
 
 
 def _code_blocks(rst_file, language):
@@ -36,7 +37,10 @@ def _code_blocks(rst_file, language):
 
 def _run_without_specula(code, cwd):
     script = 'import sys\nsys.modules["specula"] = None   # any import of specula fails\n' + code
-    env = dict(os.environ, MPLBACKEND='Agg')
+    # The repository first, since the code runs in another directory (and iteras
+    # might also be installed from another checkout)
+    env = dict(os.environ, MPLBACKEND='Agg',
+               PYTHONPATH=os.pathsep.join(filter(None, [str(REPO_ROOT), os.environ.get('PYTHONPATH')])))
     return subprocess.run([sys.executable, '-c', script], capture_output=True, text=True,
                           cwd=cwd, env=env)
 
@@ -60,6 +64,7 @@ class TestIterasTutorials(unittest.TestCase):
                 import numpy as np
                 import iteras
                 iteras.init(-1)
+                assert iteras.__file__.startswith({str(REPO_ROOT)!r}), iteras.__file__
                 from iteras.simul import Simul
                 from iteras.lib import storage
                 Simul({yml!r}, speed_report=False).run()
