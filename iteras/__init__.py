@@ -164,6 +164,17 @@ def to_xp(xp, v, dtype=None, force_copy=False):
         return retval.astype(dtype, copy=force_copy)
 
 
+def xp_fft(xp):
+    '''
+    FFT functions for the array module *xp*: scipy.fft for numpy (faster than
+    numpy.fft, especially in single precision), xp.fft otherwise.
+    '''
+    if xp is np:
+        import scipy.fft
+        return scipy.fft
+    return xp.fft
+
+
 def fuse(kernel_name=None):
     '''
     Replacement of cupy.fuse() allowing runtime

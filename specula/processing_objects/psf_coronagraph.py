@@ -170,11 +170,11 @@ class PsfCoronagraph(PSF):
             u_ef = electric_field_corrected
 
         # Step 3: Optical Fourier transform to focal plane
-        focal_field = self.xp.fft.fft2(u_ef)
+        focal_field = self.fft.fft2(u_ef)
 
         # Center if required
         if not nocenter:
-            focal_field = self.xp.fft.fftshift(focal_field)
+            focal_field = self.fft.fftshift(focal_field)
 
         # Calculate PSF as square modulus
         coronagraph_psf = psf_abs2(focal_field, xp=self.xp)

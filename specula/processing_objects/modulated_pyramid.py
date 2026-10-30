@@ -290,7 +290,7 @@ class ModulatedPyramid(BaseProcessingObj):
         iu = self.xp.array(1j, dtype=self.complex_dtype)  # complex unit
         myexp = self.xp.exp(-2 * self.xp.pi * iu * self.pyr_tlt, dtype=self.complex_dtype)
         # FFT shifted complex phase delay of the pyramid prism and field stop
-        self.shifted_masked_exp = self.xp.fft.fftshift(myexp * self.fp_mask)
+        self.shifted_masked_exp = self.fft.fftshift(myexp * self.fp_mask)
 
         self.pup_pyr_tot = self.xp.zeros((self.fft_totsize, self.fft_totsize), dtype=self.dtype)
 
@@ -587,7 +587,7 @@ class ModulatedPyramid(BaseProcessingObj):
 
         for i in range(0, self.mod_steps):
             # Fourier Transform to propagate to the Focal Plane
-            u_fp = self.xp.fft.fft2(self.u_tlt[i], axes=(-2, -1))
+            u_fp = self.fft.fft2(self.u_tlt[i], axes=(-2, -1))
 
             # Apply the 'fft shifted phase delay' of the pyramid and field stop
             # Also accumulates the focal plane PSF
@@ -595,13 +595,13 @@ class ModulatedPyramid(BaseProcessingObj):
 
             # Inverse Fourier Transform to return to the Pupil Plane
             # 'forward' normalization is faster and we normalize correctly later in pyr1_abs2()
-            pyr_ef = self.xp.fft.ifft2(u_fp_pyr, axes=(-2, -1), norm='forward')
+            pyr_ef = self.fft.ifft2(u_fp_pyr, axes=(-2, -1), norm='forward')
 
             # Calculate intensity and apply weighted accumulation for flux correction
             self.pyr_image += pyr1_abs2(pyr_ef, self.ifft_norm , self.ffv[i], xp=self.xp)
 
         # Extract PSF before and after the focal plane mask
-        self.psf_bfm.value[:] = self.xp.fft.fftshift(self.fpsf)
+        self.psf_bfm.value[:] = self.fft.fftshift(self.fpsf)
         self.psf_tot.value[:] = self.psf_bfm.value * self.fp_mask
 
         # Re-center the four pupils within the final array
