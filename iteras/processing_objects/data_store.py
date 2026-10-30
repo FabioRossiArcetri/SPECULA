@@ -142,6 +142,10 @@ class DataStore(BaseProcessingObj):
     def storage(self, value):
         # GPU values being copied to the host: (input, time, pinned buffer, event)
         self._pending_copies = []
+        # Page-locked buffer of each input, where its GPU values are copied
+        self._staging = {}
+        # Host block of each input where its values are stored: [array, next free row]
+        self._blocks = {}
         self._storage = value
 
     def set_simulation_params(self, params):
@@ -268,9 +272,11 @@ class DataStore(BaseProcessingObj):
         if cp is None or not isinstance(value, cp.ndarray):
             self._storage[k][self.current_time] = cpuArray(value, force_copy=True)
             return
-        import cupyx
+        pinned = self._staging.get(k)
+        if pinned is None or pinned.shape != value.shape or pinned.dtype != value.dtype:
+            import cupyx
+            pinned = self._staging[k] = cupyx.empty_pinned(value.shape, dtype=value.dtype)
         with value.device:
-            pinned = cupyx.empty_pinned(value.shape, dtype=value.dtype)
             stream = cp.cuda.get_current_stream()
             value.get(stream=stream, out=pinned, blocking=False)
             event = stream.record()
@@ -282,9 +288,26 @@ class DataStore(BaseProcessingObj):
         '''Wait for the copies of GPU values started before, and store them'''
         for k, t, pinned, event in self._pending_copies:
             event.synchronize()
-            # A pageable copy: the page-locked buffer goes back to its pool
-            self._storage[k][t] = np.array(pinned)
+            self._storage[k][t] = self._host_copy(k, pinned)
         self._pending_copies = []
+
+    # Size of the host blocks where the values are stored. A new array for each
+    # value would be slower to fill, its memory being new at each step; numpy
+    # asks for huge pages for arrays of a few MB.
+    BLOCK_BYTES = 4 * 1024 * 1024
+
+    def _host_copy(self, k, value):
+        '''Copy of *value* (a host array) in the next free row of the block of input *k*'''
+        block = self._blocks.get(k)
+        if block is None or block[1] == len(block[0]) or block[0].shape[1:] != value.shape \
+                or block[0].dtype != value.dtype:
+            rows = max(1, self.BLOCK_BYTES // max(value.nbytes, 1))
+            block = self._blocks[k] = [np.empty((rows,) + value.shape, dtype=value.dtype), 0]
+        array, row = block
+        block[1] += 1
+        out = array[row:row + 1].reshape(value.shape)
+        out[...] = value
+        return out
 
     def trigger_code(self):
         if self.current_time < self.start_time:

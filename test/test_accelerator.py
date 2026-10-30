@@ -6,7 +6,7 @@ specula.init(0)  # Default target device
 from specula import cp, np, cpuArray
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
-from specula.connections import InputValue
+from specula.connections import InputValue, InputList
 from specula.loop_control import LoopControl
 from iteras.processing_objects.wave_generator import WaveGenerator
 from iteras.data_objects.accelerator import Accelerator as AcceleratorOptions
@@ -64,6 +64,98 @@ class Counter(BaseProcessingObj):
 
     def trigger_code(self):
         self.count += 1
+
+
+class Slow(BaseProcessingObj):
+    '''Long GPU work on its own stream (CUDA graph, see build_stream()), from its input'''
+
+    def __init__(self, target_device_idx=None, n=1 << 21):
+        super().__init__(target_device_idx=target_device_idx)
+        self.inputs['in_value'] = InputValue(type=BaseValue)
+        self.out = BaseValue(value=self.xp.zeros(n, dtype=self.dtype), target_device_idx=target_device_idx)
+        self.outputs['out_value'] = self.out
+        self.ramp = self.xp.linspace(0, 1, n, dtype=self.dtype)
+
+    def setup(self):
+        super().setup()
+        self.build_stream()
+
+    def trigger_code(self):
+        x = self.out.value
+        x[:] = self.ramp * self.local_inputs['in_value'].value[0]
+        for _ in range(30):
+            x[:] = self.xp.sin(x) + 0.5
+
+    def post_trigger(self):
+        super().post_trigger()
+        self.out.generation_time = self.current_time
+
+
+class Total(BaseProcessingObj):
+    '''Sum of its inputs, times a factor, on its own stream if *own_stream*'''
+
+    def __init__(self, target_device_idx=None, factor=1.0, own_stream=True):
+        super().__init__(target_device_idx=target_device_idx)
+        self.inputs['in_values'] = InputList(type=BaseValue)
+        self.out = BaseValue(value=self.xp.zeros(1, dtype=self.dtype), target_device_idx=target_device_idx)
+        self.outputs['out_value'] = self.out
+        self.factor = factor
+        self.own_stream = own_stream
+
+    def setup(self):
+        super().setup()
+        if self.own_stream:
+            self.build_stream()
+
+    def can_accelerate(self):
+        return True
+
+    def trigger_code(self):
+        self.out.value[:] = 0
+        for v in self.local_inputs['in_values']:
+            self.out.value += self.xp.sum(v.value) * self.factor
+
+    def post_trigger(self):
+        super().post_trigger()
+        self.out.generation_time = self.current_time
+
+
+@unittest.skipIf(cp is None, 'Cupy not found')
+class TestOwnStreams(unittest.TestCase):
+
+    def run_graph(self, accelerate, steps=8):
+        '''generator -> slow -> (a, b on their own streams, same level) -> total (default stream)'''
+        gen = WaveGenerator(amp=[1.0], freq=[37.0], constant=[0.5], output_size=4, target_device_idx=0)
+        slow = Slow(target_device_idx=0)
+        a = Total(target_device_idx=0, factor=1.0)
+        b = Total(target_device_idx=0, factor=-2.0)
+        total = Total(target_device_idx=0, own_stream=False)
+        slow.inputs['in_value'].set(gen.outputs['output'])
+        a.inputs['in_values'].set([slow.outputs['out_value']])
+        b.inputs['in_values'].set([slow.outputs['out_value']])
+        total.inputs['in_values'].set([a.outputs['out_value'], b.outputs['out_value']])
+        objs = [gen, slow, a, b, total]
+        loop = LoopControl()
+        for obj, level in zip(objs, [0, 1, 2, 2, 3]):
+            loop.add(obj, level)
+        if accelerate:
+            Accelerator(AcceleratorOptions()).apply(objs)
+        loop.start(run_time=steps * 1e-3, dt=1e-3)
+        out = []
+        for _ in range(steps):
+            loop.iter()
+            out.append(float(total.out.value[0]))
+        loop.finish()
+        return np.array(out), objs
+
+    def test_same_results_with_own_streams(self):
+        ref, _ = self.run_graph(False)
+        out, (gen, slow, a, b, total) = self.run_graph(True)
+        np.testing.assert_allclose(out, ref, rtol=1e-5)
+        for obj in (slow, a, b):
+            self.assertIsNotNone(obj._accel.graph)
+            self.assertIs(obj._accel.launch_stream(), obj.stream)
+        self.assertIsNot(total._accel.launch_stream(), slow.stream)
 
 
 @unittest.skipIf(cp is None, 'Cupy not found')

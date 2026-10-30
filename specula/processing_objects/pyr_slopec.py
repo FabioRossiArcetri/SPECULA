@@ -177,22 +177,9 @@ class PyrSlopec(Slopec):
         self.slopes.xslopes = self.sx
         self.slopes.yslopes = self.sy
 
-    def post_trigger(self):
-        super().post_trigger()
-
-        self.outputs['out_pupdata'].generation_time = self.current_time
-
-        # Raw (pre-threshold) 2d sub-images of the 4 pupils, and their sum.
-        # Deliberately NOT computed in trigger_code(): trigger_code may be
-        # captured once into a CUDA graph and then only replayed (see
-        # BaseProcessingObj.trigger_code docstring), so anything not on the
-        # critical path to out_slopes would be baked permanently into the
-        # replayed graph regardless of whether these outputs are actually
-        # used downstream. post_trigger() always runs in eager Python/GPU
-        # mode, once per step, so this is the right place for it. Reads
-        # directly from the (untouched) input pixels rather than
-        # self.flat_pixels, which trigger_code() has already thresholded
-        # and clamped in place by the time post_trigger() runs.
+        # Raw (pre-threshold) 2d sub-images of the 4 pupils, and their sum, read
+        # from the input pixels (self.flat_pixels is a thresholded copy). Part of
+        # the CUDA graph of the object when it is accelerated.
         raw_pixels = self.local_inputs['in_pixels'].pixels.ravel()
         raw_A = raw_pixels[self.pup_idx0].astype(self.xp.float32)
         raw_B = raw_pixels[self.pup_idx1].astype(self.xp.float32)
@@ -203,6 +190,11 @@ class PyrSlopec(Slopec):
         self.xp.put(self.pixels_subap.value[2], self.subap_map_idx, raw_C)
         self.xp.put(self.pixels_subap.value[3], self.subap_map_idx, raw_D)
         self.xp.put(self.pixels_subap_sum.value, self.subap_map_idx, raw_A + raw_B + raw_C + raw_D)
+
+    def post_trigger(self):
+        super().post_trigger()
+
+        self.outputs['out_pupdata'].generation_time = self.current_time
 
         self.outputs['out_pixels_subap'].generation_time = self.current_time
         self.outputs['out_pixels_subap_sum'].generation_time = self.current_time

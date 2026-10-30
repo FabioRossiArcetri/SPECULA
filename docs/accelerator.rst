@@ -36,12 +36,15 @@ On each GPU, with the accelerator:
   the following triggers instead of running the Python code. Each object has
   its own graph, so an object that does not trigger at some step is not
   launched, as without accelerator;
-* all the GPU work goes to the default stream of the device, in trigger order:
+* the GPU work goes to the default stream of the device, in trigger order:
   the graphs, and the kernels launched by the code that still runs in Python.
-  The GPU work therefore runs in the right order without the host waiting for
-  it: ``post_trigger()`` no longer waits for the graph of the object. The host
-  waits only where it reads results (copies to the host, for MPI, DataStore or
-  objects that read GPU values);
+  The graphs of the objects that have their own stream (those that build their
+  own CUDA graph, like the wavefront sensors) are launched on it, so that the
+  objects of a trigger level run in parallel, as without accelerator; the
+  default stream then waits for them on the GPU. The GPU work therefore runs in
+  the right order without the host waiting for it: ``post_trigger()`` no
+  longer waits for the graph of the object. The host waits only where it reads
+  results (copies to the host for MPI, or objects that read GPU values);
 * ``check_ready()``, ``prepare_trigger()`` and ``post_trigger()`` still run as
   Python code at each step. So the values computed on the host at each step,
   like the time of the generators or the time step of the atmosphere, are up
@@ -69,15 +72,19 @@ following steps:
   own graph is released and replaced by the accelerator's one);
 * other classes declare it after checking their ``trigger_code()``:
   ``WaveGenerator``, ``IirFilter`` and ``Integrator``, ``BaseSlicer``,
-  ``LinearCombination``, ``PyrSlopec``, ``Modalrec``, ``ModalAnalysis``;
+  ``LinearCombination``, ``PyrSlopec``, ``Modalrec``, ``ModalAnalysis``,
+  ``PSF``;
   ``BaseOperation`` once its delayed inputs have been produced; ``DM`` without
   force limitation; ``CCD`` when it reads out at every step, after its start
   time;
-* the others are not accelerated, for example ``PSF`` (it logs the Strehl ratio,
-  read from the GPU, at each step), ``PushPullGenerator`` and
+* the others are not accelerated, for example ``PushPullGenerator`` and
   ``ModalrecImplicitPolc`` (they choose on the host what to compute at each
-  step), ``DataStore`` (it copies its inputs to the host), and the objects on
-  the CPU.
+  step), ``DataStore`` (it copies its inputs to the host, without waiting for
+  the GPU: they are stored at the next step), and the objects on the CPU.
+
+Objects that read GPU values on the host at each step make the host wait for
+all the GPU work queued before. ``PSF`` logs the Strehl ratio of each step one
+step later, from a copy made without waiting.
 
 At the end of the run, the accelerator logs a table of the objects with their
 status (``accelerated``, or why not), also written to ``report_file`` if given.

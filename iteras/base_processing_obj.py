@@ -164,8 +164,10 @@ class BaseProcessingObj(BaseTimeObj):
 
         if self.target_device_idx>=0:
             self._target_device.use()
-            # Accelerated: the GPU work is on the default stream, in order, nothing to wait for
-            if self.cuda_graph and self._accel is None:
+            if self._accel is not None:
+                # Accelerated: the GPU work stays in order on the GPU, the host does not wait
+                self._accel.after_trigger()
+            elif self.cuda_graph:
                 # Like stream.synchronize(), but MPI sends in flight keep moving
                 mpi_progress.wait_stream(self.stream)
 

@@ -10,10 +10,13 @@ With the accelerator, on each GPU:
 
 * the trigger_code() of each accelerated object is captured once in a CUDA graph,
   which is then launched at each step instead of running the Python code;
-* all the GPU work of the objects (graphs, and the kernels of the phases that
+* the GPU work of the objects (graphs, and the kernels of the phases that
   still run as Python code) goes to the default stream of the device, in
   trigger order, so that it runs in the right order without the host waiting
-  for the GPU between objects (BaseProcessingObj.post_trigger() does not wait);
+  for the GPU between objects (BaseProcessingObj.post_trigger() does not wait).
+  The graphs of the objects with their own stream (see build_stream()) are
+  launched there, so that the objects of a trigger level run in parallel, and
+  the default stream waits for them on the GPU (GraphRunner.after_trigger());
 * check_ready(), prepare_trigger() and post_trigger() still run as Python code
   at each step, so that values computed on the host from the time or the
   inputs (like the time of the generators, copied to the GPU in
@@ -130,7 +133,7 @@ class GraphRunner:
                     self.detach(f'array {where} reallocated after the capture')
                     obj.trigger()
                     return
-            self.graph.launch(stream=iteras.cp.cuda.get_current_stream())
+            self.graph.launch(stream=self.launch_stream())
             t = obj.current_time
             for o in self.outputs:
                 o.generation_time = t
@@ -176,7 +179,7 @@ class GraphRunner:
             self.detach(f'capture failed: {type(error).__name__}: {first[:200]}')
             obj.trigger_code()
             return
-        graph.launch(stream=iteras.cp.cuda.get_current_stream())
+        graph.launch(stream=self.launch_stream())
         self.graph = graph
         self.pool = pool
         self.outputs = [o for o, b in zip(outputs, before) if o.generation_time == t and b != t]
@@ -185,6 +188,27 @@ class GraphRunner:
         obj.gpu_bytes_used += pool.total_bytes()
         self.status = 'accelerated'
         _logger.debug(f'Accelerator: {obj.name}: graph captured ({pool.total_bytes() / 2**20:.1f} MB)')
+
+    def launch_stream(self):
+        '''
+        Stream where the graph is launched: the own stream of the object, if it
+        has one (see build_stream()), so that objects of the same trigger level run
+        in parallel as without accelerator, otherwise the default stream. An own
+        stream is a blocking stream: the graph follows the work queued before it on
+        the default stream.
+        '''
+        if self.obj.stream is not None:
+            return self.obj.stream
+        return iteras.cp.cuda.get_current_stream()
+
+    def after_trigger(self):
+        '''
+        Called by post_trigger(): the work queued from now on the default stream
+        follows the graph launched on the own stream of the object (on the GPU,
+        the host does not wait)
+        '''
+        if self.graph is not None and self.obj.stream is not None:
+            iteras.cp.cuda.get_current_stream().wait_event(self.obj.stream.record())
 
     def release_own_graph(self):
         '''The CUDA graph that the object captured by itself (see build_stream()) is not used'''
