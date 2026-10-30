@@ -31,6 +31,17 @@ class TestWebFrontend(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'Running simulations', response.data)
 
+    def test_simulation_updates_are_forwarded(self):
+        '''An update sent by a simulation is forwarded to the browsers'''
+        client = web_frontend.socketio.test_client(web_frontend.app)
+        try:
+            client.emit('simul_update', {'name': 'sim', 'status': 'running'})
+            received = client.get_received()
+        finally:
+            client.disconnect()
+        self.assertIn(('simul_update', [{'name': 'sim', 'status': 'running'}]),
+                      [(r['name'], r['args']) for r in received])
+
     def test_start(self):
         with patch.dict(os.environ, {'ITERAS_PORT': '8090'}), \
                 patch.object(web_frontend, 'daemonize') as daemonize, \
