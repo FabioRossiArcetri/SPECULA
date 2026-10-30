@@ -266,15 +266,16 @@ class TestSimGraph(AllocatorTestCase):
         self.assertTrue(g.device_settable['gen'])
 
     def test_main_parameters_with_defaults(self):
-        # time_step not given: the default of SimParams is used
+        # Main parameters completed with the defaults of their class, as Simul does
+        # (time_step and total_time are required, they have no default)
         params = json.loads(json.dumps(self.params))
-        del params['main']['time_step']
+        params['main'].pop('stepping', None)
         g = self.graph(params)
         from iteras.data_objects.sim_params import SimParams
-        self.assertEqual(g.main_params['time_step'], SimParams().time_step)
+        self.assertEqual(g.main_params['stepping'], SimParams().stepping)
         p = profiler_module._profile_params(params, g, {n: -1 for n in g.procs}, self.root,
                                            steps=2, warmup=1)
-        self.assertAlmostEqual(p['main']['total_time'], 3 * SimParams().time_step, places=6)
+        self.assertAlmostEqual(p['main']['total_time'], 3 * params['main']['time_step'], places=6)
 
     def test_processing_object_reference(self):
         params = dict(self.params)
