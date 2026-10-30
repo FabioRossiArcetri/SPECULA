@@ -315,13 +315,16 @@ def read_object(path):
 
 
 def _target_dtype(dtype, precision, path, name):
-    '''Type of the arrays loaded with ObjectReader.load(), see load_fits_array()'''
-    if dtype.kind == 'f':
-        return np.dtype(iteras.cpu_float_dtype_list[
-            iteras.global_precision if precision is None else precision])
+    '''
+    Type of the arrays loaded with ObjectReader.load(), see load_fits_array():
+    floating point and complex data have the type of the precision.
+    '''
+    if dtype.kind in 'fc':
+        dtypes = iteras.cpu_float_dtype_list if dtype.kind == 'f' else iteras.cpu_complex_dtype_list
+        return np.dtype(dtypes[iteras.global_precision if precision is None else precision])
     if precision is not None:
-        raise ValueError(f'{path}: array {name} contains integer data ({dtype}), '
-                         f'but precision={precision} was requested')
+        raise ValueError(f'{path}: array {name} contains data that is not floating point '
+                         f'or complex ({dtype}), but precision={precision} was requested')
     return dtype.newbyteorder('=')
 
 
@@ -368,9 +371,10 @@ class ObjectReader:
     def load(self, name, index=None, target_device_idx=None, precision=None):
         '''
         The array *name* (or HDU *index*), on device *target_device_idx*
-        (None for the default device, -1 for the CPU). Floating point data is
-        converted to the type of *precision* (None for the global precision);
-        integer data is kept, and a ValueError is raised if a precision is given.
+        (None for the default device, -1 for the CPU). Floating point and
+        complex data are converted to the type of *precision* (None for the
+        global precision); other data (integer, boolean) is kept, and a
+        ValueError is raised if a precision is given.
         Large arrays of FITS and npy files are streamed to the GPU in chunks.
         '''
         return _to_device(self.read(name, index), target_device_idx, precision, self.path, name)

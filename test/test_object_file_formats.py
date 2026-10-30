@@ -285,7 +285,7 @@ class TestStorageAPI(unittest.TestCase):
                         self.assertIsInstance(a32, specula.cp.ndarray)
                     np.testing.assert_array_equal(cpuArray(a64), self.a)
                     np.testing.assert_array_equal(cpuArray(b), self.b)
-                    with self.assertRaisesRegex(ValueError, 'integer'):
+                    with self.assertRaisesRegex(ValueError, 'precision=1 was requested'):
                         f.load('b', 2, target_device_idx=target, precision=1)
 
     def test_npy_does_not_replace_other_directories(self):
@@ -388,6 +388,19 @@ class TestStorageAPI(unittest.TestCase):
                     self.assertEqual(f.header, header)
                     self.assertEqual(f.header.comments, header.comments)
                     self.assertEqual(f.header['COMMENT'], ['a comment card'])
+
+    def test_complex_arrays(self):
+        '''Complex data takes the complex type of the precision'''
+        c = (self.a + 1j * self.a).astype(np.complex128)
+        for data_format in ('npz', 'npy', 'hdf5'):
+            with self.subTest(data_format=data_format):
+                path = self._path('complex', data_format)
+                storage.write_object(path, self.header, {'c': c})
+                with storage.read_object(path) as f:
+                    c64 = f.load('c', 1, target_device_idx=-1, precision=1)
+                    c128 = f.load('c', 1, target_device_idx=-1, precision=0)
+                    self.assertEqual((c64.dtype, c128.dtype), (np.complex64, np.complex128))
+                    np.testing.assert_array_equal(c128, c)
 
     def test_reader_base_class(self):
         reader = storage.ObjectReader('path')

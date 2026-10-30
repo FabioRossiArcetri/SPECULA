@@ -84,6 +84,10 @@ in one of the following formats, chosen by the extension of the file name:
 - ``hdf5`` (``.h5`` files): one dataset per array, readable with h5py or any
   HDF5 tool. The header keywords are also attributes of the file.
 
+The headers of the npz, npy and HDF5 files do not have the limits of FITS
+headers: keywords can be longer than 8 characters and values can contain any
+text. Their arrays can also be complex, which FITS files cannot store.
+
 ``DataStore`` saves each of its inputs in a file named after the input, with
 the data at each stored time step (array ``data``), the times (array ``times``)
 and the header of the data object. It can also use the ``pickle`` format
