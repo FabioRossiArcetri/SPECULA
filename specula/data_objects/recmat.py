@@ -1,4 +1,4 @@
-from iteras.data_objects.matrix import Matrix
+from iteras.data_objects.matrix import Matrix, matrix_array_name
 from iteras.lib import storage
 
 
@@ -75,7 +75,5 @@ class Recmat(Matrix):
                 mode2reLayer = f.read('modes2reclayer', 2)
             else:
                 mode2reLayer = None
-            # Files written by previous versions name the matrix 'recmat'
-            name = 'matrix' if f.has('matrix', 1) else 'recmat'
-            recmat = f.load(name, 1, target_device_idx=target_device_idx)
+            recmat = f.load(matrix_array_name(f), 1, target_device_idx=target_device_idx)
         return Recmat(recmat, mode2reLayer, norm_factor, target_device_idx=target_device_idx)

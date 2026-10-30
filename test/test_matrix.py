@@ -55,6 +55,12 @@ class TestMatrix(unittest.TestCase):
                 with storage.read_object(path) as f:
                     self.assertEqual(f.header['OBJ_TYPE'], 'Matrix')
 
+    def test_missing_matrix(self):
+        path = self._path('none', 'npz')
+        storage.write_object(path, {'VERSION': 1}, {'other': self.data})
+        with self.assertRaisesRegex(KeyError, 'matrix'):
+            Matrix.restore(path)
+
     def test_wrong_version(self):
         path = self._path('v2', 'npz')
         storage.write_object(path, {'VERSION': 2}, {'matrix': self.data})
@@ -102,11 +108,16 @@ class TestRecmatIsAMatrix(unittest.TestCase):
     def test_recmat_files_of_previous_versions(self):
         '''The matrix was named 'recmat', and FITS files had no extension names'''
         from astropy.io import fits
-        path = os.path.join(self.tmp.name, 'old.npz')
-        storage.write_object(path, {'VERSION': 1, 'NORMFACT': 0.5}, {'recmat': self.data})
-        restored = Recmat.restore(path, target_device_idx=-1)
-        np.testing.assert_array_equal(cpuArray(restored.recmat), self.data)
-        self.assertEqual(restored.norm_factor, 0.5)
+        for data_format in ('npz', 'npy', 'hdf5'):
+            with self.subTest(data_format=data_format):
+                path = os.path.join(self.tmp.name, 'old' + storage.EXTENSIONS[data_format])
+                storage.write_object(path, {'VERSION': 1, 'NORMFACT': 0.5}, {'recmat': self.data})
+                restored = Recmat.restore(path, target_device_idx=-1)
+                np.testing.assert_array_equal(cpuArray(restored.recmat), self.data)
+                self.assertEqual(restored.norm_factor, 0.5)
+                # Also as a Matrix, as MVM and SoftLimiter restore them
+                restored = Matrix.restore(path, target_device_idx=-1)
+                np.testing.assert_array_equal(cpuArray(restored.matrix), self.data)
 
         path = os.path.join(self.tmp.name, 'old.fits')
         hdr = fits.Header()

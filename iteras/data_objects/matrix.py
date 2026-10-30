@@ -4,6 +4,19 @@ from iteras.base_data_obj import BaseDataObj
 from iteras.lib import storage
 
 
+# Names of the matrix in the npz, npy and HDF5 files: SPECULA saved its
+# reconstruction matrices (Recmat) as 'recmat' before Recmat derived from Matrix
+_ARRAY_NAMES = ('matrix', 'recmat')
+
+
+def matrix_array_name(reader):
+    '''Name of the matrix in a file opened with storage.read_object()'''
+    for name in _ARRAY_NAMES:
+        if reader.has(name, 1):
+            return name
+    return _ARRAY_NAMES[0]   # let load() report the missing array
+
+
 class Matrix(BaseDataObj):
     """
     Matrix data object.
@@ -81,5 +94,5 @@ class Matrix(BaseDataObj):
             version = int(f.header['VERSION'])
             if version != 1:
                 raise ValueError(f"Error: unknown version {version} in file {filename}")
-            matrix = f.load('matrix', 1, target_device_idx=target_device_idx)
+            matrix = f.load(matrix_array_name(f), 1, target_device_idx=target_device_idx)
         return Matrix(matrix, target_device_idx=target_device_idx)
