@@ -465,5 +465,6 @@ class ExtSourcePyramid(ModulatedPyramid):
         self.psf_bfm.value *= self.factor
         trasmission_factor = 1 / (self.xp.sum(self.psf_bfm.value) + 1e-20)
         self.transmission.value[:] = self.xp.sum(self.psf_tot.value) * trasmission_factor
+        self._pupils_to_ccd()
         # Call parent post_trigger
         super().post_trigger()
