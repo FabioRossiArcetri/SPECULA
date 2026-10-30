@@ -69,6 +69,11 @@ for all of them):
     (``allocation_report.txt``) and the measured costs (``allocation_profile.json``).
 ``memory_margin``
     Fraction of each device kept free (default 0.1).
+``device_tolerance``
+    The placement of all the objects on one GPU is kept unless the placement
+    found by the search, on more devices, is estimated faster by more than this
+    fraction (default 0.05), since the estimate of the copies between devices is
+    the least reliable part of the model.
 
 How it works
 ------------
@@ -76,8 +81,10 @@ How it works
 1. **Profiling.** The costs of the objects are measured by running the
    simulation itself for a few steps on the local GPU with most free memory
    (or on the CPU if there is none): host time of each phase, GPU time, memory,
-   arrays shared between objects, size of each output, size of the data objects
-   referenced with ``_ref``. The warm-up goes past the largest ``start_time``
+   arrays shared between objects, size of each output, host time to copy each
+   output to another GPU and to the CPU (as the framework copies an input from
+   another device at each step), size of the data objects referenced with
+   ``_ref``. The warm-up goes past the largest ``start_time``
    parameter, and the measurement covers two periods of the slowest object
    (largest ``dt``). If the objects do not fit on the GPU, they are measured in
    chunks, the rest of the simulation running on the CPU. The CPU is measured
@@ -87,7 +94,9 @@ How it works
 2. **Estimation.** The time per step of a placement is estimated by simulating
    a few steps of the loop: each process runs its objects in trigger order, the
    GPU work of each device runs in parallel with the host, data is copied between
-   devices and sent between processes as the framework does it.
+   devices and sent between processes as the framework does it: a copy between
+   two GPUs is ordered on the GPUs (the host does not wait for it), a copy to the
+   CPU waits for the data.
 3. **Search.** Objects that must stay together (an object and the processing
    objects it references, the users of a data object that some object modifies)
    are placed as a unit. An initial placement (memory-aware HEFT) is improved by
@@ -95,7 +104,9 @@ How it works
    nodes, the search is made on the first k nodes for each k, and the fastest
    placement is kept, with the fewest nodes if others are within
    ``node_tolerance`` (5%): the report lists the time per step for each number
-   of nodes.
+   of nodes. Likewise, all the objects on one GPU are preferred to a
+   placement on more devices that is not faster by more than
+   ``device_tolerance`` (5%).
 
 Objects of classes that must run on the CPU or in the main process (see
 :doc:`extension_api`) are placed accordingly. Objects of classes whose
@@ -114,6 +125,15 @@ stays there, even with ``override_placement``: for example, with the
 ``DistributedSH`` objects of ``config/leonardo/overrides/ov_MORFEO_leonardo_ds4.yml``
 (one rank per node, so ``pin_ranks_per_node: 1``), the allocator places the
 other objects around them.
+
+With the merger
+---------------
+
+With ``--merge`` or a ``Merger`` section (see :doc:`merger`), the objects are
+profiled as they run merged: the host time of a merged object is the time to
+launch its CUDA graph, and it does not wait for the GPU in ``post_trigger()``.
+These costs are kept apart from those measured without merger, and an
+allocation computed with the merger is stale without it, and the reverse.
 
 Using the allocation
 --------------------
@@ -164,6 +184,11 @@ Limitations
   large message moves only while the sender is inside MPI, and the estimate is
   less reliable. With TCP between two processes of the same computer, MORFEO ran
   about 60% slower than with single-copy shared memory.
+* Copies between devices: their host time is measured for each output, but
+  a placement on several devices can still lose against one GPU when the
+  simulation is small and host-bound (space8m: 3.54 ms against 3.19 ms on one
+  GPU), hence ``device_tolerance``. On MORFEO, the placement on two GPUs runs
+  1.57 times faster than one GPU (1.66 with the :doc:`merger <merger>`).
 * Accuracy: on a computer with two GPUs, the estimates of MORFEO for ten
   placements, with one or two processes, were within 5% of the measured times,
   except for the placements chosen by the allocator itself, which were

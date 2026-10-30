@@ -132,6 +132,17 @@ Methods to override
    * - ``graph_input_ptrs()``
      - Override to exclude, from the check made at each launch of the CUDA
        graph, inputs that the graph does not read.
+   * - ``can_merge()``
+     - Called by the :doc:`merger <merger>` just before it captures
+       ``trigger_code()`` in a CUDA graph launched at each step instead. Return
+       ``True`` if that graph does the same as ``trigger_code()`` at all the
+       following steps: ``trigger_code()`` only launches GPU work, on arrays
+       updated in place, with no Python value that changes from one step to the
+       next (values that change are written to GPU arrays in
+       ``prepare_trigger()``, which runs at each step); matrix products use
+       ``specula.lib.graph_matmul.matmul()``. Otherwise return ``False``, or a
+       string saying why (it is called again at the next trigger). Default:
+       ``True`` for objects that build their own CUDA graph, ``False`` otherwise.
 
 Hooks called by Simul
 ~~~~~~~~~~~~~~~~~~~~~
@@ -153,7 +164,7 @@ The default implementations do nothing; override them to change how
    * - ``runs_on_cpu_only()``
      - Class method. Return ``True`` for classes that must run on the CPU
        (writing files, interacting with the user): the :doc:`allocator <allocator>`
-       never places them on a GPU. Used by ``DataStore``, ``DataPrint``,
+       never places them on a GPU. Used by ``DataPrint``,
        ``DisplayServer`` and ``InteractiveInput``.
    * - ``runs_on_main_process_only()``
      - Class method. Return ``True`` for classes that must run in the main

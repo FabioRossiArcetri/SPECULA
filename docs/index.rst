@@ -25,6 +25,7 @@ Getting Started
    Running simulations <running_simulations>
    Profiling and timing <profiling>
    Automatic allocation <allocator>
+   Merging objects (CUDA graphs) <merger>
    Displays <simul_displays>
    Diagrams <simul_diagrams>
    Calibration manager <calibration_manager>
