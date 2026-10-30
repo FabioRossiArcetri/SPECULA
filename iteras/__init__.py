@@ -164,6 +164,11 @@ def to_xp(xp, v, dtype=None, force_copy=False):
         return retval.astype(dtype, copy=force_copy)
 
 
+def capturing():
+    '''True while the current CUDA stream is capturing a graph (see iteras.merger)'''
+    return cp is not None and cp.cuda.get_current_stream().is_capturing()
+
+
 def xp_fft(xp):
     '''
     FFT functions for the array module *xp*: scipy.fft for numpy (faster than
@@ -229,6 +234,7 @@ def main_simul(yml_files: list,
                trace_gpu_events: bool=False,
                allocate: bool=False,
                reallocate: bool=False,
+               merge: bool=False,
                ):
 
     # Set logging level for the "parent" loggers of iteras and its plugins
@@ -296,6 +302,7 @@ def main_simul(yml_files: list,
                 log_level=log_level,
                 allocate=allocate,
                 reallocate=reallocate,
+                merge=merge,
             ).run()
     except Exception:
         if mpi:

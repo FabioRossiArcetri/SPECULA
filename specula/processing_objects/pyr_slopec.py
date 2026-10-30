@@ -49,6 +49,7 @@ class PyrSlopec(Slopec):
         self.shlike = shlike
         self.norm_factor = norm_factor
         self.threshold = thr_value
+        self.flat_pixels = None
         self.slopes_from_intensity = slopes_from_intensity
         if self.slopes_from_intensity:
             self.pupdata.set_slopes_from_intensity(slopes_from_intensity)   # TODO we should not modify an external object,
@@ -106,9 +107,19 @@ class PyrSlopec(Slopec):
         else:
             return len(self.pupdata.pupil_idx(0)) * 2
 
+    def can_merge(self):
+        # compute_slopes() only launches GPU work on arrays updated in place
+        return True
+
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
-        self.flat_pixels = self.local_inputs['in_pixels'].pixels.flatten()
+        # Copied into the same array at each step (the CUDA graph of a merged
+        # object keeps using the array it was captured with)
+        pixels = self.local_inputs['in_pixels'].pixels
+        if self.flat_pixels is None or self.flat_pixels.shape != (pixels.size,) \
+                or self.flat_pixels.dtype != pixels.dtype:
+            self.flat_pixels = self.xp.empty(pixels.size, dtype=pixels.dtype)
+        self.flat_pixels[:] = pixels.ravel()
 
     def _compute_pyr_slopes(self, A, B, C, D, factor):
         sx = (A+B-C-D) * factor

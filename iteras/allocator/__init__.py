@@ -50,22 +50,33 @@ class Allocator:
         Only compute and write the allocation (also set by mode: plan).
     recompute : bool
         Ignore a saved allocation (also set by recompute: true).
+    merge : bool
+        The objects run merged (see iteras.merger): they are profiled this way,
+        and their costs are kept apart from those measured without merger.
     '''
 
-    def __init__(self, simul, arch_pars, plan_only=False, recompute=False):
+    def __init__(self, simul, arch_pars, plan_only=False, recompute=False, merge=False):
         self.simul = simul
         self.logger = get_iteras_logger(__name__)
         self.arch = Architecture(**{k: v for k, v in arch_pars.items() if k != 'class'})
         self.plan_only = plan_only or self.arch.mode == 'plan'
         self.recompute = recompute or self.arch.recompute
         self.precision = iteras.global_precision
+        self.merge = merge
         self.allocation = None
         self.report = ''
+
+    @property
+    def cost_tag(self):
+        '''Precision and merge mode of the costs, part of their key in the profile file'''
+        return f'{self.precision}m' if self.merge else self.precision
 
     # -- entry point -----------------------------------------------------
 
     def allocate(self, params):
-        graph = SimGraph(params, self.simul)
+        # The Merger section stays in *params* for the profiling runs, not in the graph
+        merger = set(self.simul.merger_keys(params))
+        graph = SimGraph({k: v for k, v in params.items() if k not in merger}, self.simul)
         comm = iteras.process_comm
         if comm is not None and comm.Get_size() > 1:
             allocation = None
@@ -118,7 +129,8 @@ class Allocator:
         return {'signature': graph.signature(),
                 'pins': {name: list(pin) for name, pin in sorted(self._kept_pins(graph).items())},
                 'architecture': self.arch.as_dict(),
-                'precision': self.precision}
+                'precision': self.precision,
+                'merge': self.merge}
 
     # -- computation -----------------------------------------------------
 
@@ -191,44 +203,44 @@ class Allocator:
         costs = {}
         kinds = {s.kind: s for s in machine.slots}
         for name in graph.procs:
-            measured = profile.kinds(graph, name, self.precision)
+            measured = profile.kinds(graph, name, self.cost_tag)
             gpu_ref = next((k for k in measured if k.startswith('gpu:')), None)
             for kind, slot in kinds.items():
-                c = profile.cost(graph, name, kind, self.precision)
+                c = profile.cost(graph, name, kind, self.cost_tag)
                 if c is None and slot.is_gpu:
                     # The same model, named differently (e.g. 'A100' and 'NVIDIA A100-SXM-64GB')
                     same = next((k for k in measured if k.startswith('gpu:')
                                  and same_gpu_model(k[4:], slot.model)), None)
                     if same is not None:
-                        c = profile.cost(graph, name, same, self.precision)
+                        c = profile.cost(graph, name, same, self.cost_tag)
                 if c is None and slot.is_gpu and gpu_ref is not None:
                     # GPU model not profiled: scale the GPU time of the profiled one
-                    c = profile.cost(graph, name, gpu_ref, self.precision)
+                    c = profile.cost(graph, name, gpu_ref, self.cost_tag)
                     c.g /= slot.speed
                     c.measured = False
                 if c is not None:
                     costs[(name, kind)] = c
         refs = {}
         for d in graph.data_objs:
-            info = profile.ref(graph, d, self.precision)
+            info = profile.ref(graph, d, self.cost_tag)
             if info is not None:
                 refs[d] = info['bytes']
         shared = {}
         for kind, slot in kinds.items():
             src = kind
-            if slot.is_gpu and not profile.shared_blocks(graph, kind, self.precision):
+            if slot.is_gpu and not profile.shared_blocks(graph, kind, self.cost_tag):
                 src = next((k for k in self._gpu_kinds(graph, profile)), kind)
-            shared[kind] = profile.shared_blocks(graph, src, self.precision)
+            shared[kind] = profile.shared_blocks(graph, src, self.cost_tag)
         return costs, refs, shared
 
     def _gpu_kinds(self, graph, profile):
         kinds = set()
         for name in graph.procs:
-            kinds.update(k for k in profile.kinds(graph, name, self.precision) if k.startswith('gpu:'))
+            kinds.update(k for k in profile.kinds(graph, name, self.cost_tag) if k.startswith('gpu:'))
         return sorted(kinds)
 
     def _calib_key(self, graph):
-        return _hash([graph.keys[n] for n in graph.procs] + [self.precision])
+        return _hash([graph.keys[n] for n in graph.procs] + [self.cost_tag])
 
     def _predict_profile_run(self, graph, machine, profile, calib):
         '''Estimated step time of the profiling run (all objects in one process, one GPU)'''
@@ -246,7 +258,7 @@ class Allocator:
 
     def _solve(self, graph, machine, est, profile):
         mutable = [d for d in graph.data_objs
-                   if (profile.ref(graph, d, self.precision) or {}).get('mutable')]
+                   if (profile.ref(graph, d, self.cost_tag) or {}).get('mutable')]
         if mutable:
             self.logger.info(f'Allocator: data objects modified during the run, their users stay '
                              f'together: {mutable}')
@@ -321,7 +333,7 @@ class Allocator:
     # -- profiling -------------------------------------------------------
 
     def _has_cpu_costs(self, graph, profile):
-        return all(profile.cost(graph, n, 'cpu', self.precision) is not None for n in graph.procs)
+        return all(profile.cost(graph, n, 'cpu', self.cost_tag) is not None for n in graph.procs)
 
     def _missing(self, graph, profile, machine):
         '''
@@ -337,7 +349,7 @@ class Allocator:
             local = None
         missing = []
         for name in graph.procs:
-            kinds = profile.kinds(graph, name, self.precision)
+            kinds = profile.kinds(graph, name, self.cost_tag)
             if graph.cls(name).runs_on_cpu_only() or not self._use_gpu(machine):
                 if 'cpu' not in kinds:
                     missing.append(name)
@@ -394,7 +406,7 @@ class Allocator:
     def _ensure_profile(self, graph, params, profile, machine):
         missing = self._missing(graph, profile, machine)
         if self.arch.profile_cpu:
-            missing += [n for n in graph.procs if profile.cost(graph, n, 'cpu', self.precision) is None]
+            missing += [n for n in graph.procs if profile.cost(graph, n, 'cpu', self.cost_tag) is None]
         if not missing:
             self.logger.info(f'Allocator: costs read from {self.arch.profile_file}')
             return
@@ -410,7 +422,7 @@ class Allocator:
             devices = {n: -1 for n in graph.procs}
             warmup, steps = self._profile_steps(graph)
             res = profile_run(params, graph, devices, self._workdir(), steps, warmup, async_run=False)
-            profile.add_run(graph, res, self.precision)
+            profile.add_run(graph, res, self.cost_tag)
         profile.save()
 
     def _profile_gpu(self, graph, params, profile, dev, gpu_model):
@@ -439,7 +451,7 @@ class Allocator:
             # Keep the GPU costs of the chunk, and the CPU costs of the others
             res.costs = {n: kc for n, kc in res.costs.items()
                          if n in chunk or n in cpu_only or kc[0] == 'cpu'}
-            profile.add_run(graph, res, self.precision)
+            profile.add_run(graph, res, self.cost_tag)
             if first and len(chunk) == len(candidates):
                 profile.calibration[self._calib_key(graph)] = {
                     'step_ns': res.step_ns, 'kind': f'gpu:{gpu_model}' if dev >= 0 else 'cpu',
@@ -457,7 +469,7 @@ class Allocator:
         res = profile_run(params, graph, devices, self._workdir(), steps, warmup, gpu_model=gpu_model,
                           async_run=False)
         res.costs = {n: kc for n, kc in res.costs.items() if kc[0] == 'cpu'}
-        profile.add_run(graph, res, self.precision)
+        profile.add_run(graph, res, self.cost_tag)
         profile.save()
 
 
@@ -637,6 +649,8 @@ def check_meta(saved, current, path):
         problems.append('different architecture')
     if saved['precision'] != current['precision']:
         problems.append('different precision')
+    if saved.get('merge', False) != current.get('merge', False):
+        problems.append('merger ' + ('disabled' if saved.get('merge') else 'enabled'))
     if problems:
         raise StaleAllocation(f'The allocation in {path} was computed for a different simulation: '
                               + '; '.join(problems) + '. Recompute it with --reallocate '

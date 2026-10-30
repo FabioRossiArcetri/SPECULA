@@ -44,6 +44,7 @@ class Simul():
                  log_level: str='info',
                  allocate=False,
                  reallocate=False,
+                 merge=False,
                  ):
         if len(param_files) < 1:
             raise ValueError('At least one Yaml parameter file must be present')
@@ -66,6 +67,8 @@ class Simul():
         self.allocate = allocate
         self.reallocate = reallocate
         self.allocation = None
+        self.merge = merge
+        self.merger = None
         self.logger = get_iteras_logger(__name__)
         self.logger.setLevel(log_level.upper())
         if diagram or diagram_title or diagram_filename or diagram_colors_on:
@@ -1125,8 +1128,11 @@ class Simul():
         self.validate_section_names(params)
         self.check_time_base(params)
 
+        if self.merge:
+            self.add_merger_section(params)
         if not self.run_allocator(params):
             return
+        merger_options = self.take_merger_section(params)
 
         self.trigger_order, self.trigger_order_idx = self.build_trigger_order(params)
         self.logger.info(f'{self.trigger_order=}')
@@ -1185,6 +1191,12 @@ class Simul():
                                    if name not in self.remote_objs_ranks
                                    and isinstance(self.objs.get(name), BaseProcessingObj)])
 
+        if merger_options is not None:
+            from iteras.merger import Merger
+            self.merger = Merger(merger_options)
+            self.merger.apply([el for i in sorted(self.loop.trigger_lists)
+                               for el in self.loop.trigger_lists[i]])
+
         # Default display web server
         if 'display_server' in self.mainParams and self.mainParams['display_server'] and iteras.process_rank in [0, None]:
             from iteras.processing_objects.display_server import DisplayServer
@@ -1210,6 +1222,8 @@ class Simul():
                           preroll_objs=preroll_objs)
         finally:
             display_process.stop(self.logger)
+        if self.merger is not None:
+            self.merger.finish()
 
         self.logger.debug(f'Simulation finished')
 
@@ -1241,10 +1255,40 @@ class Simul():
             raise ValueError(f'More than one Architecture section: {keys}')
         arch_pars = params.pop(keys[0])
         from iteras.allocator import Allocator
-        allocator = Allocator(self, arch_pars, plan_only=self.allocate, recompute=self.reallocate)
+        allocator = Allocator(self, arch_pars, plan_only=self.allocate, recompute=self.reallocate,
+                              merge=bool(self.merger_keys(params)))
         allocator.allocate(params)
         self.allocation = allocator.allocation
         return not allocator.plan_only
+
+    def merger_keys(self, params):
+        '''Keys of the sections of *params* whose class is Merger'''
+        from iteras.data_objects.merger import Merger
+        return [key for key in params if self.param_is(params, key, Merger)]
+
+    def add_merger_section(self, params):
+        '''Add a Merger section with the default options, unless there is one already'''
+        if not self.merger_keys(params):
+            key = 'merger'
+            while key in params:
+                key += '_'
+            params[key] = {'class': 'Merger'}
+
+    def take_merger_section(self, params):
+        '''
+        Remove the Merger section from *params*, if any, and return its options
+        (an iteras.data_objects.merger.Merger), otherwise None. The section is
+        removed after the allocator has run, so that the allocator profiles the
+        objects as merged.
+        '''
+        from iteras.data_objects.merger import Merger
+        keys = self.merger_keys(params)
+        if not keys:
+            return None
+        if len(keys) > 1:
+            raise ValueError(f'More than one Merger section: {keys}')
+        pars = params.pop(keys[0])
+        return Merger(**{k: v for k, v in pars.items() if k != 'class'})
 
     def gpu_mem_report(self, title):
         '''Log the GPU memory used by the objects of this simulation'''
