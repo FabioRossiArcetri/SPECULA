@@ -296,6 +296,9 @@ class LoopControl(BaseTimeObj):
         for i in sorted(self.trigger_lists.keys()):
             for element in self.trigger_lists[i]:
                 try:
+                    # As for the other phases, finalize() runs on the device of the object
+                    if element.target_device_idx >= 0:
+                        element._target_device.use()
                     element.finalize()
                 except:
                     self.logger.error(f'Exception in {element.name}')
