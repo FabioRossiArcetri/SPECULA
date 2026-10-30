@@ -332,7 +332,12 @@ class DataStore(BaseProcessingObj):
     def finalize(self):
 
         # Perform an additional trigger to ensure all data is captured,
-        # including any calculations done in other objects' finalize() methods
+        # including any calculations done in other objects' finalize() methods.
+        # Inputs from another device are copies: copy them again first (not those
+        # from other processes, which send nothing after their finalize())
+        for name, input_obj in self.inputs.items():
+            if all(item.remote_rank is None for item in input_obj.input_values):
+                self.local_inputs[name] = input_obj.get(self.target_device_idx)
         self.trigger_code()
 
         if self.split_size == 0:

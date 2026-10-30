@@ -15,7 +15,9 @@ from unittest.mock import patch
 from specula.connections import InputValue
 from specula.loop_control import LoopControl
 from specula.base_data_obj import BaseDataObj
+from specula import cp
 from specula.base_value import BaseValue
+from specula.base_processing_obj import BaseProcessingObj
 from specula.processing_objects.data_store import DataStore
 from test.specula_testlib import cpu_and_gpu
 
@@ -76,6 +78,44 @@ class TestDataStore(unittest.TestCase):
         self.assertEqual(list(store.storage['slow'].keys()), [0, 2, 4])
         np.testing.assert_array_equal(self._stored_scalars(store, 'fast'), np.array([10, 12, 14]))
         np.testing.assert_array_equal(self._stored_scalars(store, 'slow'), np.array([20, 22, 24]))
+
+    @unittest.skipIf(cp is None, 'Cupy not found')
+    def test_output_set_in_finalize_on_another_device(self):
+        '''
+        An output that its producer, on a GPU, sets in finalize() (like the
+        integrated PSF) is stored by a DataStore on the CPU
+        '''
+        class Producer(BaseProcessingObj):
+            def __init__(self):
+                super().__init__(target_device_idx=0)
+                self.out = BaseValue(value=self.xp.zeros(3, dtype=self.dtype), target_device_idx=0)
+                self.outputs['out'] = self.out
+
+            def post_trigger(self):
+                super().post_trigger()
+                self.out.value += 1
+                self.out.generation_time = self.current_time
+
+            def finalize(self):
+                # Same time as the last step, as PSF does
+                self.out.value *= 100
+                self.out.generation_time = self.current_time
+
+        producer = Producer()
+        store = DataStore(store_dir=self.tmp_dir, create_tn=False, target_device_idx=-1)
+        store.inputs['v'] = InputValue(type=BaseValue)
+        store.inputs['v'].set(producer.outputs['out'])
+        loop = LoopControl()
+        loop.add(producer, 0)
+        loop.add(store, 1)
+        loop.start(run_time=3e-3, dt=1e-3)
+        for _ in range(3):
+            loop.iter()
+        with patch.object(DataStore, 'save'):
+            loop.finish()
+        values = list(store.storage['v'].values())
+        np.testing.assert_array_equal(values[-1], [300, 300, 300])
+        self.assertEqual(len(values), 3)
 
     @cpu_and_gpu
     def test_data_store_values_overwritten_after_trigger(self, target_device_idx, xp):

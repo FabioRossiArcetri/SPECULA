@@ -138,3 +138,22 @@ class TestBaseDataObj(unittest.TestCase):
         assert type(b.value) == cp.ndarray
         np.testing.assert_array_equal(b.value.get(), [2, 3])
         assert b.target_device_idx == 1
+
+    @unittest.skipIf(cp is None or cp.cuda.runtime.getDeviceCount() < 2, 'at least 2 GPUs are needed')
+    def test_non_contiguous_from_gpu_to_gpu(self):
+        '''
+        Arrays that are not contiguous (views) are copied between GPUs too, the
+        first time and in place, after the work that produces them
+        '''
+        with cp.cuda.Device(0):
+            data = cp.arange(12, dtype=cp.float32).reshape(3, 4)
+        a = BaseValue(value=data.T, target_device_idx=0)
+        self.assertFalse(a.value.flags.c_contiguous)
+        b = a.copyTo(target_device_idx=1)
+        np.testing.assert_array_equal(b.value.get(), data.T.get())
+        self.assertEqual(b.value.device.id, 1)
+        with cp.cuda.Device(0):
+            # Queued on the GPU just before the copy
+            a.value *= 2
+        _ = a.transferDataTo(b)
+        np.testing.assert_array_equal(b.value.get(), 2 * data.T.get())
