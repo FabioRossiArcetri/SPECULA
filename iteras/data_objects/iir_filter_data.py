@@ -84,9 +84,10 @@ class IirFilterData(BaseDataObj):
             for i in range(self.nfilter):
                 oi = int(ordnum_cpu[i])
                 if oi > 1:
-                    roots = np.roots(num_cpu[i, snum1 - oi:])
+                    # Coefficients are lowest order first, np.roots wants highest first
+                    roots = np.roots(num_cpu[i, snum1 - oi:][::-1])
                     if np.sum(np.abs(roots)) > 0:
-                        zeros_cpu[i, :oi - 1] = roots
+                        zeros_cpu[i, :len(roots)] = roots
             self.zeros = self.to_xp(zeros_cpu, dtype=self.dtype)
         return self.zeros
 
@@ -99,7 +100,8 @@ class IirFilterData(BaseDataObj):
             for i in range(self.nfilter):
                 oi = int(ordden_cpu[i])
                 if oi > 1:
-                    poles_cpu[i, :oi - 1] = np.roots(den_cpu[i, sden1 - oi:])
+                    roots = np.roots(den_cpu[i, sden1 - oi:][::-1])
+                    poles_cpu[i, :len(roots)] = roots
             self.poles = self.to_xp(poles_cpu, dtype=self.dtype)
         return self.poles
 
@@ -141,7 +143,8 @@ class IirFilterData(BaseDataObj):
         for i in range(self.nfilter):
             oi = int(ordnum_cpu[i])
             if oi > 1:
-                num_cpu[i, snum1 - oi:] = np.poly(zeros_cpu[i, :oi - 1])
+                # np.poly returns the coefficients highest order first
+                num_cpu[i, snum1 - oi:] = np.poly(zeros_cpu[i, :oi - 1])[::-1]
         self.set_num(num_cpu)  # resets self.zeros = None internally
         self.zeros = self.to_xp(zeros_cpu, dtype=self.dtype)
 
@@ -153,7 +156,7 @@ class IirFilterData(BaseDataObj):
         for i in range(self.nfilter):
             oi = int(ordden_cpu[i])
             if oi > 1:
-                den_cpu[i, sden1 - oi:] = np.poly(poles_cpu[i, :oi - 1])
+                den_cpu[i, sden1 - oi:] = np.poly(poles_cpu[i, :oi - 1])[::-1]
         self.poles = self.to_xp(poles_cpu, dtype=self.dtype)
         self.den = self.to_xp(den_cpu, dtype=self.dtype)
 

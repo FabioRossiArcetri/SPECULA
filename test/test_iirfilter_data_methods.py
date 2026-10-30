@@ -39,9 +39,10 @@ class TestIirFilterDataConstruction(unittest.TestCase):
                           target_device_idx=-1)
 
     def test_zeros_and_poles(self):
+        # (z - 0.5) / ((z - 0.2) (z - 0.9)), coefficients with the lowest order first
         f = IirFilterData([2], [3], [[0.0, -0.5, 1.0]], [[0.18, -1.1, 1.0]], target_device_idx=-1)
-        # get_zeros() gives the roots of the last ordnum coefficients, as np.roots() reads them
-        np.testing.assert_allclose(cpuArray(f.get_zeros())[0, :1], np.roots([-0.5, 1.0]))
+        np.testing.assert_allclose(cpuArray(f.get_zeros())[0, :1], [0.5])
+        np.testing.assert_allclose(sorted(cpuArray(f.get_poles())[0]), [0.2, 0.9])
         f.set_zeros(np.array([[0.3, 0.0]]))
         np.testing.assert_allclose(cpuArray(f.zeros)[0, 0], 0.3)
         f.set_poles(np.array([[0.1, 0.4]]))
