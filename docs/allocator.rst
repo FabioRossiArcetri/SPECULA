@@ -126,14 +126,14 @@ stays there, even with ``override_placement``: for example, with the
 (one rank per node, so ``pin_ranks_per_node: 1``), the allocator places the
 other objects around them.
 
-With the merger
----------------
+With the accelerator
+--------------------
 
-With ``--merge`` or a ``Merger`` section (see :doc:`merger`), the objects are
-profiled as they run merged: the host time of a merged object is the time to
+With ``--accelerate`` or an ``Accelerator`` section (see :doc:`accelerator`), the objects are
+profiled as they run accelerated: the host time of an accelerated object is the time to
 launch its CUDA graph, and it does not wait for the GPU in ``post_trigger()``.
-These costs are kept apart from those measured without merger, and an
-allocation computed with the merger is stale without it, and the reverse.
+These costs are kept apart from those measured without accelerator, and an
+allocation computed with the accelerator is stale without it, and the reverse.
 
 Using the allocation
 --------------------
@@ -188,7 +188,7 @@ Limitations
   a placement on several devices can still lose against one GPU when the
   simulation is small and host-bound (space8m: 3.54 ms against 3.19 ms on one
   GPU), hence ``device_tolerance``. On MORFEO, the placement on two GPUs runs
-  1.57 times faster than one GPU (1.66 with the :doc:`merger <merger>`).
+  1.57 times faster than one GPU (1.66 with the :doc:`accelerator <accelerator>`).
 * Accuracy: on a computer with two GPUs, the estimates of MORFEO for ten
   placements, with one or two processes, were within 5% of the measured times,
   except for the placements chosen by the allocator itself, which were

@@ -50,8 +50,8 @@ class BaseProcessingObj(BaseTimeObj):
         # Addresses of the input arrays when the CUDA graph was captured
         self._captured_input_ptrs = {}
 
-        # Set by the merger (iteras.merger.GraphRunner) if this object is merged
-        self._merge = None
+        # Set by the accelerator (iteras.accelerator.GraphRunner) if this object is accelerated
+        self._accel = None
 
         # Will be populated by derived class
         self.inputs = {}
@@ -164,8 +164,8 @@ class BaseProcessingObj(BaseTimeObj):
 
         if self.target_device_idx>=0:
             self._target_device.use()
-            # Merged: the GPU work is on the default stream, in order, nothing to wait for
-            if self.cuda_graph and self._merge is None:
+            # Accelerated: the GPU work is on the default stream, in order, nothing to wait for
+            if self.cuda_graph and self._accel is None:
                 # Like stream.synchronize(), but MPI sends in flight keep moving
                 mpi_progress.wait_stream(self.stream)
 
@@ -340,14 +340,14 @@ class BaseProcessingObj(BaseTimeObj):
         of trigger_code() runs twice (warm-up and capture), so trigger_code() must
         not keep state in Python variables, as for any code in a CUDA graph.
         '''
-        if self._merge is not None:
-            self._merge.invalidate()
+        if self._accel is not None:
+            self._accel.invalidate()
         elif self.stream is not None:
             self._cuda_graph_invalid = True
 
-    def can_merge(self):
+    def can_accelerate(self):
         '''
-        Called by the merger (iteras.merger) just before it captures the
+        Called by the accelerator (iteras.accelerator) just before it captures the
         trigger_code() of this object in a CUDA graph, which is then launched at
         each trigger instead of running trigger_code(). Return True if that
         graph does the same as trigger_code() at all the following triggers,
@@ -361,7 +361,7 @@ class BaseProcessingObj(BaseTimeObj):
         which runs at each step), not as Python numbers passed to kernels or
         used in Python conditions; the arrays must stay the same (updated in
         place, not reallocated). The output generation times set by
-        trigger_code() are set by the merger at each launch.
+        trigger_code() are set by the accelerator at each launch.
 
         The default is True for objects that build their own CUDA graph (see
         build_stream()), whose trigger_code() already follows these rules, and
@@ -391,10 +391,10 @@ class BaseProcessingObj(BaseTimeObj):
 
         if self.target_device_idx >= 0:
             self._target_device.use()
-        if self._merge is not None:
-            with tracer.no_record(), tracer('cuda_graph', self) if self._merge.graph is not None \
+        if self._accel is not None:
+            with tracer.no_record(), tracer('cuda_graph', self) if self._accel.graph is not None \
                     else contextlib.nullcontext():
-                self._merge.trigger()
+                self._accel.trigger()
         elif self.target_device_idx >= 0 and self._cuda_graph_invalid:
             # Capture the graph. The warm-up run in capture_stream() computes
             # the results of this step, so the new graph is not launched.

@@ -168,19 +168,19 @@ Notes
 - ``MPI_DBG`` and ``MPI_SEND_DBG`` are application-specific logging levels and are not part of the standard Python logging levels.
 - Lower verbosity levels (e.g., DEBUG) may produce large volumes of output.
 
-Merging objects
-===============
+Accelerating objects
+====================
 
-With ``--merge``, the GPU work of the objects runs as CUDA graphs chained on
+With ``--accelerate``, the GPU work of the objects runs as CUDA graphs chained on
 one stream per device, without the host waiting for the GPU between objects:
 
 .. code-block:: bash
 
-    specula --merge params.yml
+    specula --accelerate params.yml
 
 Simulations whose time per step is set by the host, not by the GPU, run
 faster; the results agree with those of the normal run to rounding. See
-:doc:`merger`.
+:doc:`accelerator`.
 
 .. _running_with_mpi:
 

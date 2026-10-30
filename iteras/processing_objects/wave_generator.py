@@ -50,7 +50,7 @@ class WaveGenerator(BaseGenerator):
             names=['amp', 'freq', 'offset', 'slope', 'constant']
         )
 
-    def can_merge(self):
+    def can_accelerate(self):
         # The time reaches trigger_code() through current_time_gpu, set in prepare_trigger()
         return True
 

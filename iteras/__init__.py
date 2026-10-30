@@ -165,7 +165,7 @@ def to_xp(xp, v, dtype=None, force_copy=False):
 
 
 def capturing():
-    '''True while the current CUDA stream is capturing a graph (see iteras.merger)'''
+    '''True while the current CUDA stream is capturing a graph (see iteras.accelerator)'''
     return cp is not None and cp.cuda.get_current_stream().is_capturing()
 
 
@@ -234,7 +234,7 @@ def main_simul(yml_files: list,
                trace_gpu_events: bool=False,
                allocate: bool=False,
                reallocate: bool=False,
-               merge: bool=False,
+               accelerate: bool=False,
                ):
 
     # Set logging level for the "parent" loggers of iteras and its plugins
@@ -302,7 +302,7 @@ def main_simul(yml_files: list,
                 log_level=log_level,
                 allocate=allocate,
                 reallocate=reallocate,
-                merge=merge,
+                accelerate=accelerate,
             ).run()
     except Exception:
         if mpi:

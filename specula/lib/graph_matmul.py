@@ -204,7 +204,7 @@ def matvec(a, v, xp):
 
 def matmul(a, b, xp):
     """
-    a @ b, also inside a CUDA graph capture (see iteras.merger), where cuBLAS
+    a @ b, also inside a CUDA graph capture (see iteras.accelerator), where cuBLAS
     cannot be used: then matrix @ vector and vector(s) @ matrix use matvec() or
     vecmat(), depending on the memory layout of the matrix. Outside a capture,
     or for other shapes, it is a @ b (cuBLAS).

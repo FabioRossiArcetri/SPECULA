@@ -66,7 +66,7 @@ class BaseFilter(BaseProcessingObj):
         super().prepare_trigger(t)
 
         # Process delta_comm input. The inputs are copied into the same arrays at
-        # each step: the CUDA graph of a merged object keeps using them
+        # each step: the CUDA graph of a accelerated object keeps using them
         delta_comm = self.local_inputs['delta_comm'].value
         delta_comm_array = self.xp.atleast_1d(self.xp.asarray(delta_comm, dtype=self.dtype)).ravel()
 

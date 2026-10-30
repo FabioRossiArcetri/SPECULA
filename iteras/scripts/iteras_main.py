@@ -60,9 +60,9 @@ def build_parser():
                              '(see iteras.allocator)')
     parser.add_argument('--reallocate', action='store_true',
                         help='Recompute the placement of the objects even if a saved one exists')
-    parser.add_argument('--merge', action='store_true',
+    parser.add_argument('--accelerate', action='store_true',
                         help='Run the GPU work of the objects as CUDA graphs chained without '
-                             'waiting for the GPU (see iteras.merger), as with a Merger section')
+                             'waiting for the GPU (see iteras.accelerator), as with a Accelerator section')
     parser.add_argument('yml_files', nargs='+', type=str,
                         help='YAML parameter files')
     return parser

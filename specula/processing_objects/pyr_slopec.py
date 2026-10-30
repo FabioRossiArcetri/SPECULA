@@ -107,13 +107,13 @@ class PyrSlopec(Slopec):
         else:
             return len(self.pupdata.pupil_idx(0)) * 2
 
-    def can_merge(self):
+    def can_accelerate(self):
         # compute_slopes() only launches GPU work on arrays updated in place
         return True
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
-        # Copied into the same array at each step (the CUDA graph of a merged
+        # Copied into the same array at each step (the CUDA graph of a accelerated
         # object keeps using the array it was captured with)
         pixels = self.local_inputs['in_pixels'].pixels
         if self.flat_pixels is None or self.flat_pixels.shape != (pixels.size,) \

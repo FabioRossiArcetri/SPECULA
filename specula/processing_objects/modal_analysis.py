@@ -224,7 +224,7 @@ class ModalAnalysis(BaseProcessingObj):
             if self._n_inputs != len(input_list):
                 raise ValueError(f"Number of inputs ({len(input_list)}) does not match expected number ({self._n_inputs})")
 
-    def can_merge(self):
+    def can_accelerate(self):
         # The product uses graph_matmul.matmul(), which can be captured
         return True
 

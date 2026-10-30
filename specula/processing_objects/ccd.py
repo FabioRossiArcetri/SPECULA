@@ -245,7 +245,7 @@ class CCD(BaseProcessingObj):
         return {'out_pixels': OutputDesc(Pixels, 'Output pixel data after noise and binning'),
                 'integrated_i': OutputDesc(Intensity, 'Integrated intensity over the exposure')}
 
-    def can_merge(self):
+    def can_accelerate(self):
         # trigger_code() decides on the host when to integrate and read out
         if self.dt != self.loop_dt:
             return 'integrates over several steps'

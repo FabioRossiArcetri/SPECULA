@@ -245,7 +245,7 @@ class DM(BaseProcessingObj):
                 'out_forces': OutputDesc(BaseValue, 'Actuator forces of the applied command (empty without stiffness)'),
                 'out_force_nmodes': OutputDesc(BaseValue, 'Number of modes kept by the force limiting')}
 
-    def can_merge(self):
+    def can_accelerate(self):
         # The products use graph_matmul.matmul(), which can be captured
         if self.max_force is not None:
             return 'force limitation'

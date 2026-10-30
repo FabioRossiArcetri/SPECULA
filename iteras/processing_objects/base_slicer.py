@@ -51,7 +51,7 @@ class BaseSlicer(BaseProcessingObj):
     def output_names(cls):
         return {'out_value': OutputDesc(BaseValue, 'Output sliced vector')}
 
-    def can_merge(self):
+    def can_accelerate(self):
         # The output arrays are allocated at the capture, then rewritten by the graph
         return True
 

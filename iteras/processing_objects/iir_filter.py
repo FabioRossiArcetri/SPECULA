@@ -85,7 +85,7 @@ class IirFilter(BaseFilter):
             for j in range(self._ost.shape[1]):
                 self._ost[:, j] -= ost_update_array
 
-    def can_merge(self):
+    def can_accelerate(self):
         # trigger_code() only launches GPU work on arrays updated in place
         return True
 

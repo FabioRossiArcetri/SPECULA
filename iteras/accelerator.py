@@ -1,14 +1,14 @@
 '''
-Merger: run the GPU work of the processing objects as a chain of CUDA graphs.
+Accelerator: run the GPU work of the processing objects as a chain of CUDA graphs.
 
-Without merger, each object runs its trigger_code() as Python code launching
+Without accelerator, each object runs its trigger_code() as Python code launching
 its kernels one by one (or replays its own CUDA graph, waiting for it in
 post_trigger()). In small simulations, this host work, not the GPU, sets the
 time per step.
 
-With the merger, on each GPU:
+With the accelerator, on each GPU:
 
-* the trigger_code() of each merged object is captured once in a CUDA graph,
+* the trigger_code() of each accelerated object is captured once in a CUDA graph,
   which is then launched at each step instead of running the Python code;
 * all the GPU work of the objects (graphs, and the kernels of the phases that
   still run as Python code) goes to the default stream of the device, in
@@ -19,20 +19,20 @@ With the merger, on each GPU:
   inputs (like the time of the generators, copied to the GPU in
   prepare_trigger()) are up to date. Only trigger_code() is frozen in the graph.
 
-An object is merged if it runs on a GPU, is not excluded by the Merger
-options, and its can_merge() method returns True when its graph is about to
-be captured (see BaseProcessingObj.can_merge()). Each object has its own
+An object is accelerated if it runs on a GPU, is not excluded by the Accelerator
+options, and its can_accelerate() method returns True when its graph is about to
+be captured (see BaseProcessingObj.can_accelerate()). Each object has its own
 graph, so objects that do not trigger at every step are simply not launched,
-as without merger.
+as without accelerator.
 
 Safety: CuPy refuses, with an exception, the calls that cannot be part of a
 graph (cuBLAS, cuRAND, copies between the host and the GPU). If the capture
 fails, trigger_code() runs again as Python code for that step, and the object
-is not merged anymore. Before each launch, the arrays of the object, of the
+is not accelerated anymore. Before each launch, the arrays of the object, of the
 data objects it holds and of its inputs are checked to be the same as when
 the graph was captured: the graph reads and writes their memory, so an array
 that was reallocated (for example by prepare_trigger()) would make it use
-stale or freed memory. Such an object is not merged anymore either.
+stale or freed memory. Such an object is not accelerated anymore either.
 '''
 import iteras
 from iteras.base_data_obj import BaseDataObj
@@ -101,9 +101,9 @@ def changed_ref(refs):
 
 class GraphRunner:
     '''
-    Runs the trigger_code() of a merged object: as Python code for the first
+    Runs the trigger_code() of a accelerated object: as Python code for the first
     triggers, then captured in a CUDA graph launched at each trigger.
-    Set as obj._merge by Merger.apply().
+    Set as obj._accel by Accelerator.apply().
     '''
 
     def __init__(self, obj, options):
@@ -138,10 +138,10 @@ class GraphRunner:
         if self.triggers <= self.options.capture_after:
             obj.trigger_code()
             return
-        reason = obj.can_merge()
+        reason = obj.can_accelerate()
         if reason is not True:
             # Retried at the next trigger: it may become possible (e.g. after a start time)
-            self.status = f'can_merge(): {reason or False}'
+            self.status = f'can_accelerate(): {reason or False}'
             obj.trigger_code()
             return
         self.capture()
@@ -171,7 +171,7 @@ class GraphRunner:
         if error is not None:
             graph = None
             pool.free_all_blocks()
-            # The Python code ran without its GPU work: run it again, then as without merger
+            # The Python code ran without its GPU work: run it again, then as without accelerator
             first = str(error).splitlines()[0] if str(error) else ''
             self.detach(f'capture failed: {type(error).__name__}: {first[:200]}')
             obj.trigger_code()
@@ -183,8 +183,8 @@ class GraphRunner:
         self.refs = array_refs(obj) if self.options.check_pointers else []
         # The graph keeps the memory of the temporary arrays of trigger_code()
         obj.gpu_bytes_used += pool.total_bytes()
-        self.status = 'merged'
-        _logger.debug(f'Merger: {obj.name}: graph captured ({pool.total_bytes() / 2**20:.1f} MB)')
+        self.status = 'accelerated'
+        _logger.debug(f'Accelerator: {obj.name}: graph captured ({pool.total_bytes() / 2**20:.1f} MB)')
 
     def release_own_graph(self):
         '''The CUDA graph that the object captured by itself (see build_stream()) is not used'''
@@ -204,29 +204,29 @@ class GraphRunner:
             self.triggers = min(self.triggers, self.options.capture_after)
 
     def detach(self, reason):
-        '''The object is not merged anymore: it runs as without merger from now on'''
+        '''The object is not accelerated anymore: it runs as without accelerator from now on'''
         obj = self.obj
-        _logger.warning(f'Merger: {obj.name} ({type(obj).__name__}) is not merged anymore: {reason}')
+        _logger.warning(f'Accelerator: {obj.name} ({type(obj).__name__}) is not accelerated anymore: {reason}')
         self.invalidate()
-        self.status = f'not merged: {reason}'
-        obj._merge = None
+        self.status = f'not accelerated: {reason}'
+        obj._accel = None
         if obj.stream is not None:
-            # Its own CUDA graph was released by the merger: capture it again
+            # Its own CUDA graph was released by the accelerator: capture it again
             obj._cuda_graph_invalid = True
 
 
-class Merger:
+class Accelerator:
     '''
-    Applies the merger options (iteras.data_objects.merger.Merger) to the
+    Applies the accelerator options (iteras.data_objects.accelerator.Accelerator) to the
     processing objects of this process.
     '''
 
     def __init__(self, options):
         self.options = options
-        self.rows = []          # (object, GraphRunner or None, reason it is not merged)
+        self.rows = []          # (object, GraphRunner or None, reason it is not accelerated)
 
     def apply(self, objs):
-        '''Set a GraphRunner on each object of *objs* (processing objects of this process) that can be merged'''
+        '''Set a GraphRunner on each object of *objs* (processing objects of this process) that can be accelerated'''
         from iteras.base_processing_obj import BaseProcessingObj
         for obj in objs:
             reason = None
@@ -238,23 +238,23 @@ class Merger:
                 reason = 'its class overrides trigger()'
             runner = None
             if reason is None:
-                runner = obj._merge = GraphRunner(obj, self.options)
+                runner = obj._accel = GraphRunner(obj, self.options)
             self.rows.append((obj, runner, reason))
 
     def runners(self):
         return [runner for _, runner, _ in self.rows if runner is not None]
 
     def report(self):
-        '''Text table: which objects are merged, and why the others are not'''
-        lines = ['Merger:']
+        '''Text table: which objects are accelerated, and why the others are not'''
+        lines = ['Accelerator:']
         n = 0
         for obj, runner, reason in self.rows:
             if runner is not None:
                 reason = runner.status
-            if reason == 'merged':
+            if reason == 'accelerated':
                 n += 1
             lines.append(f'  {obj.name:30s} {type(obj).__name__:26s} {reason}')
-        lines.insert(1, f'  {n} of {len(self.rows)} objects merged')
+        lines.insert(1, f'  {n} of {len(self.rows)} objects accelerated')
         return '\n'.join(lines)
 
     def finish(self):

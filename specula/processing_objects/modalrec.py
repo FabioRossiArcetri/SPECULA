@@ -31,7 +31,7 @@ class Modalrec(BaseModalrec):
         self.recmat = recmat
         self.modes.value = self.xp.zeros(self.recmat.nmodes, dtype=self.dtype)
 
-    def can_merge(self):
+    def can_accelerate(self):
         # The product uses graph_matmul.matmul(), which can be captured
         return True
 

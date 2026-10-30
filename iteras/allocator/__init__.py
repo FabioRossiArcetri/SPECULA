@@ -50,33 +50,33 @@ class Allocator:
         Only compute and write the allocation (also set by mode: plan).
     recompute : bool
         Ignore a saved allocation (also set by recompute: true).
-    merge : bool
-        The objects run merged (see iteras.merger): they are profiled this way,
-        and their costs are kept apart from those measured without merger.
+    accelerate : bool
+        The objects run accelerated (see iteras.accelerator): they are profiled this way,
+        and their costs are kept apart from those measured without accelerator.
     '''
 
-    def __init__(self, simul, arch_pars, plan_only=False, recompute=False, merge=False):
+    def __init__(self, simul, arch_pars, plan_only=False, recompute=False, accelerate=False):
         self.simul = simul
         self.logger = get_iteras_logger(__name__)
         self.arch = Architecture(**{k: v for k, v in arch_pars.items() if k != 'class'})
         self.plan_only = plan_only or self.arch.mode == 'plan'
         self.recompute = recompute or self.arch.recompute
         self.precision = iteras.global_precision
-        self.merge = merge
+        self.accelerate = accelerate
         self.allocation = None
         self.report = ''
 
     @property
     def cost_tag(self):
-        '''Precision and merge mode of the costs, part of their key in the profile file'''
-        return f'{self.precision}m' if self.merge else self.precision
+        '''Precision and accelerate mode of the costs, part of their key in the profile file'''
+        return f'{self.precision}a' if self.accelerate else self.precision
 
     # -- entry point -----------------------------------------------------
 
     def allocate(self, params):
-        # The Merger section stays in *params* for the profiling runs, not in the graph
-        merger = set(self.simul.merger_keys(params))
-        graph = SimGraph({k: v for k, v in params.items() if k not in merger}, self.simul)
+        # The Accelerator section stays in *params* for the profiling runs, not in the graph
+        accelerator = set(self.simul.accelerator_keys(params))
+        graph = SimGraph({k: v for k, v in params.items() if k not in accelerator}, self.simul)
         comm = iteras.process_comm
         if comm is not None and comm.Get_size() > 1:
             allocation = None
@@ -130,7 +130,7 @@ class Allocator:
                 'pins': {name: list(pin) for name, pin in sorted(self._kept_pins(graph).items())},
                 'architecture': self.arch.as_dict(),
                 'precision': self.precision,
-                'merge': self.merge}
+                'accelerate': self.accelerate}
 
     # -- computation -----------------------------------------------------
 
@@ -688,8 +688,8 @@ def check_meta(saved, current, path):
         problems.append('different architecture')
     if saved['precision'] != current['precision']:
         problems.append('different precision')
-    if saved.get('merge', False) != current.get('merge', False):
-        problems.append('merger ' + ('disabled' if saved.get('merge') else 'enabled'))
+    if saved.get('accelerate', False) != current.get('accelerate', False):
+        problems.append('accelerator ' + ('disabled' if saved.get('accelerate') else 'enabled'))
     if problems:
         raise StaleAllocation(f'The allocation in {path} was computed for a different simulation: '
                               + '; '.join(problems) + '. Recompute it with --reallocate '

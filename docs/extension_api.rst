@@ -132,8 +132,8 @@ Methods to override
    * - ``graph_input_ptrs()``
      - Override to exclude, from the check made at each launch of the CUDA
        graph, inputs that the graph does not read.
-   * - ``can_merge()``
-     - Called by the :doc:`merger <merger>` just before it captures
+   * - ``can_accelerate()``
+     - Called by the :doc:`accelerator <accelerator>` just before it captures
        ``trigger_code()`` in a CUDA graph launched at each step instead. Return
        ``True`` if that graph does the same as ``trigger_code()`` at all the
        following steps: ``trigger_code()`` only launches GPU work, on arrays
