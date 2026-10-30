@@ -358,6 +358,37 @@ class TestStorageAPI(unittest.TestCase):
         storage.write_object(self._path('found', 'npz'), self.header, {'a': self.a})
         self.assertEqual(storage.find_format(self.tmp.name, 'found'), 'npz')
 
+    def test_headers_without_fits_limits(self):
+        '''npz, npy and HDF5 headers keep long keywords and text that is not ASCII'''
+        import warnings
+        header = {'WAVELENGTH_UNIT': 'µm', 'VERSION': 1}
+        for data_format in ('npz', 'npy', 'hdf5'):
+            with self.subTest(data_format=data_format):
+                path = self._path('nonfits', data_format)
+                with warnings.catch_warnings():
+                    warnings.simplefilter('error')   # no HIERARCH warning
+                    storage.write_object(path, header, {'a': self.a})
+                    with storage.read_object(path) as f:
+                        self.assertIsInstance(f.header, storage.Header)
+                        self.assertEqual(f.header['WAVELENGTH_UNIT'], 'µm')
+                        self.assertEqual(f.header.get('VERSION'), 1)
+                    self.assertEqual(storage.read_header(path, data_format)['WAVELENGTH_UNIT'], 'µm')
+
+    def test_header_round_trip(self):
+        '''A Header read from a file is written again with its comments'''
+        for data_format in ('npz', 'npy', 'hdf5'):
+            with self.subTest(data_format=data_format):
+                path = self._path('first', data_format)
+                storage.write_object(path, self.header, {'a': self.a})
+                with storage.read_object(path) as f:
+                    header = f.header
+                copy = self._path('copy', data_format)
+                storage.write_object(copy, header, {'a': self.a})
+                with storage.read_object(copy) as f:
+                    self.assertEqual(f.header, header)
+                    self.assertEqual(f.header.comments, header.comments)
+                    self.assertEqual(f.header['COMMENT'], ['a comment card'])
+
     def test_reader_base_class(self):
         reader = storage.ObjectReader('path')
         with self.assertRaises(NotImplementedError):

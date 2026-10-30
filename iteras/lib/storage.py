@@ -17,6 +17,10 @@ Supported formats, chosen by the extension of the file name:
 - ``hdf5`` (``.h5``): HDF5 file with one dataset per array, the header in the
   ``__header__`` attribute, and the header keywords also as plain attributes.
 
+The header of the npz, npy and HDF5 files is read as a Header, a dictionary
+without the limits of FITS headers (keywords longer than 8 characters, text
+that is not ASCII).
+
 The time series of DataStore can also be saved in the ``pickle`` format
 (``.pickle``), for compatibility.
 
@@ -138,15 +142,35 @@ def _plain(value):
     return value
 
 
+class Header(dict):
+    '''
+    Header read from an npz, npy or HDF5 file: a dictionary of keywords and
+    values, without the limits of FITS headers, used like a FITS header by
+    the restore() methods. As in a FITS header, the comments of the keywords
+    are in *comments*, and the COMMENT and HISTORY entries are lists of strings.
+    '''
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.comments = {}
+
+
 def header_cards(header):
     '''
     Header entries as a JSON-serializable list of [keyword, value, comment],
-    from a FITS header or a dictionary. FITS structure keywords are left out.
+    from a FITS header, a Header or a dictionary. FITS structure keywords are left out.
     '''
     if header is None:
         return []
     if hasattr(header, 'cards'):
         cards = [(card.keyword, card.value, card.comment) for card in header.cards]
+    elif isinstance(header, Header):
+        cards = []
+        for key, value in header.items():
+            if key in ('COMMENT', 'HISTORY'):
+                cards += [(key, text, '') for text in value]
+            else:
+                cards.append((key, value, header.comments.get(key, '')))
     else:
         cards = [(key, value, '') for key, value in header.items()]
     return [[key, _plain(value), comment] for key, value, comment in cards
@@ -154,14 +178,15 @@ def header_cards(header):
 
 
 def header_from_cards(cards):
-    '''FITS header built from the list of header_cards()'''
-    from astropy.io import fits
-    header = fits.Header()
+    '''Header built from the list of header_cards()'''
+    header = Header()
     for key, value, comment in cards:
         if key in ('COMMENT', 'HISTORY'):
-            header.add_comment(value) if key == 'COMMENT' else header.add_history(value)
+            header.setdefault(key, []).append(value)
         else:
-            header.append(fits.Card(key, value, comment))
+            header[key] = value
+            if comment:
+                header.comments[key] = comment
     return header
 
 
