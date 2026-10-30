@@ -6,6 +6,7 @@ from collections import OrderedDict, defaultdict
 import pickle
 import yaml
 
+import iteras
 from iteras import cpuArray
 from iteras.base_processing_obj import BaseProcessingObj
 from iteras.lib import utils
@@ -135,6 +136,18 @@ class DataStore(BaseProcessingObj):
     def init_storage(self):
         self.storage = defaultdict(OrderedDict)
 
+    @property
+    def storage(self):
+        '''Stored values, by input name and time (the pending GPU copies are completed first)'''
+        self._store_pending_copies()
+        return self._storage
+
+    @storage.setter
+    def storage(self, value):
+        # GPU values being copied to the host: (input, time, pinned buffer, event)
+        self._pending_copies = []
+        self._storage = value
+
     def set_simulation_params(self, params):
         self.params = params
 
@@ -248,17 +261,46 @@ class DataStore(BaseProcessingObj):
                 iter += 1
         self.tn_dir = fullpath
 
+    def _copy_to_host(self, k, value):
+        '''
+        Store a copy of *value* for input *k* at the current time. A GPU value is
+        copied asynchronously into page-locked memory, so that the simulation does
+        not wait for the GPU here; the copy is moved to the storage by
+        _store_pending_copies(), at the next step or when the storage is read.
+        '''
+        cp = iteras.cp
+        if cp is None or not isinstance(value, cp.ndarray):
+            self._storage[k][self.current_time] = cpuArray(value, force_copy=True)
+            return
+        import cupyx
+        with value.device:
+            pinned = cupyx.empty_pinned(value.shape, dtype=value.dtype)
+            stream = cp.cuda.get_current_stream()
+            value.get(stream=stream, out=pinned, blocking=False)
+            event = stream.record()
+        # Placeholder, to keep the order of the times in the storage
+        self._storage[k][self.current_time] = None
+        self._pending_copies.append((k, self.current_time, pinned, event))
+
+    def _store_pending_copies(self):
+        '''Wait for the copies of GPU values started before, and store them'''
+        for k, t, pinned, event in self._pending_copies:
+            event.synchronize()
+            # A pageable copy: the page-locked buffer goes back to its pool
+            self._storage[k][t] = np.array(pinned)
+        self._pending_copies = []
+
     def trigger_code(self):
         if self.current_time < self.start_time:
             return
 
+        # The copies of the previous step are complete by now, usually
+        self._store_pending_copies()
         for k, item in self.local_inputs.items():
             if item is not None and item.generation_time == self.current_time:
                 if not self._should_store_input(k):
                     continue
-                value = item.get_value()
-                v = cpuArray(value, force_copy=True)
-                self.storage[k][self.current_time] = v
+                self._copy_to_host(k, item.get_value())
 
         # If we are saving a split TN, check whether it is time to save a new chunk
         # In case, clear the storage dictionary to restart with an empty one.

@@ -78,6 +78,36 @@ class TestDataStore(unittest.TestCase):
         np.testing.assert_array_equal(self._stored_scalars(store, 'slow'), np.array([20, 22, 24]))
 
     @cpu_and_gpu
+    def test_data_store_values_overwritten_after_trigger(self, target_device_idx, xp):
+        '''
+        The values stored are those of each step, even if the input array is
+        changed in place right after the trigger (GPU values are copied
+        asynchronously)
+        '''
+        store = DataStore(store_dir=self.tmp_dir, create_tn=False)
+        store.target_device_idx = target_device_idx
+        value = self._make_input_value(target_device_idx)
+        value.set_value(xp.zeros(1000, dtype=xp.float32))
+        self._connect_input(store, 'v', value)
+        store.setup()
+
+        for t in range(5):
+            value.value[:] = 10 + t
+            value.generation_time = t
+            store.check_ready(t)
+            store.trigger()
+            store.post_trigger()
+            value.value[:] = -1
+            # At most the copies of one step are pending
+            self.assertLessEqual(len(store._pending_copies), 1)
+
+        stored = store.storage['v']
+        self.assertEqual(list(stored.keys()), [0, 1, 2, 3, 4])
+        for t, v in stored.items():
+            self.assertIsInstance(v, np.ndarray)
+            np.testing.assert_array_equal(v, np.full(1000, 10 + t, dtype=np.float32))
+
+    @cpu_and_gpu
     def test_data_store_per_input_downsampling(self, target_device_idx, xp):
         store = DataStore(
             store_dir=self.tmp_dir,
