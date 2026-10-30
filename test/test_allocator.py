@@ -41,6 +41,14 @@ from iteras.base_processing_obj import BaseProcessingObj
 from iteras.base_data_obj import BaseDataObj
 from iteras.base_value import BaseValue
 from iteras.connections import InputValue
+from iteras.processing_objects.data_store import DataStore
+
+
+class CpuStore(DataStore):
+    # A DataStore that must run on the CPU
+    @classmethod
+    def runs_on_cpu_only(cls):
+        return True
 
 
 class Table(BaseDataObj):
@@ -114,7 +122,7 @@ class AllocatorTestCase(unittest.TestCase):
         with open(os.path.join(pkg, '__init__.py'), 'w') as f:
             f.write(textwrap.dedent(OBJECTS))
         for name, klass in [('gen', 'Gen'), ('work', 'Work'), ('table', 'Table'),
-                            ('split_work', 'SplitWork')]:
+                            ('split_work', 'SplitWork'), ('cpu_store', 'CpuStore')]:
             with open(os.path.join(pkg, f'{name}.py'), 'w') as f:
                 f.write(f'from alloc_objs import {klass}\n')
         sys.path.insert(0, root)
@@ -132,7 +140,7 @@ class AllocatorTestCase(unittest.TestCase):
             'work2': {'class': 'Work', 'size': 1000, 'table_ref': 'table',
                       'inputs': {'in_value': 'gen.out_value'}},
             'last': {'class': 'Work', 'size': 1000, 'inputs': {'in_value': 'work1.out_value'}},
-            'store': {'class': 'DataStore', 'store_dir': os.path.join(root, 'store'),
+            'store': {'class': 'CpuStore', 'store_dir': os.path.join(root, 'store'),
                       'create_tn': False,
                       'inputs': {'input_list': ['a-last.out_value', 'b-work2.out_value:-1']}},
         }
@@ -170,8 +178,10 @@ class TestClassFlags(unittest.TestCase):
         self.assertFalse(BaseProcessingObj.is_schedule_barrier())
 
     def test_flagged_classes(self):
-        for klass in (DataStore, DataPrint, DisplayServer, InteractiveInput):
+        for klass in (DataPrint, DisplayServer, InteractiveInput):
             self.assertTrue(klass.runs_on_cpu_only(), klass)
+        # DataStore copies GPU data asynchronously when it is on the GPU of its inputs
+        self.assertFalse(DataStore.runs_on_cpu_only())
         for klass in (DisplayServer, InteractiveInput):
             self.assertTrue(klass.runs_on_main_process_only(), klass)
             self.assertTrue(klass.is_schedule_barrier(), klass)
@@ -468,7 +478,8 @@ class TestSolver(AllocatorTestCase):
                 if s.kind == 'cpu' and not cpu and not g.cls(name).runs_on_cpu_only():
                     continue
                 c = cost(gpu_ms=0 if s.kind == 'cpu' else gpu_ms, mem_mib=mem_mib)
-                if s.kind == 'cpu':
+                if s.kind == 'cpu' and not g.cls(name).runs_on_cpu_only():
+                    # The work of a GPU object, done by the CPU
                     c.h_trig = 20 * gpu_ms * ms
                 costs[(name, s.kind)] = c
         est = Estimator(g, m, costs, {'table': 1 * MiB}, {})
@@ -482,6 +493,21 @@ class TestSolver(AllocatorTestCase):
         self.assertEqual(m.slots[slots['store']].idx, -1)
         self.assertNotEqual(slots['work1'], slots['work2'])
         self.assertTrue(sol.evaluation.feasible)
+
+    def test_measured_copy_time_used(self):
+        '''The host time to copy an output to another GPU, when measured, replaces the estimate'''
+        from iteras.allocator.cost import Proc
+        m = machine(ngpu=2)
+        g = self.graph()
+        costs = {(n, s.kind): cost(gpu_ms=0.1) for n in g.procs for s in m.slots}
+        cpu = next(i for i, s in enumerate(m.slots) if not s.is_gpu)
+        place = {n: (Proc(0, 0), 0) for n in g.procs}
+        place['store'] = (Proc(0, 0), cpu)
+        place['work2'] = (Proc(0, 0), 1)
+        before = Estimator(g, m, costs, {'table': 1 * MiB}, {}).step_time(place)[0]
+        costs[('gen', 'gpu:test')].copy_gpu = {'out_value': 3 * ms}
+        after = Estimator(g, m, costs, {'table': 1 * MiB}, {}).step_time(place)[0]
+        self.assertGreater(after - before, 2.5 * ms)
 
     def test_memory_forces_split(self):
         m = machine(ngpu=2, gpu_gib=2.5 * 10 * MiB / GiB)
@@ -593,6 +619,39 @@ class TestSolver(AllocatorTestCase):
         a, b = split_chunk(['a', 'b', 'c', 'd'], [('b', 'c')])
         self.assertTrue({'b', 'c'} <= set(a) or {'b', 'c'} <= set(b))
         self.assertEqual(sorted(a + b), ['a', 'b', 'c', 'd'])
+
+
+class TestDeviceTolerance(AllocatorTestCase):
+
+    def check(self, gpu_ms, tolerance):
+        '''Placement kept for work1 and work2 (two objects of the same level), split on two GPUs by the search'''
+        from iteras.allocator.solver import Layout, Solution
+        m = machine(ngpu=2)
+        g = self.graph()
+        costs = {(n, s.kind): cost(gpu_ms=gpu_ms if s.is_gpu else 0) for n in g.procs for s in m.slots}
+        arch = {'nodes': [{'name': 'n', 'cpu': {'cores': 8, 'memory_gb': 100},
+                           'gpus': {'count': 2, 'memory_gb': 10, 'model': 'test'}}],
+                'device_tolerance': tolerance}
+        alloc = Allocator(Simul(self.write(self.params)), arch, plan_only=True)
+        est = Estimator(g, m, costs, {'table': 1 * MiB}, {})
+        layout = Layout(m, 'single')
+        cpu = m.nodes[0].cpu_slot
+        assign = {n: (cpu if n == 'store' else 0) for n in g.procs}
+        assign['work2'] = 1
+        split = Solution(assign, layout, est.evaluate(layout.placement(assign)))
+        chosen = alloc._prefer_one_gpu(g, m, est, split)
+        return {chosen.assign['work1'], chosen.assign['work2']}, split, chosen
+
+    def test_one_gpu_preferred_within_tolerance(self):
+        # Large tolerance: the split is not faster enough
+        used, split, chosen = self.check(gpu_ms=0.5, tolerance=10.0)
+        self.assertEqual(len(used), 1)
+        self.assertEqual(chosen.assign['store'], split.assign['store'])
+
+    def test_split_kept_when_clearly_faster(self):
+        # Long GPU work in parallel on two GPUs: the split is much faster
+        used, split, chosen = self.check(gpu_ms=20.0, tolerance=0.05)
+        self.assertIs(chosen, split)
 
 
 class TestGpuModels(AllocatorTestCase):
@@ -867,7 +926,7 @@ class TestAllocatorRun(AllocatorTestCase):
         profile = Profile(params['architecture']['allocation_file'].replace('.yml', '_profile.json'))
         kinds = {k.split('|')[1] for k in profile.entries}
         self.assertTrue(any(k.startswith('gpu:') for k in kinds))
-        self.assertIn('cpu', kinds)     # the DataStore
+        self.assertIn('cpu', kinds)     # the CpuStore
         g = self.graph()
         gpu_kind = next(k for k in kinds if k.startswith('gpu:'))
         c = profile.cost(g, 'work1', gpu_kind, iteras.global_precision)

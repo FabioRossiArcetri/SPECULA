@@ -108,10 +108,6 @@ class DataStore(BaseProcessingObj):
     def accepts_input_list(cls):
         return True
 
-    @classmethod
-    def runs_on_cpu_only(cls):
-        return True
-
     @staticmethod
     def _validate_downsample_factor(value, name):
         value = int(value)

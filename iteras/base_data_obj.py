@@ -94,9 +94,9 @@ class BaseDataObj(BaseTimeObj):
         if peer:
             _stream_wait(destobj.target_device_idx, self.target_device_idx)
 
-        # Get a list of all attributes, but skip properties
-        pp = get_properties(type(self))
-        attr_list = [attr for attr in dir(self) if attr not in pp]
+        # The arrays are attributes of the instance (dir() would also list the
+        # class attributes and the properties, and is slow: this runs at each step)
+        attr_list = list(self.__dict__)
 
         for attr in attr_list:
             self_attr = getattr(self, attr)

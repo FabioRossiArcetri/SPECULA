@@ -109,6 +109,21 @@ class Estimator:
         c = self.cost(edge.src, slot)
         return c.outputs.get(edge.out, 0.0) if c is not None else 0.0
 
+    def copy_host_ns(self, edge, src, dst):
+        '''
+        Host time to copy the output of *edge* from slot *src* to slot *dst* of
+        the same process: measured for each output by the profiler (to another
+        GPU, to the CPU), otherwise estimated from its size.
+        '''
+        c = self.cost(edge.src, src)
+        slots = self.machine.slots
+        measured = None
+        if c is not None and slots[src].is_gpu:
+            measured = (c.copy_gpu if slots[dst].is_gpu else c.copy_cpu).get(edge.out)
+        if measured is not None:
+            return measured
+        return self.machine.copy_ns(src, dst, self.out_bytes(edge, src))
+
     def mpi_bytes(self, edge, slot):
         '''Bytes of the output of *edge*, sent by MPI'''
         c = self.cost(edge.src, slot)
@@ -255,6 +270,7 @@ class Estimator:
                 for p, names in by_proc.items():
                     t = host[p]
                     msg_ns = m.nodes[p.node].links['mpi_message_us'] * 1e3
+                    gpu_ready = defaultdict(float)  # name -> time when its inputs from other GPUs are there
                     # 1. inputs
                     for name in names:
                         s = placement[name][1]
@@ -269,9 +285,14 @@ class Estimator:
                                 t = self._delivery(sent[(e, ks)], t, ps, ss, s, prev_events)
                                 events[p].append((t0, t))
                                 t += m.host_gpu_ns(s, self.mpi_bytes(e, ss)) + msg_ns
+                            elif ss != s and slots[ss].is_gpu and slots[s].is_gpu:
+                                # Ordered on the GPUs: the host does not wait for the producer
+                                t += self.copy_host_ns(e, ss, s)
+                                gpu_ready[name] = max(gpu_ready[name], done.get((e.src, ks), 0.0)
+                                                      + m.copy_ns(ss, s, self.out_bytes(e, ss)))
                             elif ss != s:
                                 t = max(t, done.get((e.src, ks), 0.0))
-                                t += m.copy_ns(ss, s, self.out_bytes(e, ss))
+                                t += self.copy_host_ns(e, ss, s)
                             # the parts on other devices copy the input
                             for d in set(used[name]) - {s}:
                                 t += m.copy_ns(s, d, self.out_bytes(e, ss))
@@ -285,7 +306,7 @@ class Estimator:
                         if slots[s].is_gpu:
                             end = 0.0
                             for d in parts:
-                                start = max(t, stream[d])
+                                start = max(t, stream[d], gpu_ready[name])
                                 stream[d] = start + c.g / len(parts)
                                 end = max(end, stream[d])
                             done[(name, k)] = end

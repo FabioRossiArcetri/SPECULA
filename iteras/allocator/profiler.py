@@ -18,6 +18,7 @@ import gc
 import os
 import json
 import math
+import time
 from copy import deepcopy
 from dataclasses import dataclass, field, asdict
 
@@ -34,7 +35,7 @@ from iteras.log import get_iteras_logger
 
 logger = get_iteras_logger(__name__)
 
-PROFILE_VERSION = 3
+PROFILE_VERSION = 4
 HOST_PHASES = ('inputs', 'prepare_trigger', 'trigger', 'post_trigger', 'send_outputs')
 
 
@@ -55,6 +56,8 @@ class Cost:
     mem: float = 0.0        # memory not shared with other objects
     outputs: dict = field(default_factory=dict)    # output name -> bytes (all its arrays)
     mpi_outputs: dict = field(default_factory=dict)    # output name -> bytes sent by MPI
+    copy_gpu: dict = field(default_factory=dict)    # output name -> host ns to copy it to another GPU
+    copy_cpu: dict = field(default_factory=dict)    # output name -> host ns to copy it to the CPU
     measured: bool = True   # False if derived from another device kind
 
     @property
@@ -236,6 +239,42 @@ def run_once(simul_cls, params, graph, devices, workdir, steps, warmup, sync, ta
     return sim, totals, triggers, loop_ns / max(n_iter, 1), max(n_iter, 1)
 
 
+def _transfer_times(obj, dev, repeat=15):
+    '''
+    Host time (ns) to copy each output of *obj*, on GPU *dev*, to another GPU
+    (if there is one) and to the CPU, as InputValue.get() copies an input from
+    another device at each step.
+    '''
+    from iteras.base_data_obj import BaseDataObj
+    cp = iteras.cp
+    ngpu = cp.cuda.runtime.getDeviceCount()
+    to_gpu, to_cpu = {}, {}
+    targets = [(to_cpu, -1)] + ([(to_gpu, (dev + 1) % ngpu)] if ngpu > 1 else [])
+    for name, value in obj.outputs.items():
+        items = value if isinstance(value, list) else [value]
+        if not items or not all(isinstance(i, BaseDataObj) for i in items):
+            continue
+        for table, target in targets:
+            try:
+                with cp.cuda.Device(target if target >= 0 else dev):
+                    clones = [i.copyTo(target) for i in items]
+                    times = []
+                    for n in range(repeat + 2):
+                        t0 = time.perf_counter()
+                        for i, clone in zip(items, clones):
+                            i.transferDataTo(clone)
+                        if n >= 2:
+                            times.append(time.perf_counter() - t0)
+                    cp.cuda.Device(dev).synchronize()
+                    cp.cuda.Device().synchronize()
+                table[name] = float(np.median(times) * 1e9)
+            except Exception as e:
+                logger.debug(f'Allocator: copy of {obj.name}.{name} to device {target} not measured: {e}')
+            finally:
+                clones = None
+    return to_gpu, to_cpu
+
+
 def _mpi_bytes(value, default):
     '''Bytes sent by MPI for an output: the get_value() of each data object'''
     total = 0
@@ -385,6 +424,8 @@ def _measure(sim, graph, devices, totals, triggers, n_iter, checksums, gpu_model
         prefix = 'g' if dev >= 0 else 'h'
         blocks[name] = {k: v for k, v in b.items() if k[0] == prefix}
         c._used = obj.gpu_bytes_used if dev >= 0 else 0
+        if dev >= 0:
+            c.copy_gpu, c.copy_cpu = _transfer_times(obj, dev)
         if dev >= 0 and getattr(obj, 'cuda_graph', None) is not None:
             c.graph = True
             c.syncs = 'post'        # BaseProcessingObj.post_trigger() waits for the graph

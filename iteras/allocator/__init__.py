@@ -30,7 +30,7 @@ from .model import SimGraph, _hash
 from .machine import Machine, GiB
 from .profiler import Profile, profile_run, OutOfDeviceMemory, split_chunk
 from .cost import Estimator, Proc
-from .solver import Solver, Layout, Infeasible, build_groups
+from .solver import Solver, Layout, Infeasible, Solution, build_groups
 
 META_PREFIX = '# meta: '
 
@@ -283,6 +283,45 @@ class Allocator:
                 best = sol
         if best is None:
             raise Infeasible('No layout fits in memory')
+        return self._prefer_one_gpu(graph, machine, est, best)
+
+    def _prefer_one_gpu(self, graph, machine, est, best):
+        '''
+        The placement of all the objects on one GPU of the first node, except those
+        that must run elsewhere, if it is feasible and its estimated time per step
+        is within device_tolerance of that of *best*; otherwise *best*.
+        '''
+        node = machine.nodes[0]
+        if len(node.gpu_slots) < 2 or len(set(best.assign.values()) & set(machine.gpu_slots())) < 2:
+            return best
+        layout = Layout(machine, 'single')
+        try:
+            pins = self._pins(graph, machine, layout)
+        except ValueError:
+            return best
+        candidates = []
+        for gpu in node.gpu_slots:
+            assign = {}
+            for name in graph.procs:
+                if name in pins:
+                    assign[name] = pins[name]
+                elif graph.cls(name).runs_on_cpu_only():
+                    assign[name] = node.cpu_slot
+                elif not graph.device_settable[name]:
+                    assign[name] = best.assign[name]
+                else:
+                    assign[name] = gpu
+            evaluation = est.evaluate(layout.placement(assign))
+            if evaluation.feasible:
+                candidates.append(Solution(assign, layout, evaluation))
+        if not candidates:
+            return best
+        one = min(candidates, key=lambda s: s.evaluation.step_ns)
+        if one.evaluation.step_ns <= (1 + self.arch.device_tolerance) * best.evaluation.step_ns:
+            self.logger.info(f'Allocator: all objects on one GPU, {one.evaluation.step_ns / 1e6:.2f} ms '
+                             f'per step, preferred to {best.evaluation.step_ns / 1e6:.2f} ms '
+                             f'(device_tolerance {self.arch.device_tolerance})')
+            return one
         return best
 
     def _policies(self, machine):
