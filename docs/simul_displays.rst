@@ -44,7 +44,8 @@ Displays for scalar values, vectors, and temporal evolution of quantities.
 
 * ``PlotDisplay`` - Scalar or curve plotting
 * ``PlotVectorDisplay`` - Vector and time-history visualization
-* ``ModesDisplay`` - Modal coefficient plotting
+* ``VectorValuesDisplay`` - Current values of a vector, as a function of their index (input ``value``)
+* ``ModesDisplay`` - Modal coefficient plotting: a ``VectorValuesDisplay`` with the input ``modes``
 
 Typical applications include:
 
