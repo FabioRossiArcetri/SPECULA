@@ -75,14 +75,13 @@ following steps:
   (``Integrator``, ``LowPassFilter``, ``DynamicIirFilter``,
   ``DynamicIntegrator``: a new gain captures the graph again), ``BaseSlicer``,
   ``LinearCombination``, ``PyrSlopec`` (and ``DoubleRoofSlopec``),
-  ``Modalrec``, ``ModalAnalysis``, ``PSF``; ``BaseOperation`` once its delayed
+  ``Modalrec``, ``ModalAnalysis``, ``PSF``, ``PsfCoronagraph``; ``BaseOperation`` once its delayed
   inputs have been produced; ``DM`` without force limitation; ``CCD`` when it
   reads out at every step, after its start time;
 * the others are not accelerated, for example the other generators
   (``TimeHistoryGenerator``, ``ScheduleGenerator``, ``RandomGenerator``,
   ``PushPullGenerator``...) and ``ModalrecImplicitPolc``, which choose on the
-  host what to compute at each step; ``PsfCoronagraph``, which logs a value read
-  from the GPU in its ``trigger_code()``; ``DataStore`` (it copies its inputs to
+  host what to compute at each step; ``DataStore`` (it copies its inputs to
   the host, without waiting for the GPU: they are stored at the next step); and
   the objects on the CPU.
 

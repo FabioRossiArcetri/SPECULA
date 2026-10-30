@@ -270,13 +270,13 @@ class TestAccelerator(unittest.TestCase):
                       reasons['TripleDoubler'])
 
     def test_classes_redefining_trigger_code_declare_can_accelerate(self):
-        # PsfCoronagraph redefines the trigger_code() of PSF, and says why it is not accelerated
+        # PsfCoronagraph redefines the trigger_code() of PSF, and declares can_accelerate() itself
         from iteras.accelerator import _can_accelerate_covers_trigger_code
         from specula.processing_objects.psf import PSF
         from specula.processing_objects.psf_coronagraph import PsfCoronagraph
         self.assertTrue(_can_accelerate_covers_trigger_code(PSF))
         self.assertTrue(_can_accelerate_covers_trigger_code(PsfCoronagraph))
-        self.assertIsInstance(PsfCoronagraph.can_accelerate(None), str)
+        self.assertIn('can_accelerate', vars(PsfCoronagraph))
 
     def test_excluded_object(self):
         (_, dbl, _), accelerator = self.check_same(accel_kwargs={'options': AcceleratorOptions(exclude=['Doubler'])})
