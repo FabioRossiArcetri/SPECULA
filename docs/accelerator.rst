@@ -180,28 +180,28 @@ the :doc:`allocator <allocator>` (one process):
      - 1.21
      - 11 of 13
    * - SCAO pyramid (``scao``)
-     - 2.84
-     - 1.28
-     - 3.12
-     - 1.46
+     - 2.79
+     - 1.02
+     - 2.91
+     - 1.20
      - 11 of 13
    * - space8m
-     - 3.14
-     - 1.46
-     - 3.48
-     - 1.47
+     - 2.81
+     - 1.17
+     - 2.93
+     - 1.34
      - 9 of 12
    * - SOUL
-     - 3.26
-     - 1.59
-     - 3.83
-     - 1.62
+     - 3.16
+     - 1.58
+     - 3.61
+     - 1.31
      - 13 of 14
    * - ANDES
      - 33.3
      - 32.9
-     - 33.4
-     - 30.3
+     - 33.3
+     - 31.5
      - 14 of 19
    * - MORFEO (full)
      - 63.9
@@ -210,10 +210,15 @@ the :doc:`allocator <allocator>` (one process):
      - 37.3
      - 47 of 63
 
-The small simulations, whose time is set by the host, run about two times
-faster, close to the time of their GPU work; the large ones, set by the GPUs,
-gain little from the accelerator alone (MORFEO gains from the placement on two
-GPUs).
+The small simulations, whose time is set by the host, run two to two and a
+half times faster, close to the time of their GPU work; the large ones, set by
+the GPUs, gain little from the accelerator alone (MORFEO gains from the
+placement on two GPUs). Detector noise is the main host work left in the small
+simulations: a ``CCD`` with noise is not accelerated (space8m runs at 0.70 ms
+per step accelerated with the noise off, 1.17 ms with it). The "allocated"
+columns use the placement chosen by the allocator for each mode; without the
+accelerator, it is slower than one GPU on the small simulations (see
+:doc:`allocator`).
 
 Accuracy: with the noise of the detectors off, the outputs of the accelerated runs
 (slopes, commands, residual fields, Strehl ratios over 100 steps) agree with
