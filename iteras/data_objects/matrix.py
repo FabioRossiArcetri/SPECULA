@@ -5,8 +5,9 @@ from iteras.lib import storage
 
 
 # Names of the matrix in the npz, npy and HDF5 files: SPECULA saved its
-# reconstruction matrices (Recmat) as 'recmat' before Recmat derived from Matrix
-_ARRAY_NAMES = ('matrix', 'recmat')
+# reconstruction and interaction matrices (Recmat, Intmat) as 'recmat' and
+# 'intmat' before they derived from Matrix
+_ARRAY_NAMES = ('matrix', 'recmat', 'intmat')
 
 
 def matrix_array_name(reader):

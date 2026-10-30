@@ -47,7 +47,7 @@ Available Data Objects
    * :class:`~specula.data_objects.gaussian_convolution_kernel.GaussianConvolutionKernel` - Gaussian PSF kernels
    * :class:`~iteras.data_objects.iir_filter_data.IirFilterData` - Digital filter coefficients
    * :class:`~iteras.data_objects.time_history.TimeHistory` - Temporal data sequences
-   * :class:`~iteras.data_objects.matrix.Matrix` - Generic matrices, applied by MVM (``Recmat`` derives from it)
+   * :class:`~iteras.data_objects.matrix.Matrix` - Generic matrices, applied by MVM (``Recmat`` and ``Intmat`` derive from it)
 
 **Specialized Components**
    * :class:`~specula.data_objects.laser_launch_telescope.LaserLaunchTelescope` - Laser guide star launcher geometry

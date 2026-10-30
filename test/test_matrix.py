@@ -131,5 +131,68 @@ class TestRecmatIsAMatrix(unittest.TestCase):
                 np.testing.assert_array_equal(cpuArray(restored.matrix), self.data)
 
 
+class TestIntmatIsAMatrix(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.data = np.arange(6, dtype=np.float32).reshape(3, 2)   # [slopes, modes]
+
+    def test_intmat_attribute_is_the_matrix(self):
+        from specula.data_objects.intmat import Intmat
+        im = Intmat(self.data, target_device_idx=-1)
+        self.assertIsInstance(im, Matrix)
+        self.assertIs(im.intmat, im.matrix)
+        self.assertEqual((im.nslopes, im.nmodes), (3, 2))
+        im.set_nmodes(4)
+        self.assertEqual(im.matrix.shape, (3, 4))
+        self.assertNotIn('intmat', vars(im))
+        # Empty interaction matrix of a given size
+        self.assertEqual(Intmat(nmodes=2, nslopes=5, target_device_idx=-1).matrix.shape, (5, 2))
+
+    def test_fits_layout_unchanged(self):
+        from astropy.io import fits
+        from specula.data_objects.intmat import Intmat
+        path = os.path.join(self.tmp.name, 'im.fits')
+        Intmat(self.data, pupdata_tag='pup', target_device_idx=-1).save(path)
+        with fits.open(path) as hdul:
+            self.assertIsNone(hdul[0].data)
+            np.testing.assert_array_equal(hdul[1].data, self.data)
+            self.assertEqual(hdul[0].header['PUP_TAG'], 'pup')
+
+    def test_intmat_files_read_as_matrix(self):
+        from specula.data_objects.intmat import Intmat
+        im = Intmat(self.data, pupdata_tag='pup', target_device_idx=-1)
+        for data_format in FORMATS:
+            with self.subTest(data_format=data_format):
+                path = os.path.join(self.tmp.name, 'im' + storage.EXTENSIONS[data_format])
+                im.save(path)
+                np.testing.assert_array_equal(cpuArray(Matrix.restore(path, target_device_idx=-1).matrix),
+                                              self.data)
+                restored = Intmat.restore(path, target_device_idx=-1)
+                self.assertIs(type(restored), Intmat)
+                self.assertEqual(restored.pupdata_tag, 'pup')
+
+    def test_intmat_files_of_previous_versions(self):
+        '''The matrix was named 'intmat' in the npz, npy and HDF5 files'''
+        from specula.data_objects.intmat import Intmat
+        for data_format in ('npz', 'npy', 'hdf5'):
+            with self.subTest(data_format=data_format):
+                path = os.path.join(self.tmp.name, 'old' + storage.EXTENSIONS[data_format])
+                storage.write_object(path, {'VERSION': 1}, {'intmat': self.data})
+                for klass in (Intmat, Matrix):
+                    np.testing.assert_array_equal(
+                        cpuArray(klass.restore(path, target_device_idx=-1).matrix), self.data)
+
+    def test_soft_limiter_takes_an_intmat(self):
+        '''The reprojector of SoftLimiter is an interaction matrix'''
+        from specula.data_objects.intmat import Intmat
+        from iteras.processing_objects.soft_limiter import SoftLimiter
+        estimator = Matrix(self.data.T, target_device_idx=-1)               # (modes, slopes)
+        limiter = SoftLimiter(matrix_list=[estimator, Intmat(self.data, target_device_idx=-1)],
+                              target_device_idx=-1)
+        np.testing.assert_array_equal(cpuArray(limiter.reprojector), self.data)
+
+
 if __name__ == '__main__':
     unittest.main()
