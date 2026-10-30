@@ -71,16 +71,27 @@ following steps:
   ``ShSlopec``, follow these rules already: they are accelerated by default (their
   own graph is released and replaced by the accelerator's one);
 * other classes declare it after checking their ``trigger_code()``:
-  ``WaveGenerator``, ``IirFilter`` and ``Integrator``, ``BaseSlicer``,
-  ``LinearCombination``, ``PyrSlopec``, ``Modalrec``, ``ModalAnalysis``,
-  ``PSF``;
-  ``BaseOperation`` once its delayed inputs have been produced; ``DM`` without
-  force limitation; ``CCD`` when it reads out at every step, after its start
-  time;
-* the others are not accelerated, for example ``PushPullGenerator`` and
-  ``ModalrecImplicitPolc`` (they choose on the host what to compute at each
-  step), ``DataStore`` (it copies its inputs to the host, without waiting for
-  the GPU: they are stored at the next step), and the objects on the CPU.
+  ``WaveGenerator`` (the only generator), ``IirFilter`` and its derived classes
+  (``Integrator``, ``LowPassFilter``, ``DynamicIirFilter``,
+  ``DynamicIntegrator``: a new gain captures the graph again), ``BaseSlicer``,
+  ``LinearCombination``, ``PyrSlopec`` (and ``DoubleRoofSlopec``),
+  ``Modalrec``, ``ModalAnalysis``, ``PSF``; ``BaseOperation`` once its delayed
+  inputs have been produced; ``DM`` without force limitation; ``CCD`` when it
+  reads out at every step, after its start time;
+* the others are not accelerated, for example the other generators
+  (``TimeHistoryGenerator``, ``ScheduleGenerator``, ``RandomGenerator``,
+  ``PushPullGenerator``...) and ``ModalrecImplicitPolc``, which choose on the
+  host what to compute at each step; ``PsfCoronagraph``, which logs a value read
+  from the GPU in its ``trigger_code()``; ``DataStore`` (it copies its inputs to
+  the host, without waiting for the GPU: they are stored at the next step); and
+  the objects on the CPU.
+
+A derived class inherits ``can_accelerate()``. If it redefines
+``trigger_code()``, the declaration of its base class does not cover the new
+code: it is not accelerated unless it declares ``can_accelerate()`` itself
+(the accelerator checks this, and reports it). A derived class that changes
+code called by ``trigger_code()`` (like ``compute_slopes()`` of the slope
+computers) must also declare it again.
 
 Objects that read GPU values on the host at each step make the host wait for
 all the GPU work queued before. ``PSF`` logs the Strehl ratio of each step one
@@ -88,6 +99,30 @@ step later, from a copy made without waiting.
 
 At the end of the run, the accelerator logs a table of the objects with their
 status (``accelerated``, or why not), also written to ``report_file`` if given.
+
+Accelerator and the CUDA graphs of the objects
+----------------------------------------------
+
+Some objects capture their own CUDA graph without the accelerator (they call
+``build_stream()`` in ``setup()``: the atmosphere, the propagation, the
+wavefront sensors...). The two coexist, object by object:
+
+* without the accelerator, nothing changes: these objects launch their own graph
+  on their own stream and ``post_trigger()`` waits for it, the other objects
+  run their ``trigger_code()`` as Python code;
+* with the accelerator, an accelerated object does not use its own graph: it is
+  released at its first trigger, and the accelerator captures the graph of the
+  object instead (by the same rules), launched on the own stream of the object
+  if it has one. Since the graph is the same code, objects with their own graph
+  are accelerated by default; the accelerator adds the graphs of the other
+  objects, and removes the waits of the host;
+* an object that is not accelerated, or not anymore (failed capture, array
+  reallocated), runs as without accelerator: an object with its own graph
+  captures it again and uses it.
+
+In the code, ``BaseProcessingObj.trigger()`` runs the step in one of these
+three ways: through the accelerator (``GraphRunner.trigger()``), with the own
+graph of the object, or as Python code.
 
 Safety checks
 -------------

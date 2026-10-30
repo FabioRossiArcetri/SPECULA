@@ -143,6 +143,8 @@ Methods to override
        ``specula.lib.graph_matmul.matmul()``. Otherwise return ``False``, or a
        string saying why (it is called again at the next trigger). Default:
        ``True`` for objects that build their own CUDA graph, ``False`` otherwise.
+       A derived class that redefines ``trigger_code()`` is not accelerated
+       unless it declares ``can_accelerate()`` itself.
 
 Hooks called by Simul
 ~~~~~~~~~~~~~~~~~~~~~
