@@ -168,50 +168,52 @@ the :doc:`allocator <allocator>` (one process):
    :widths: 22 13 13 13 13 26
 
    * - Simulation
-     - normal
+     - normal (ms)
      - accelerated
      - allocated
      - allocated, accelerated
      - accelerated objects
    * - SCAO SH (``scao``)
-     - 2.29 ms
-     - 1.76 ms
-     - 2.27 ms
-     - 1.51 ms
-     - 10 of 13
+     - 2.09
+     - 1.07
+     - 2.32
+     - 1.21
+     - 11 of 13
    * - SCAO pyramid (``scao``)
-     - 3.20 ms
-     - 2.35 ms
-     - 3.01 ms
-     - 1.95 ms
-     - 10 of 13
+     - 2.84
+     - 1.28
+     - 3.12
+     - 1.46
+     - 11 of 13
    * - space8m
-     - 3.19 ms
-     - 2.76 ms
-     - 3.54 ms
-     - 2.49 ms
-     - 6 of 12
+     - 3.14
+     - 1.46
+     - 3.48
+     - 1.47
+     - 9 of 12
    * - SOUL
-     - 3.56 ms
-     - 2.61 ms
-     - 3.76 ms
-     - 2.19 ms
-     - 12 of 14
+     - 3.26
+     - 1.59
+     - 3.83
+     - 1.62
+     - 13 of 14
    * - ANDES
-     - 35.0 ms
-     - 34.2 ms
-     - 33.3 ms
-     - 30.4 ms
-     - 13 of 19
+     - 33.3
+     - 32.9
+     - 33.4
+     - 30.3
+     - 14 of 19
    * - MORFEO (full)
-     - 64.1 ms
-     - 64.1 ms
-     - 40.9 ms
-     - 38.6 ms
-     - 46 of 63
+     - 63.9
+     - 62.4
+     - 38.5
+     - 37.3
+     - 47 of 63
 
-The small simulations, whose time is set by the host, run 1.3 to 1.6 times
-faster; the large ones, set by the GPUs, gain little from the accelerator alone.
+The small simulations, whose time is set by the host, run about two times
+faster, close to the time of their GPU work; the large ones, set by the GPUs,
+gain little from the accelerator alone (MORFEO gains from the placement on two
+GPUs).
 
 Accuracy: with the noise of the detectors off, the outputs of the accelerated runs
 (slopes, commands, residual fields, Strehl ratios over 100 steps) agree with
