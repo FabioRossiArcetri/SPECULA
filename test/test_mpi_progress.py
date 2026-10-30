@@ -27,6 +27,15 @@ except ImportError:
     MPI_AVAILABLE = False
 
 
+def mpirun_is_open_mpi():
+    '''True if the mpirun used by the tests is the one of Open MPI'''
+    try:
+        out = subprocess.run(['mpirun', '--version'], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return 'Open MPI' in out.stdout + out.stderr
+
+
 class FakeRequest:
     '''Completes after *n* calls to Test()'''
     def __init__(self, n):
@@ -254,7 +263,11 @@ class TestMpiProgressTwoRanks(unittest.TestCase):
 
     def test_send_moves_while_the_sender_waits_for_the_gpu(self):
         # Over TCP (Open MPI), the sender must push the data of a large message:
-        # it does so while it polls its (simulated) GPU
+        # it does so while it polls its (simulated) GPU. Other MPI implementations
+        # ignore the OMPI_MCA_* variables and move the data with other transports
+        # and progress rules: the time of arrival does not test the polling there.
+        if not mpirun_is_open_mpi():
+            self.skipTest('needs Open MPI (TCP transport selected with OMPI_MCA_* variables)')
         out = self.mpirun(STALL_SCRIPT, env={'OMPI_MCA_btl': 'self,tcp', 'OMPI_MCA_pml': 'ob1'})
         received = float(out.split('RECEIVED')[1].split()[0])
         self.assertLess(received, 0.35)

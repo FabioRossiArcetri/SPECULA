@@ -868,10 +868,14 @@ class TestAllocatorRun(AllocatorTestCase):
         Simul(path, speed_report=False, reallocate=True).run()
 
     def test_fewest_nodes(self):
-        # Three identical nodes: the small simulation is fastest on one, without messages
+        # Three identical nodes: the simulation is fastest on one, without messages.
+        # The links between nodes are very slow, so that this does not depend on the
+        # speed of the computer running the test (on a slow one, the objects of the
+        # same level could gain more from running in parallel than the messages cost)
         params = json.loads(json.dumps(self.params))
         params['architecture'] = self.arch(
-            mode='plan', nodes=[{'name': 'cpu', 'count': 3, 'cpu': {'cores': 4, 'memory_gb': 4}}])
+            mode='plan', nodes=[{'name': 'cpu', 'count': 3, 'cpu': {'cores': 4, 'memory_gb': 4}}],
+            inter_node={'bandwidth_gb_s': 0.001, 'latency_us': 1e6})
         simul = Simul(self.write(params), speed_report=False)
         simul.run()
         self.assertEqual(simul.allocation['n_nodes'], 1)
