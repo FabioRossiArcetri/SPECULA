@@ -868,20 +868,22 @@ class TestAllocatorRun(AllocatorTestCase):
         Simul(path, speed_report=False, reallocate=True).run()
 
     def test_fewest_nodes(self):
-        # Three identical nodes: the simulation is fastest on one, without messages.
-        # The links between nodes are very slow, so that this does not depend on the
-        # speed of the computer running the test (on a slow one, the objects of the
-        # same level could gain more from running in parallel than the messages cost)
+        # Three identical nodes: the placement is searched on 1, 2 and 3 nodes, and
+        # the one on the fewest nodes within node_tolerance of the fastest is kept.
+        # Which number of nodes is the fastest depends on the speed of the computer
+        # running the test (on a slow one, work1 and work2 gain from running in
+        # parallel on two nodes, and the latency of the links does not limit a
+        # pipeline): with a large tolerance, the fewest nodes are kept anyway.
         params = json.loads(json.dumps(self.params))
         params['architecture'] = self.arch(
             mode='plan', nodes=[{'name': 'cpu', 'count': 3, 'cpu': {'cores': 4, 'memory_gb': 4}}],
-            inter_node={'bandwidth_gb_s': 0.001, 'latency_us': 1e6})
+            node_tolerance=10.0)
         simul = Simul(self.write(params), speed_report=False)
         simul.run()
         self.assertEqual(simul.allocation['n_nodes'], 1)
         with open(params['architecture']['allocation_file'].replace('.yml', '_report.txt')) as f:
             report = f.read()
-        self.assertIn('with the first k nodes: 1:', report)
+        self.assertRegex(report, r'with the first k nodes: 1: .*, 2: .*, 3: ')
 
     def test_allocate_without_architecture(self):
         with self.assertRaises(ValueError):
