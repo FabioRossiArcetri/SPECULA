@@ -152,8 +152,10 @@ class BaseProcessingObj(BaseTimeObj):
 
     def post_trigger(self):
         '''
-        Make sure we are using the correct device and that any previous
-        CUDA graph has been synchronized
+        Make sure we are using the correct device and that the GPU work of
+        trigger() is ordered before what follows: the host waits for the own
+        CUDA graph of the object; when accelerated, the order is kept on the GPU
+        and the host does not wait.
         '''
         # Double check that we can execute
         if not self.inputs_changed:
@@ -387,6 +389,15 @@ class BaseProcessingObj(BaseTimeObj):
         return self.inputs_changed
 
     def trigger(self):
+        '''
+        The computation of the step, in one of three ways:
+
+        * accelerated (see iteras.accelerator): the accelerator runs trigger_code()
+          or launches the CUDA graph it captured for it;
+        * with the own CUDA graph of the object (see build_stream()): capture it
+          if needed, otherwise launch it;
+        * otherwise, trigger_code() as Python code.
+        '''
         # Double check that we can execute
         if not self.inputs_changed:
             raise RuntimeError("trigger() called when the object's inputs have not changed")
@@ -394,21 +405,23 @@ class BaseProcessingObj(BaseTimeObj):
         if self.target_device_idx >= 0:
             self._target_device.use()
         if self._accel is not None:
-            with tracer.no_record(), tracer('cuda_graph', self) if self._accel.graph is not None \
-                    else contextlib.nullcontext():
-                self._accel.trigger()
-        elif self.target_device_idx >= 0 and self._cuda_graph_invalid:
+            self._accel.trigger()
+        elif self.target_device_idx >= 0 and (self._cuda_graph_invalid or self.cuda_graph):
+            self._trigger_own_graph()
+        else:
+            self.trigger_code()
+
+    def _trigger_own_graph(self):
+        if self._cuda_graph_invalid:
             # Capture the graph. The warm-up run in capture_stream() computes
             # the results of this step, so the new graph is not launched.
             self.logger.debug('Capturing the CUDA graph')
             self.capture_stream()
-        elif self.target_device_idx >= 0 and self.cuda_graph:
+        else:
             self.check_input_ptrs()
             # NVTX range only, to mark the graph kernels in Nsight Systems
             with tracer.no_record(), tracer('cuda_graph', self):
                 self.cuda_graph.launch(stream=self.stream)
-        else:
-            self.trigger_code()
 
     def setup(self):
         """

@@ -54,6 +54,13 @@ class Doubler(BaseProcessingObj):
             self.out.generation_time = self.current_time
 
 
+class TripleDoubler(Doubler):
+    '''Another trigger_code(), not covered by the can_accelerate() of Doubler'''
+
+    def trigger_code(self):
+        self.out.value[:] = 3 * self.buf
+
+
 class Counter(BaseProcessingObj):
     '''Counts the steps in which its input was refreshed'''
 
@@ -252,6 +259,24 @@ class TestAccelerator(unittest.TestCase):
 
         self.check_same(accel_kwargs={'on_step': on_step,
                                       'options': AcceleratorOptions(capture_after=3)})
+
+    def test_derived_trigger_code_needs_its_own_declaration(self):
+        dbl = TripleDoubler(target_device_idx=0)
+        accelerator = Accelerator(AcceleratorOptions())
+        accelerator.apply([dbl])
+        self.assertIsNone(dbl._accel)
+        reasons = {obj.name: reason for obj, _, reason in accelerator.rows}
+        self.assertIn('TripleDoubler.trigger_code() is not covered by Doubler.can_accelerate()',
+                      reasons['TripleDoubler'])
+
+    def test_classes_redefining_trigger_code_declare_can_accelerate(self):
+        # PsfCoronagraph redefines the trigger_code() of PSF, and says why it is not accelerated
+        from iteras.accelerator import _can_accelerate_covers_trigger_code
+        from specula.processing_objects.psf import PSF
+        from specula.processing_objects.psf_coronagraph import PsfCoronagraph
+        self.assertTrue(_can_accelerate_covers_trigger_code(PSF))
+        self.assertTrue(_can_accelerate_covers_trigger_code(PsfCoronagraph))
+        self.assertIsInstance(PsfCoronagraph.can_accelerate(None), str)
 
     def test_excluded_object(self):
         (_, dbl, _), accelerator = self.check_same(accel_kwargs={'options': AcceleratorOptions(exclude=['Doubler'])})

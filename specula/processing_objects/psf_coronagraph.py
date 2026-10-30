@@ -185,6 +185,9 @@ class PsfCoronagraph(PSF):
 
         return coronagraph_psf
 
+    def can_accelerate(self):
+        return 'trigger_code() logs the peak suppression, read from the GPU'
+
     def trigger_code(self):
         # Call parent trigger_code for standard PSF calculation
         super().trigger_code()

@@ -40,6 +40,7 @@ stale or freed memory. Such an object is not accelerated anymore either.
 import iteras
 from iteras.base_data_obj import BaseDataObj
 from iteras.log import get_iteras_logger
+from iteras.tracing import tracer
 
 _logger = get_iteras_logger(__name__)
 
@@ -102,11 +103,28 @@ def changed_ref(refs):
     return None
 
 
+def _owner(cls, name):
+    '''The class of the MRO of *cls* that defines *name*'''
+    return next(k for k in cls.__mro__ if name in vars(k))
+
+
+def _can_accelerate_covers_trigger_code(cls):
+    '''
+    False if trigger_code() is redefined by a class derived from the one that
+    declares can_accelerate(): the declaration was made for another
+    trigger_code(), the derived class must declare it again.
+    '''
+    from iteras.base_processing_obj import BaseProcessingObj
+    declared = _owner(cls, 'can_accelerate')
+    return declared is BaseProcessingObj or issubclass(declared, _owner(cls, 'trigger_code'))
+
+
 class GraphRunner:
     '''
-    Runs the trigger_code() of a accelerated object: as Python code for the first
-    triggers, then captured in a CUDA graph launched at each trigger.
-    Set as obj._accel by Accelerator.apply().
+    Runs the trigger_code() of an accelerated object: as Python code for the first
+    triggers (capture_after), then captured in a CUDA graph launched at each
+    trigger. Set as obj._accel by Accelerator.apply(); BaseProcessingObj.trigger()
+    calls trigger(), BaseProcessingObj.post_trigger() calls after_trigger().
     '''
 
     def __init__(self, obj, options):
@@ -120,24 +138,25 @@ class GraphRunner:
         self.status = 'not captured yet'
 
     def trigger(self):
-        obj = self.obj
+        '''The computation of a step: launch the graph, or run or capture trigger_code()'''
         if self.triggers == 0:
             self.release_own_graph()
         self.triggers += 1
-        if self.graph is not None:
-            if self.options.check_pointers:
-                changed = changed_ref(self.refs)
-                if changed is not None:
-                    h, k = changed
-                    where = k if h is obj else f'{type(h).__name__}.{k}'
-                    self.detach(f'array {where} reallocated after the capture')
-                    obj.trigger()
-                    return
-            self.graph.launch(stream=self.launch_stream())
-            t = obj.current_time
-            for o in self.outputs:
-                o.generation_time = t
-            return
+        if self.graph is None:
+            self.run_or_capture()
+        elif self.arrays_unchanged():
+            self.launch()
+        else:
+            # Not accelerated anymore (see detach()): as without accelerator
+            self.obj.trigger()
+
+    def run_or_capture(self):
+        '''
+        Run trigger_code() as Python code during the first triggers, which allocate
+        the buffers and FFT plans that the graph reuses, and while the object
+        cannot be accelerated; otherwise capture the graph.
+        '''
+        obj = self.obj
         if self.triggers <= self.options.capture_after:
             obj.trigger_code()
             return
@@ -148,6 +167,30 @@ class GraphRunner:
             obj.trigger_code()
             return
         self.capture()
+
+    def arrays_unchanged(self):
+        '''
+        True if the arrays used by the graph are still those of the capture.
+        Otherwise the object is detached (see detach()).
+        '''
+        if not self.options.check_pointers:
+            return True
+        changed = changed_ref(self.refs)
+        if changed is None:
+            return True
+        holder, attr = changed
+        where = attr if holder is self.obj else f'{type(holder).__name__}.{attr}'
+        self.detach(f'array {where} reallocated after the capture')
+        return False
+
+    def launch(self):
+        '''Launch the graph, and set the generation time of the outputs that trigger_code() sets'''
+        # NVTX range only, to mark the graph kernels in Nsight Systems
+        with tracer.no_record(), tracer('cuda_graph', self.obj):
+            self.graph.launch(stream=self.launch_stream())
+        t = self.obj.current_time
+        for o in self.outputs:
+            o.generation_time = t
 
     def capture(self):
         obj = self.obj
@@ -179,11 +222,12 @@ class GraphRunner:
             self.detach(f'capture failed: {type(error).__name__}: {first[:200]}')
             obj.trigger_code()
             return
-        graph.launch(stream=self.launch_stream())
         self.graph = graph
         self.pool = pool
         self.outputs = [o for o, b in zip(outputs, before) if o.generation_time == t and b != t]
         self.refs = array_refs(obj) if self.options.check_pointers else []
+        # The capture did not run the GPU work of this step
+        self.launch()
         # The graph keeps the memory of the temporary arrays of trigger_code()
         obj.gpu_bytes_used += pool.total_bytes()
         self.status = 'accelerated'
@@ -260,6 +304,9 @@ class Accelerator:
                 reason = 'excluded'
             elif type(obj).trigger is not BaseProcessingObj.trigger:
                 reason = 'its class overrides trigger()'
+            elif not _can_accelerate_covers_trigger_code(type(obj)):
+                reason = (f'{_owner(type(obj), "trigger_code").__name__}.trigger_code() is not covered '
+                          f'by {_owner(type(obj), "can_accelerate").__name__}.can_accelerate()')
             runner = None
             if reason is None:
                 runner = obj._accel = GraphRunner(obj, self.options)
