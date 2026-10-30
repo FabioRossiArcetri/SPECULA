@@ -154,7 +154,7 @@ def _profile_params(params, graph, devices, workdir, steps, warmup):
     '''Parameters of a profiling run: objects on *devices*, short run, no displays'''
     p = deepcopy(params)
     main = p[graph.main_key]
-    main['total_time'] = (warmup + steps) * main['time_step'] * (1 + 1e-9)
+    main['total_time'] = (warmup + steps) * graph.main_params['time_step'] * (1 + 1e-9)
     if 'display_server' in main:
         main['display_server'] = False
     for name, klass in graph.classes.items():

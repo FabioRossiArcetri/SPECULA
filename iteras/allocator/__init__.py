@@ -374,7 +374,7 @@ class Allocator:
         the largest "start_time" parameter (objects often start working later),
         and at least two periods of the slowest object (largest "dt") are measured.
         '''
-        dt = graph.params[graph.main_key]['time_step']
+        dt = graph.main_params['time_step']
         start, period = 0.0, 1
         for pars in graph.params.values():
             if not isinstance(pars, dict):

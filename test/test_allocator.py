@@ -255,6 +255,17 @@ class TestSimGraph(AllocatorTestCase):
         self.assertEqual(delays[('last', 'store')], 0)
         self.assertTrue(g.device_settable['gen'])
 
+    def test_main_parameters_with_defaults(self):
+        # time_step not given: the default of SimParams is used
+        params = json.loads(json.dumps(self.params))
+        del params['main']['time_step']
+        g = self.graph(params)
+        from iteras.data_objects.sim_params import SimParams
+        self.assertEqual(g.main_params['time_step'], SimParams().time_step)
+        p = profiler_module._profile_params(params, g, {n: -1 for n in g.procs}, self.root,
+                                           steps=2, warmup=1)
+        self.assertAlmostEqual(p['main']['total_time'], 3 * SimParams().time_step, places=6)
+
     def test_processing_object_reference(self):
         params = dict(self.params)
         params['last'] = dict(params['last'], partner_ref='work2')

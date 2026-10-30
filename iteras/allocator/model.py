@@ -66,6 +66,10 @@ class SimGraph:
             if simul.is_main_params(params, key):
                 self.main_key = key
 
+        # Main parameters completed with the defaults of their class (as Simul does)
+        simul.setSimulParams(params)
+        self.main_params = dict(simul.mainParams or {})
+
         order, order_idx = simul.build_trigger_order(params)
         self.procs = [name for name in order if issubclass(self.classes[name], BaseProcessingObj)]
         self.level = {name: idx for name, idx in zip(order, order_idx) if name in self.procs}
