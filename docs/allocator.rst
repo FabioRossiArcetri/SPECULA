@@ -184,11 +184,13 @@ Limitations
   large message moves only while the sender is inside MPI, and the estimate is
   less reliable. With TCP between two processes of the same computer, MORFEO ran
   about 60% slower than with single-copy shared memory.
-* Copies between devices: their host time is measured for each output, but
-  a placement on several devices can still lose against one GPU when the
-  simulation is small and host-bound (space8m: 3.54 ms against 3.19 ms on one
-  GPU), hence ``device_tolerance``. On MORFEO, the placement on two GPUs runs
-  1.57 times faster than one GPU (1.66 with the :doc:`accelerator <accelerator>`).
+* Small, host-bound simulations: without the :doc:`accelerator <accelerator>`,
+  the placements on two GPUs of SCAO, space8m and SOUL ran 10-15% slower than
+  all the objects on one GPU, although the copy times are measured and
+  ``device_tolerance`` prefers one GPU for small estimated gains: the host time
+  of these runs is not modeled accurately enough. With the accelerator, the
+  placements run as fast as one GPU. On MORFEO, the placement on two GPUs runs
+  1.66 times faster than one GPU (1.72 with the accelerator).
 * Accuracy: on a computer with two GPUs, the estimates of MORFEO for ten
   placements, with one or two processes, were within 5% of the measured times,
   except for the placements chosen by the allocator itself, which were
