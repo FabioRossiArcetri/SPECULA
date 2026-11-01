@@ -20,6 +20,7 @@
 
 ### Other
 
+- MPI: with `ITERAS_MPI_GPU_DIRECT=1`, the outputs of GPU objects are sent and received directly from and to GPU memory, without copies to the host; it needs a CUDA-aware MPI (default: off, as before). On Leonardo a 2 MiB message took 0.11 ms instead of 0.51 ms between nodes, and 0.04 ms instead of 0.58 ms between the GPUs of a node. The allocator models it with `mpi_gpu_direct: true` in the `links` of the nodes.
 - Allocator: an object split over several GPUs in the parameter files (e.g. a `DistributedSH`) and not placed by hand is only placed in a process that drives all its GPUs. With one process per GPU it was placed anyway, and ran its other slices on GPUs of other processes, a contention the estimate did not include.
 - `LowPassFilter` without `n_ord` and `amplif_fact` failed with a `TypeError`; it now uses the second-order Butterworth filter, the default of `IirFilterData.lpf_from_fc()`.
 - `IirFilterData`: `num` and `den` with a different number of columns are given the same width, adding zeros on the lowest order side. `IirFilter` aligns them on the highest order coefficient, while the analysis methods (`frequency_response()`, `RTF()`, `NTF()`, the stability methods, `to_control_tf()`) aligned them on the lowest order one, so their transfer function differed from the simulated one (e.g. `num=[0.5]`, `den=[-1, 1]`: 0.5/(z-1) instead of 0.5 z/(z-1)). The simulation does not change.
