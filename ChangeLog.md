@@ -20,6 +20,7 @@
 
 ### Other
 
+- `LoopControl`: with a run time that is not a multiple of the time step, the loop runs one iteration more than `niters()` counted, and the iteration flagged as the last one (which does not send the delayed outputs) was the one before. With MPI, the processes waiting for a delayed input in the actual last iteration waited forever. `niters()` now rounds up, as the loop does.
 - MPI: with `ITERAS_MPI_GPU_DIRECT=1`, the outputs of GPU objects are sent and received directly from and to GPU memory, without copies to the host; it needs a CUDA-aware MPI (default: off, as before). On Leonardo a 2 MiB message took 0.11 ms instead of 0.51 ms between nodes, and 0.04 ms instead of 0.58 ms between the GPUs of a node. The allocator models it with `mpi_gpu_direct: true` in the `links` of the nodes.
 - Allocator: an object split over several GPUs in the parameter files (e.g. a `DistributedSH`) and not placed by hand is only placed in a process that drives all its GPUs. With one process per GPU it was placed anyway, and ran its other slices on GPUs of other processes, a contention the estimate did not include.
 - `LowPassFilter` without `n_ord` and `amplif_fact` failed with a `TypeError`; it now uses the second-order Butterworth filter, the default of `IirFilterData.lpf_from_fc()`.
