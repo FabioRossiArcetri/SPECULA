@@ -60,12 +60,19 @@ class Conv2dNetRec(BaseModalrec):
         network that shrinks less silently raises the effective loop gain.
         Modes the network barely predicts are left uncorrected, since
         amplifying them would mostly amplify noise.
+    reload_interval : float [s], optional
+        If set, the checkpoint is read again every this many seconds of
+        simulated time: the reconstructor can then follow a Conv2dNetTrainer
+        training the same file in the same simulation, with a network that
+        stays fixed between reloads. The checkpoint must record the same
+        network.
     """
 
     def __init__(self,
                  network_filename: str,
                  baseline_offset: int = 0,
                  calibrate_gain: bool = False,
+                 reload_interval: float = None,
                  target_device_idx: int = None,
                  precision: int = None):
         if TORCH_IMPORT_ERROR is not None:
@@ -73,6 +80,12 @@ class Conv2dNetRec(BaseModalrec):
                               f'dependency: pip install torch') from TORCH_IMPORT_ERROR
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
+        if reload_interval is not None and not reload_interval > 0:
+            raise ValueError(f'reload_interval must be > 0, got {reload_interval}')
+        self.network_filename = network_filename
+        self.calibrate_gain = calibrate_gain
+        self.reload_interval = reload_interval
+        self._next_reload = reload_interval
         self.model, stats = load_trained_network(network_filename)
         self.network = network = stats['network']
         self.nmodes = nmodes = network['nmodes']
@@ -113,6 +126,32 @@ class Conv2dNetRec(BaseModalrec):
         self._stdmodes = self.to_xp(self.stdmodes, dtype=self.dtype)
         self._calibration = (None if self.calibration is None
                              else self.to_xp(self.calibration, dtype=self.dtype))
+
+    def prepare_trigger(self, t):
+        super().prepare_trigger(t)
+        if self.reload_interval is not None and self.t_to_seconds(self.current_time) >= self._next_reload:
+            self.reload()
+            while self._next_reload <= self.t_to_seconds(self.current_time):
+                self._next_reload += self.reload_interval
+
+    def reload(self):
+        '''Read the checkpoint again: new weights and statistics, same network'''
+        model, stats = load_trained_network(self.network_filename)
+        if stats['network'] != self.network:
+            raise ValueError(f'{self.network_filename} now records another network: {stats["network"]}')
+        self.model.load_state_dict(model.state_dict())
+        self.meanp = stats['meanp']
+        self.stdp = stats['stdp']
+        self.meanmodes = np.asarray(stats['meanmodes'], dtype=float)
+        self.stdmodes = np.asarray(stats['stdmodes'], dtype=float)
+        self._meanmodes[:] = self.to_xp(stats['meanmodes'], dtype=self.dtype)
+        self._stdmodes[:] = self.to_xp(stats['stdmodes'], dtype=self.dtype)
+        if self.calibrate_gain:
+            factor = calibration_factor(stats, self.nmodes)
+            if factor is None:
+                raise ValueError(f'calibrate_gain is set, but {self.network_filename} has no per-mode gain')
+            self._calibration[:] = self.to_xp(factor, dtype=self.dtype)
+        self.logger.info(f'Network reloaded from {self.network_filename} (validation FVU {stats.get("val_fvu")})')
 
     def _to_torch(self, x):
         x = self.xp.ascontiguousarray(x, dtype=self.xp.float32)

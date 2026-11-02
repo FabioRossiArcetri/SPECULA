@@ -856,6 +856,28 @@ class TestResume(unittest.TestCase):
                 torch.testing.assert_close(v, saved[k])
 
 
+@unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
+class TestSnapshots(unittest.TestCase):
+
+    def test_snapshots_at_the_interval(self):
+        with tempfile.TemporaryDirectory() as d:
+            trainer = build_trainer(d, network_name='net.pth', snapshot_interval=2.0)
+            for k in range(1, 6):    # batches at 1, 2, ..., 5 s
+                feed_batch(trainer, seed=k)
+                t = trainer.seconds_to_t(k)
+                for v in trainer.inputs.values():
+                    if v.get(-1) is not None:
+                        v.get(-1).generation_time = t
+                trainer.check_ready(t)
+                trainer.trigger()
+            names = sorted(f for f in os.listdir(d) if f.endswith('.pth'))
+            self.assertEqual(names, ['net.pth', 'net_t000002s.pth', 'net_t000004s.pth'])
+            self.assertTrue(os.path.exists(os.path.join(d, 'net_t000004s_stats.json')))
+            self.assertFalse([f for f in os.listdir(d) if f.endswith('.tmp')])
+            with self.assertRaises(ValueError):
+                build_trainer(d, snapshot_interval=0)
+
+
 def time_tagged_batch(n, offset=0, h=H, w=W, seed=0):
     """Random inputs; labels whose first trained mode (label_offset=1) is
     offset + the row's position in time, to track which rows went where."""
