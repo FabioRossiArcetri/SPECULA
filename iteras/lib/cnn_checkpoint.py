@@ -137,10 +137,17 @@ def load_weights(model, network_filename):
 
 
 def save_checkpoint(model, network_filename, stats):
+    """Write the weights and the stats. Each file is written to a temporary
+    name and then renamed, so that a reader (e.g. a Conv2dNetRec reloading the
+    network during the simulation) never sees a partly written file."""
     os.makedirs(os.path.dirname(network_filename) or '.', exist_ok=True)
-    torch.save(model.state_dict(), network_filename)
-    with open(stats_filename(network_filename), 'w') as f:
+    tmp = network_filename + '.tmp'
+    torch.save(model.state_dict(), tmp)
+    os.replace(tmp, network_filename)
+    tmp = stats_filename(network_filename) + '.tmp'
+    with open(tmp, 'w') as f:
         json.dump(stats, f, indent=2)
+    os.replace(tmp, stats_filename(network_filename))
 
 
 def load_trained_network(network_filename):

@@ -281,6 +281,50 @@ class TestConv2dNetRecInput(unittest.TestCase):
                 rec.setup()
 
 
+class TestConv2dNetRecReload(unittest.TestCase):
+
+    def _step(self, rec, slopes, t_sec):
+        t = rec.seconds_to_t(t_sec)
+        slopes.generation_time = t
+        rec.check_ready(t)
+        rec.trigger()
+        rec.post_trigger()
+        return np.asarray(rec.outputs['out_modes'].value).copy()
+
+    @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
+    def test_reload_follows_the_checkpoint(self):
+        with tempfile.TemporaryDirectory() as d:
+            net_path = os.path.join(d, 'net.pth')
+            save_checkpoint(net_path)
+            rec = Conv2dNetRec(network_filename=net_path, reload_interval=1.0, target_device_idx=-1)
+            slopes = build_slopes(target_device_idx=-1)
+            rec.inputs['in_slopes'].set(slopes)
+            rec.setup()
+            first = self._step(rec, slopes, 0.5)
+            # The checkpoint changes: new weights and a new output mean
+            torch.manual_seed(1)
+            save_checkpoint(net_path, meanmodes=[10.0] * NMODES)
+            np.testing.assert_allclose(self._step(rec, slopes, 0.9), first)   # not reloaded yet
+            reloaded = self._step(rec, slopes, 1.0)
+            self.assertFalse(np.allclose(reloaded, first))
+            expected = Conv2dNetRec(network_filename=net_path, target_device_idx=-1)
+            expected.inputs['in_slopes'].set(slopes)
+            expected.setup()
+            np.testing.assert_allclose(reloaded, self._step(expected, slopes, 1.0), rtol=1e-6)
+
+    @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")
+    def test_reload_refuses_another_network(self):
+        with tempfile.TemporaryDirectory() as d:
+            net_path = os.path.join(d, 'net.pth')
+            save_checkpoint(net_path)
+            rec = Conv2dNetRec(network_filename=net_path, reload_interval=1.0, target_device_idx=-1)
+            save_checkpoint(net_path, channels=8)
+            with self.assertRaisesRegex(ValueError, 'another network'):
+                rec.reload()
+            with self.assertRaises(ValueError):
+                Conv2dNetRec(network_filename=net_path, reload_interval=0, target_device_idx=-1)
+
+
 class TestConv2dNetRecDevice(unittest.TestCase):
 
     @unittest.skipIf(not TORCH_AVAILABLE, "torch is not installed")

@@ -238,6 +238,16 @@ class Conv2dNetTrainer(BaseProcessingObj):
         Train on all visible GPUs with torch's DataParallel instead of the
         object's GPU only. Off by default: on a GPU shared with other
         simulations it would take all of them.
+
+    Checkpoints:
+
+    snapshot_interval : float [s]
+        If set, every this many seconds of simulated time the checkpoint is
+        also copied to ``<name>_t<seconds>s.pth`` (with its stats), to keep
+        the network of each stage of a long training, e.g. for a later
+        evaluation. The checkpoint itself is saved every 10 steps; both are
+        written atomically, so a Conv2dNetRec can reload it during the
+        simulation (see its reload_interval).
     """
 
     def __init__(self,
@@ -274,6 +284,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
                  patience: int = 600,
                  mode_gain_alpha: float = 0.3,
                  data_parallel: bool = False,
+                 snapshot_interval: float = None,
                  target_device_idx: int = None,
                  precision: int = None):
         if TORCH_IMPORT_ERROR is not None:
@@ -296,6 +307,8 @@ class Conv2dNetTrainer(BaseProcessingObj):
             raise ValueError(f'val_size must be >= 1, got {val_size}')
         if n_frames < 1 or norm_loss_weight < 0:
             raise ValueError('n_frames must be >= 1 and norm_loss_weight >= 0')
+        if snapshot_interval is not None and not snapshot_interval > 0:
+            raise ValueError(f'snapshot_interval must be > 0, got {snapshot_interval}')
         if channel_product and input_channels != 1:
             raise ValueError('channel_product makes a single-channel input: it needs input_channels 1')
 
@@ -303,6 +316,8 @@ class Conv2dNetTrainer(BaseProcessingObj):
             network_filename += '.pth'
         self.network_filename = network_filename
         self.stats_filename = stats_filename(network_filename)
+        self.snapshot_interval = snapshot_interval
+        self._next_snapshot = snapshot_interval
 
         self.nmodes = nmodes
         self.input_channels = input_channels
@@ -445,8 +460,16 @@ class Conv2dNetTrainer(BaseProcessingObj):
     def _inner_model(self):
         return self.model.module if isinstance(self.model, nn.DataParallel) else self.model
 
-    def _save(self, val_loss):
-        save_checkpoint(self._inner_model(), self.network_filename, {
+    def snapshot_filename(self, seconds):
+        stem, ext = os.path.splitext(self.network_filename)
+        seconds = round(seconds, 6)
+        # Decimals only when the time is not a whole number of seconds
+        time = f'{seconds:06.0f}' if float(seconds).is_integer() else f'{seconds:09.2f}'
+        return f'{stem}_t{time}s{ext}'
+
+    def _save(self, val_loss, filename=None):
+        filename = filename or self.network_filename
+        save_checkpoint(self._inner_model(), filename, {
             'network': self.network,
             'meanp': float(self.meanp),
             'stdp': float(self.stdp),
@@ -457,7 +480,7 @@ class Conv2dNetTrainer(BaseProcessingObj):
             'val_fvu': self.val_fvu,
             'lr': self.optimizer.param_groups[0]['lr'],
         })
-        self.logger.info(f'Model saved to {self.network_filename}')
+        self.logger.info(f'Model saved to {filename}')
 
     # ------------------------------------------------------------------
     #   Data
@@ -759,6 +782,15 @@ class Conv2dNetTrainer(BaseProcessingObj):
         # loss never beats an early best step would save nothing to resume from.
         if self.step_count % 10 == 0:
             self._save(self.val_loss)
+        now = self.t_to_seconds(self.current_time)
+        if self.snapshot_interval is not None and now >= self._next_snapshot:
+            # Named after the time it stands for, a multiple of the interval
+            while self._next_snapshot + self.snapshot_interval <= now:
+                self._next_snapshot += self.snapshot_interval
+            self._save(self.val_loss)
+            self._save(self.val_loss, self.snapshot_filename(self._next_snapshot))
+            while self._next_snapshot <= now:
+                self._next_snapshot += self.snapshot_interval
 
         lr = self.optimizer.param_groups[0]['lr']
         self.logger.info(f'Step {self.step_count} | LR {lr:.2e} | Train {self.loss:.6f} | '
