@@ -1,0 +1,18 @@
+# From the CNN reconstructor study of the SOUL non-modulated pyramid
+# (repository pyr_nonlinear_rec_cnn): "log" and the scripts in the comments
+# are in that repository. Procedure and results: docs/cnn_reconstructor.rst.
+#
+# Phase A with edge bumps (log 2026-10-10): the push-pull command comes from a
+# precomputed sequence (mode sweeps interleaved with edge-bump blocks,
+# scripts/make_phaseA_bumps_history.py) instead of PushPullGenerator. On top
+# of params_soul_mod0.yml + phaseA_pushpull.yml.
+remove: ['pushpull', 'amp_schedule', 'push_scaled']
+
+bump_history:
+  class:             'TimeHistoryGenerator'
+  time_hist_object:  'cnnstudy_phaseA_bumps_80c'
+  outputs: ['output']
+
+dm_override:
+  inputs:
+    in_command:      'bump_history.output'

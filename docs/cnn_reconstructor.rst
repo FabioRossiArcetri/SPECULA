@@ -104,8 +104,9 @@ illumination pattern to sense how large the residual is. The labels are the
    measured during training, so that the integrator gains are the effective
    gains.
 
-Never point ``Conv2dNetRec`` to the file a trainer is writing: it changes
-every 10 training steps.
+Never point ``Conv2dNetRec`` to the file a trainer is writing, unless it
+reloads it at fixed intervals (``reload_interval``, see below): the file
+changes every 10 training steps.
 
 Results
 ^^^^^^^
@@ -127,6 +128,45 @@ networks trained with all magnitudes respond only 0.5-0.7 to the residual at
 magnitude 10.5.
 
 The checkpoints are not distributed with SPECULA.
+
+Training in one long simulation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The study ran each phase as a sequence of separate simulations (Phase A in 6
+parts, Phase B in runs of 20 s), changing the conditions and restarting the
+loop between them. ``phaseA_long.yml`` and ``phaseB_long.yml`` do the same in
+a single simulation, so the replay buffer and the optimizer state are never
+interrupted:
+
+.. code-block:: bash
+
+   specula params_soul_mod0.yml phaseA_pushpull.yml phaseA_bumps.yml phaseA_long.yml
+   specula params_soul_mod0.yml cnn_closed_loop.yml phaseB_train.yml phaseB_long.yml
+
+In Phase B the simulation is divided into segments (5 s in the file, the
+study's runs were 20 s). At the start of each segment:
+
+* the integrator is reset (``DynamicIntegrator`` with a periodic
+  ``ScheduleGenerator`` on its ``reset`` input) and the loop gain ramps up
+  again (the ``ramp`` schedule with a ``period``);
+* the wind direction and the mis-registration change (``PeriodicRandomGenerator``
+  with the segment as interval; the pyramid's ``in_misregistration`` input);
+* ``Conv2dNetRec`` reloads the checkpoint the trainer is writing
+  (``reload_interval``): the network that closes the loop stays fixed during
+  the segment, as the frozen copy of a run did;
+* the trainer saves a snapshot, ``<name>_t<seconds>s.pth``
+  (``snapshot_interval``), to evaluate the network of each stage later.
+
+Seeing (2 s), wind speed (3 s) and magnitude (1.7 s, a ``GreyFilter`` driven by
+a periodic schedule) change inside the segments, at periods that do not
+divide each other. The study's acceptance of a run becomes a check of the
+segments afterwards (settled Strehl ratio, limit cycle, runaways), since a
+segment that loses the loop is followed by a restart.
+
+In a 20 s test from the Phase A checkpoint, every segment kept the loop
+(settled Strehl ratio 0.87-0.91) and the validation FVU fell from 0.86 to
+0.41, against 0.38 for the study's first 20-s run; Phase A in one simulation
+follows the study's training curve within 0.01-0.03 in FVU.
 
 Acceleration
 ^^^^^^^^^^^^

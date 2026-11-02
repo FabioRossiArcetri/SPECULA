@@ -1,0 +1,52 @@
+# Phase A as one long simulation: open-loop push-pull pretraining, as in
+# phaseA_pushpull.yml + phaseA_bumps.yml, without the separate parts the
+# study ran (6 parts of 70.56 s, each with its own magnitude and seeds):
+#
+#   - the push-pull and edge-bump sequence repeats (80 cycles = 70.56 s);
+#   - the magnitude changes every 1.7 s (uniform in 6.5-8.5, through a
+#     GreyFilter on the source at magnitude 6.5);
+#   - the background and the noise continue with the same random generators;
+#   - the trainer keeps a snapshot at the end of each former part.
+#
+#   specula params_soul_mod0.yml phaseA_pushpull.yml phaseA_bumps.yml phaseA_long.yml
+#
+# The bump sequence (time history cnnstudy_phaseA_bumps_80c) is made by the
+# study's make_phaseA_bumps_history.py.
+
+main_override:
+  total_time:        423.36                 # [s] 6 x 70.56, as the study's 6 parts
+
+bump_history_override:
+  loop:              true
+
+nn_trainer_override:
+  network_filename:  './trained_models/soul_cnn_m630.pth'
+  snapshot_interval: 70.56
+
+# --- Magnitude: 30 values uniform in 6.5-8.5, every 1.7 s (51-s cycle) ------
+on_axis_source_override:
+  magnitude:         6.5
+
+magnitude:
+  class:             'ScheduleGenerator'
+  modes_per_group:   [1]
+  period:            51.0
+  scheduled_values:  [[0.3162], [0.1915], [0.2396], [0.6604], [0.5753], [0.2001], [0.9903], [0.2203],
+                      [0.2303], [0.4223], [0.5722], [0.5988], [0.6253], [0.4405], [0.3948], [0.3607],
+                      [0.1598], [0.2322], [0.3179], [0.1617], [0.6726], [0.7444], [0.3236], [0.9222],
+                      [0.9364], [0.3873], [0.4237], [0.1846], [0.3138], [0.3879]]
+  scheduled_times:   [1.7, 3.4, 5.1, 6.8, 8.5, 10.2, 11.9, 13.6, 15.3, 17.0, 18.7, 20.4, 22.1, 23.8,
+                      25.5, 27.2, 28.9, 30.6, 32.3, 34.0, 35.7, 37.4, 39.1, 40.8, 42.5, 44.2, 45.9,
+                      47.6, 49.3]
+  outputs: ['output']
+
+grey_filter:
+  class:             'GreyFilter'
+  inputs:
+    in_i:            'pyramid.out_i'
+    in_transmission: 'magnitude.output'
+  outputs: ['out_i']
+
+detector_override:
+  inputs:
+    in_i:            'grey_filter.out_i'

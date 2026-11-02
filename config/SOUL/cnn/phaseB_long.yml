@@ -1,0 +1,130 @@
+# Phase B as one long simulation: the CNN closes the loop and keeps training
+# on the data the loop produces, as in phaseB_train.yml, but the changes that
+# the study made between separate 20-s runs happen inside the simulation, at
+# every segment of SEGMENT seconds:
+#
+#   - the loop restarts: integrator reset, then the gain ramp 0 -> 1 in 0.5 s;
+#   - a new wind direction and a new mis-registration;
+#   - the reconstructor reloads the network the trainer is writing, which
+#     stays fixed until the next segment (the "frozen copy" of a run);
+#   - the trainer keeps a snapshot of the network.
+#
+# Seeing (2 s), wind speed (3 s) and magnitude (1.7 s) change inside the
+# segments, at periods that do not divide each other. The replay buffer spans
+# the whole training. The atmosphere is the base file's AtmoEvolution, as in
+# the study: its screens pass the pupil every few seconds at the fastest wind,
+# but along a new direction at every segment. AtmoInfiniteEvolution never
+# repeats and can replace it (same parameters, without data_dir), with the
+# bilinear interpolation of its fractional shift: before that fix its layers
+# jittered at each step, and networks from Phase A often lost the loop.
+#
+#   specula params_soul_mod0.yml cnn_closed_loop.yml phaseB_train.yml phaseB_long.yml
+#
+# SEGMENT is 5 s in this file (the study's runs were 20 s): the segment
+# length appears in restart, ramp, wind_direction, misregistration,
+# modalrec_override and nn_trainer_override, and must be changed in all of them.
+# The checkpoint at ./trained_models/soul_cnn_m630.pth is both the
+# trainer's (resumed) and the reconstructor's: start from a copy of the
+# Phase A or Phase B checkpoint to continue from.
+
+main_override:
+  total_time:        20.0                   # [s] 4 segments
+
+# Replaced below by another class; its connection is restated
+remove: ['control']
+
+
+dm_override:
+  inputs:
+    in_command:      'control.out_comm'
+
+
+# --- Segment restarts --------------------------------------------------------
+# 1 in the first step of each segment, 0 otherwise: resets the integrator
+restart:
+  class:             'ScheduleGenerator'
+  modes_per_group:   [1]
+  scheduled_values:  [[1], [0]]
+  scheduled_times:   [0.000588]             # one step
+  period:            5.0                    # SEGMENT
+  outputs: ['output']
+
+ramp_override:
+  period:            5.0                    # SEGMENT
+
+control:
+  class:             'DynamicIntegrator'
+  delay:             2                      # [frames]
+  int_gain:          [0.275, 0.225, 0.2, 0.175, 0.175]   # 0.5 x nominal, as the study's bright runs
+  ff:                [1.0,   0.999996, 0.999365, 0.977895, 0.97]
+  n_modes:           [30,    70,       100,      200,      230]
+  inputs:
+    delta_comm:      'modalrec.out_modes'
+    gain_mod:        'loop_gain.out_gain_mod'
+    reset:           'restart.output'
+
+wind_direction_override:
+  update_interval:   5.0                    # SEGMENT
+
+# [pupil shift x, y (detector pixels), rotation (deg)]: +/-0.1 px, +/-0.29 deg
+misregistration:
+  class:             'PeriodicRandomGenerator'
+  update_interval:   5.0                    # SEGMENT
+  distribution:      'UNIFORM'
+  constant:          [0.0, 0.0, 0.0]
+  amp:               [0.2, 0.2, 0.573]
+  seed:              4
+  output_size:       3
+  target_device_idx: -1                     # read on the host by the pyramid
+  outputs: ['output']
+
+pyramid_override:
+  inputs:
+    in_ef:              'prop.out_on_axis_source_ef'
+    in_misregistration: 'misregistration.output'
+
+# --- Magnitude: 30 values uniform in 6.5-8.5, every 1.7 s (51-s cycle) ------
+on_axis_source_override:
+  magnitude:         6.5
+
+magnitude:
+  class:             'ScheduleGenerator'
+  modes_per_group:   [1]
+  period:            51.0
+  scheduled_values:  [[0.3162], [0.1915], [0.2396], [0.6604], [0.5753], [0.2001], [0.9903], [0.2203],
+                      [0.2303], [0.4223], [0.5722], [0.5988], [0.6253], [0.4405], [0.3948], [0.3607],
+                      [0.1598], [0.2322], [0.3179], [0.1617], [0.6726], [0.7444], [0.3236], [0.9222],
+                      [0.9364], [0.3873], [0.4237], [0.1846], [0.3138], [0.3879]]
+  scheduled_times:   [1.7, 3.4, 5.1, 6.8, 8.5, 10.2, 11.9, 13.6, 15.3, 17.0, 18.7, 20.4, 22.1, 23.8,
+                      25.5, 27.2, 28.9, 30.6, 32.3, 34.0, 35.7, 37.4, 39.1, 40.8, 42.5, 44.2, 45.9,
+                      47.6, 49.3]
+  outputs: ['output']
+
+grey_filter:
+  class:             'GreyFilter'
+  inputs:
+    in_i:            'pyramid.out_i'
+    in_transmission: 'magnitude.output'
+  outputs: ['out_i']
+
+detector_override:
+  inputs:
+    in_i:            'grey_filter.out_i'
+
+# --- Network: one checkpoint, trained and reloaded ----------------------------
+modalrec_override:
+  network_filename:  './trained_models/soul_cnn_m630.pth'
+  reload_interval:   5.0                    # SEGMENT
+
+nn_trainer_override:
+  network_filename:  './trained_models/soul_cnn_m630.pth'
+  snapshot_interval: 5.0                    # SEGMENT
+
+data_store_override:
+  inputs:
+    input_list: ['resMod-modal_analysis.out_modes',
+                 'resRms-modal_analysis.rms',
+                 'srRes-psf.out_sr',
+                 'gainMod-ramp.output',
+                 'transmission-magnitude.output',
+                 'misreg-misregistration.output']
