@@ -19,8 +19,10 @@ class TestCnnOptionalTorch(unittest.TestCase):
             specula.init(-1)
             from iteras.processing_objects.conv2d_net_trainer import Conv2dNetTrainer
             from iteras.processing_objects.conv2d_net_tester import Conv2dNetTester
+            from specula.processing_objects.conv2d_net_rec import Conv2dNetRec
             for cls, kwargs in [(Conv2dNetTrainer, {'network_filename': 'x.pth'}),
-                                (Conv2dNetTester, {'network_filename': 'x.pth'})]:
+                                (Conv2dNetTester, {'network_filename': 'x.pth'}),
+                                (Conv2dNetRec, {'network_filename': 'x.pth'})]:
                 try:
                     cls(**kwargs)
                 except ImportError as e:
