@@ -24,6 +24,7 @@
 
 ### Other
 
+- `DM`: when at most 20% of the influence function values are not zero (zonal influence functions of many actuators), the shape is computed from the non-zero values only (new `iteras.lib.sparse_matrix`, a sparse product that can be captured in a CUDA graph, as those of `graph_matmul`). Same sums of the same products, in another order (differences of rounding only). The MORFEO M4 influence functions (4520 actuators, 172988 pixels, 3.1 GB) are 98.5% exact zeros.
 - `EFInterpolator.update_parameters()` failed on an interpolator created with parameters that need no interpolation (same size, no shift, rotation or magnification); it now builds the interpolator with the new parameters.
 - `PeriodicRandomGenerator` draws at the multiples of its interval: it drew at the previous draw plus the interval, so with an interval that is not a whole number of steps it drifted against other periodic objects by up to one step per period.
 - Allocator: the estimate of an object split over k devices includes the work that every part repeats, declared by its class with the new class method `repeated_work_fraction(params)` (each part takes g * (f + (1 - f) / k)); `DistributedSH` declares from 0.22 for sensors of up to 8 subaperture rows to 0.05 from 68 rows (each slice interpolates the whole input field). With the host time per MPI message measured with MORFEO on Leonardo (150 µs), the estimates of the measured MORFEO plans there went from 5-28% optimistic to within +3% and -12%.

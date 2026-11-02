@@ -12,6 +12,7 @@ from specula.data_objects.pupilstop import Pupilstop
 from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.data_objects.simul_params import SimulParams
 from specula.lib.graph_matmul import matmul
+from iteras.lib.sparse_matrix import SparseMatrix, mostly_zeros
 
 class DM(BaseProcessingObj):
     """
@@ -270,7 +271,11 @@ class DM(BaseProcessingObj):
         if self.stroke is not None:
             cmd = self.xp.minimum(self.xp.maximum(-self.stroke, cmd), self.stroke)
 
-        self.layer.phaseInNm[self._ifunc.idx_inf_func] = matmul(self.sign * cmd, self._ifunc_act, self.xp)
+        if self._ifunc_sparse is not None:
+            shape = self._ifunc_sparse.matvec(self.sign * cmd)
+        else:
+            shape = matmul(self.sign * cmd, self._ifunc_act, self.xp)
+        self.layer.phaseInNm[self._ifunc.idx_inf_func] = shape
         self.layer.generation_time = self.current_time
         self.clip_command.value[:] = cmd
         self.clip_command.generation_time = self.current_time
@@ -308,6 +313,9 @@ class DM(BaseProcessingObj):
             self._m2c_sel = None
             self._ifunc_act = self.xp.ascontiguousarray(
                 self.to_xp(self._ifunc.influence_function[self._sel]))
+        # Zonal influence functions of many actuators are mostly exact zeros: the
+        # shape is then computed from the non-zero values only, one row per pixel
+        self._ifunc_sparse = SparseMatrix(self._ifunc_act.T, self.xp)             if mostly_zeros(self._ifunc_act, self.xp) else None
 
     # Getters and Setters for the attributes
     @property

@@ -810,3 +810,46 @@ class TestDM(unittest.TestCase):
         with self.assertRaises(ValueError):
             dm.ifunc = ifunc[:, :-1]
         self.assertIs(dm.ifunc, ifunc)
+
+
+class TestDMSparseIfunc(unittest.TestCase):
+    '''Zonal influence functions, mostly exact zeros, use the sparse product'''
+
+    @cpu_and_gpu
+    def test_sparse_shape_equals_dense(self, target_device_idx, xp):
+        from unittest import mock
+        from specula.processing_objects import dm as dm_module
+        npix, n_act = 32, 64
+        mask = np.ones((npix, npix))
+        rng = np.random.default_rng(4)
+        # Each actuator moves a patch of 6 x 6 pixels around its position
+        ifunc = np.zeros((n_act, npix * npix), dtype=np.float32)
+        for a in range(n_act):
+            r, c = 4 * (a // 8), 4 * (a % 8)
+            patch = np.zeros((npix, npix), dtype=np.float32)
+            patch[r:r + 6, c:c + 6] = rng.uniform(0.1, 1, (min(6, npix - r), min(6, npix - c)))
+            ifunc[a] = patch.ravel()
+        simul_params = SimulParams(time_step=1, pixel_pupil=npix, pixel_pitch=1)
+        cmd = rng.normal(size=n_act).astype(np.float32)
+
+        def shape(sparse):
+            with mock.patch.object(dm_module, 'mostly_zeros', lambda m, xp: sparse):
+                dm = DM(simul_params, height=0, ifunc=IFunc(ifunc=xp.asarray(ifunc), mask=mask,
+                                                            target_device_idx=target_device_idx),
+                        target_device_idx=target_device_idx)
+            self.assertEqual(dm._ifunc_sparse is not None, sparse)
+            command = BaseValue(value=xp.asarray(cmd), target_device_idx=target_device_idx)
+            command.generation_time = 1
+            dm.inputs['in_command'].set(command)
+            dm.setup()
+            dm.check_ready(1)
+            dm.trigger()
+            dm.post_trigger()
+            return cpuArray(dm.outputs['out_layer'].phaseInNm)
+
+        np.testing.assert_allclose(shape(True), shape(False), rtol=1e-5, atol=1e-6)
+        # mostly zeros: the sparse product is chosen without patching
+        dm = DM(simul_params, height=0, ifunc=IFunc(ifunc=xp.asarray(ifunc), mask=mask,
+                                                    target_device_idx=target_device_idx),
+                target_device_idx=target_device_idx)
+        self.assertIsNotNone(dm._ifunc_sparse)
