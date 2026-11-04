@@ -1,3 +1,5 @@
+import inspect
+
 from specula import fuse
 
 from specula.base_processing_obj import InputDesc
@@ -53,6 +55,11 @@ class ExtSourcePyramid(ModulatedPyramid):
         maintain constant computational load required for CUDA graph compatibility.
         Set to False for debugging or when source point count varies significantly
         between frames and you want to use flux thresholding.
+    n_point_slices, point_slice_idx : int [1], optional
+        Process only the slice point_slice_idx of n_point_slices equal slices of the
+        source points (default: 1 and 0, all of them). The outputs are then partial:
+        used by DistributedExtSourcePyramid, which sums the slices computed on
+        several devices. The flux filtering and normalization still use all points.
     target_device_idx : int [1], optional
         GPU device index (default: None, uses default device)
     precision : int [1], optional
@@ -143,6 +150,8 @@ class ExtSourcePyramid(ModulatedPyramid):
                  max_batch_size: int = 128,
                  max_flux_ratio_thr: float = 1e-3,
                  cuda_stream_enable: bool = True,
+                 n_point_slices: int = 1,
+                 point_slice_idx: int = 0,
                  target_device_idx: int = None,
                  precision: int = None
                 ):
@@ -181,6 +190,11 @@ class ExtSourcePyramid(ModulatedPyramid):
         if not 0 < max_flux_ratio_thr < 1:
             raise ValueError(f"max_flux_ratio_thr must be in (0, 1),"
                              f" got {max_flux_ratio_thr}")
+        if not 0 <= point_slice_idx < n_point_slices:
+            raise ValueError(f"point_slice_idx must be in [0, n_point_slices={n_point_slices}),"
+                             f" got {point_slice_idx}")
+        self.n_point_slices = n_point_slices
+        self.point_slice_idx = point_slice_idx
 
         self.ffv = None
         self.ext_ttf = None
@@ -202,6 +216,10 @@ class ExtSourcePyramid(ModulatedPyramid):
             self.logger.info('CUDA stream enabled for extended source pyramid processing'
                   ' Ignoring flux thresholding to maintain constant processing load.')
 
+        # Focal plane PSF and pupil image accumulators, centered like the base class ones
+        self.fpsf = self.xp.zeros((self.fft_totsize, self.fft_totsize), dtype=self.dtype)
+        self.pyr_image = self.xp.zeros((self.fft_totsize, self.fft_totsize), dtype=self.dtype)
+
         # Pre-allocated buffers for CUDA graph compatibility (allocated in cache_ttexp)
         self._fpsf_buffer = None
         self._pyr_image_buffer = None
@@ -217,6 +235,36 @@ class ExtSourcePyramid(ModulatedPyramid):
 
         # Add dedicated input for extended source coefficients
         self.inputs['ext_source_coeff'] = InputValue(type=BaseValue)
+
+    @classmethod
+    def split_options(cls, params, max_devices):
+        '''
+        The source points split over k devices (DistributedExtSourcePyramid), for
+        k from 2 to max_devices, if DistributedExtSourcePyramid accepts all the
+        parameters. Each slice gets ceil(max_batch_size / k) points per batch:
+        the batches are always full (zero-padded), so with the same batch size
+        a slice would compute as many points as the whole object when the source
+        has fewer points than max_batch_size. Derived classes, the distributed
+        one included, are not split: an explicit split keeps its number of slices.
+        '''
+        if cls is not ExtSourcePyramid:
+            return {}
+        from specula.processing_objects.distributed_ext_source_pyramid import DistributedExtSourcePyramid
+        accepted = inspect.signature(DistributedExtSourcePyramid.__init__).parameters
+        for key in params:
+            if key in ('class', 'inputs', 'outputs', 'gui_pos'):
+                continue
+            # As Simul: "simul_params_ref" sets the parameter simul_params
+            name = next((key.removesuffix(suffix) for suffix in ('_ref', '_data', '_object')
+                         if key.endswith(suffix) and key.removesuffix(suffix) in accepted), key)
+            if name not in accepted:
+                return {}
+        batch = params.get('max_batch_size', accepted['max_batch_size'].default)
+        if not isinstance(batch, int):
+            return {}
+        return {k: {**params, 'class': 'DistributedExtSourcePyramid', 'n_slices': k,
+                    'max_batch_size': -(-batch // k)}
+                for k in range(2, max_devices + 1)}
 
     @classmethod
     def input_names(cls):
@@ -283,7 +331,7 @@ class ExtSourcePyramid(ModulatedPyramid):
             self.ext_ttf = self.xp.stack([ext_xtilt, ext_ytilt, ext_focus], axis=0)
 
             # Set ttexp_shape for trigger_code
-            self.ttexp_shape = (0, self.tilt_x.shape[0], self.tilt_x.shape[1])
+            self.ttexp_shape = (0, self.fft_sampling, self.fft_sampling)
 
             # Pre-compute face center TTF coordinates (once for all)
             if self._face_centers_ttf is None:
@@ -365,12 +413,20 @@ class ExtSourcePyramid(ModulatedPyramid):
             n_chunks_needed = (len(self.valid_idx) + self.max_batch_size - 1) \
                             // self.max_batch_size
 
+        # Only the points of this slice (all of them with one slice)
+        if self.n_point_slices > 1:
+            start = self.point_slice_idx * self.mod_steps // self.n_point_slices
+            stop = (self.point_slice_idx + 1) * self.mod_steps // self.n_point_slices
+            self.valid_idx = self.valid_idx[(self.valid_idx >= start) & (self.valid_idx < stop)]
+            n_chunks_needed = (len(self.valid_idx) + self.max_batch_size - 1) \
+                            // self.max_batch_size
+
         self.factor = 1.0 / (self.xp.sum(self.flux_factor_vector) + 1e-20)
 
         n_valid = int(self.valid_idx.shape[0])
         n_padded = n_chunks_needed * self.max_batch_size
         recapture_stream = False
-        if self._n_chunks != n_chunks_needed:
+        if self._fpsf_buffer is None or self._n_chunks != n_chunks_needed:
             self._n_chunks = n_chunks_needed
             self._fpsf_buffer = self.xp.zeros((self._n_chunks, *self.fpsf.shape),
                                             dtype=self.dtype)
@@ -408,7 +464,7 @@ class ExtSourcePyramid(ModulatedPyramid):
 
     def trigger_code(self):
         iu = self.xp.array(1j, dtype=self.complex_dtype)  # complex unit
-        u_tlt_const = self.ef * self.tlt_f
+        u_tlt_const = self.ef * self.tlt_f_y[:, None] * self.tlt_f_x[None, :]
 
         # Extended source coefficients of the current frame, zero-padded to n_chunks * max_batch_size
         b = self.max_batch_size
@@ -441,7 +497,7 @@ class ExtSourcePyramid(ModulatedPyramid):
                 self.xp.sum(psf_batch * ffv_chunk[:, None, None], axis=0)
 
             # Apply pyramid mask - ALWAYS full batch size
-            u_fp_pyr_batch = u_fp_batch * self.shifted_masked_exp[None, :, :]
+            u_fp_pyr_batch = u_fp_batch * self.masked_exp[None, :, :]
 
             # Batch inverse FFT - ALWAYS same size (no need for separate padding)
             pyr_ef_batch = self.fft.ifft2(u_fp_pyr_batch, axes=(-2, -1), norm='forward')
@@ -458,9 +514,10 @@ class ExtSourcePyramid(ModulatedPyramid):
 
     def post_trigger(self):
         # Final output assignments (before parent post_trigger)
-        self.psf_bfm.value[:] = self.fft.fftshift(self.fpsf)
+        # The focal plane is already centered and the pupils re-centered (see base class)
+        self.psf_bfm.value[:] = self.fpsf
         self.psf_tot.value[:] = self.psf_bfm.value * self.fp_mask
-        self.pup_pyr_tot[:] = self.xp.roll(self.pyr_image, self.roll_array, self.roll_axis)
+        self.pup_pyr_tot[:] = self.pyr_image
         self.psf_tot.value *= self.factor
         self.psf_bfm.value *= self.factor
         trasmission_factor = 1 / (self.xp.sum(self.psf_bfm.value) + 1e-20)
