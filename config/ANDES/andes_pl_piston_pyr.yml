@@ -1,0 +1,480 @@
+---
+# THIS FILE: THE PYRAMID HIGH-ORDER LOOP (2026-11-10)
+# ---------------------------------------------------
+# Same as andes_pl_piston.yml, but the high orders are sensed by the ANDES modulated pyramid
+# (blocks pyramid / detector / slopec / modalrec / control_ho) and corrected on 4000 KL modes of
+# the 79-actuator DM (dm_ho with m2c_object andes_ho79_kl, tools/andes/make_ho_kl_basis.py).
+# The text further below is the ideal-corrector file's and quotes ITS numbers.
+#
+# Calibration: calib_pl_pyr_pupdata.yml, then calib_pl_pyr_rec.yml (8000 push-pull steps, ~5 min
+# on a GPU): interaction matrix 28264 x 4000, condition number 22.
+#
+# Three faults of the first version, fixed: the calibration ran 505 steps for a 1000-step push-pull
+# (modes 253-499 never pushed: zero IM columns); nmodes 500 on the zonal DM selected its first 500
+# actuators, a strip of the pupil, instead of global modes; dm_ho sign +1 in the loop (positive
+# feedback, the IM is pushed with +1): it is -1 here.
+#
+# The pyramid converges in ~50 steps from the open-loop 2.7 um (it works far from its linear range
+# until then), so the piston loop must be closed after it (tools/andes/piston_gate.py,
+# PL_PISTON_GATE_STEP=50): closed from the start it integrates meaningless measurements and pushes
+# petals beyond the capture range of the unwrap.
+#
+# Measured (tools/andes/measure_scenarios.py, 120 steps, last 30 averaged, gate at step 50):
+#
+#   seeing  strategy            AO resid  per-lam  unwrapped  pistons  Strehl  thru
+#   0.8"    loop open           218 nm    29 nm    149 nm     2.1 um   0.03    0.45
+#   0.8"    closed form (AO)    213 nm    29 nm      9 nm       9 nm   0.60    0.51
+#   0.8"    cubic OMP (AO)      216 nm    82 nm    176 nm     150 nm   0.36 (0.01-0.61)
+#   0.6"    closed form (AO)    175 nm    11 nm      7 nm       9 nm   0.73    0.62
+#
+# (ideal corrector: 118 nm AO residual, 0.678 Strehl). Outputs: output/*_pyr, logs/pyr/.
+#
+# ANDES-like petal-piston loop with a dispersed photonic lantern as the sensor.
+#
+# The six-petal pupil is the ANDES one (the 400-pixel influence functions of the
+# segmented ELT pupil), the lantern is the 19-port design at 1200 nm characterised
+# in cbeam over the full 1100-1300 nm band (21 wavelengths at 10 nm, the grid the
+# models are fitted on), and the piston disturbance is a static 1600 nm on one
+# petal, i.e. 1.3 wavelengths at 1200 nm: a single-wavelength piston sensor cannot
+# see it, the dispersed lantern recovers it across its 21 wavelengths and the
+# integrator drives it to zero.
+#
+# It replaces the two piston arms of andes_mmse_dual_lift2.yml (two SH sensors with
+# Lift estimators at 1150 and 1255 nm, fused by PhaseUnwrapper) with the single
+# chain pl_sensor -> pl_rec -> pl_unwrap, which exposes the same out_pistons.
+#
+# Needs, in the calibration directory:
+#   ifunc/ANDES_400pix_all_modes.fits        the ANDES DM modes (5 petal pistons)
+#   pupilstop/andes_400pix_mask.fits         the pupil of the characterization
+#   pl_char/pl19_1200_1100_1300_10nm.npz      tools/pl_export/export_pl_characterization.py
+#   pl_rec/pl19_1200_closed_form_ao120_1100_1300_10nm.npz  tools/pl_export/export_closed_form_model.py
+#   pl_rec/pl19_1200_ao120_k1282_1100_1300_10nm.npz       tools/pl_export/export_cubic_model.py
+#
+# Run with:  specula run config/ANDES/andes_pl_piston.yml --cpu
+# (21 focal-plane FFTs of a 1600x1600 grid per step: about 0.8 s per step on a
+# CPU, so the 10 steps below take ~10 s; much faster on a GPU)
+#
+# ATMOSPHERE, HIGH-ORDER STAGE AND THE VALIDITY OF THE PISTON MODEL
+# ------------------------------------------------------------------
+# The atmosphere is the standard one of the other ANDES simulations, with the
+# seeing set to 0.8". The high-order stage below stands in for their M4 +
+# pyramid/MMSE block (whose calibration files are not part of this repository): a
+# zonal DM of 79 actuators across the ANDES pupil (4932 of them inside it, the M4
+# has 4000 modes) closed by a perfect modal analysis of the residual wavefront.
+# Measured with the delivered configuration (closed form, piston loop closed) over
+# 40 steps at 0.8", open loop -> converged:
+#
+#   Strehl @1200 nm           1e-4   ->  0.678   (per-step spread 0.666-0.690)
+#   19-channel throughput     0.2 %  ->  56 %
+#   residual petal pistons    1.9 um ->  19 nm
+#   AO residual (high orders) 2750 nm ->  118 nm
+#   per-wavelength error      313 nm ->  12 nm
+#   unwrapped error          2113 nm ->   9 nm
+#
+# The AO residual is what the high-order stage leaves once the five petal-piston
+# modes are projected out: 118 nm rms (0.10 lambda, 0.62 rad at 1200 nm) after ~9
+# steps. It is the expected fitting error for 79 actuators across a 39 m pupil
+# (d/r0 ~ 1.6 at r0 ~ 0.30 m gives ~150 nm). The petal pistons it does not control
+# dominate the Strehl here: the 118 nm alone would give ~0.82.
+#
+# The unwrap averages the per-wavelength errors, but only once it has the fringes
+# right, and that needs the per-wavelength error well below lambda/4. On synthetic
+# wrapped estimates (pistons in +-4 lambda, 40 trials) its error is:
+#
+#   per-lambda error [nm]     0     50    100    200    300
+#   11 wl, 100 nm band      24    373    730   1716   3176
+#   21 wl, 200 nm band       0      6     61    437   1470
+#
+# The 200 nm band (1100-1300, 21 wavelengths, what this file uses) multiplies the
+# fringe-identification lever arm by two: at the 12 nm per-wavelength error of the
+# delivered model at 0.8" it leaves 9 nm. The rows of that table come from a model
+# with the stated per-wavelength error; no piston-only-trained model is used
+# anywhere in this file, because none of them is a candidate for this wavefront.
+#
+# The high-order stage is NOT a reconstructor for the piston chain. The piston arm
+# is pl_sensor -> pl_rec -> pl_unwrap: no reconstruction matrix, no
+# modes-to-petals conversion, no PhaseUnwrapper -- none of the MMSE machinery of
+# andes_mmse_dual_lift2.yml (recmat1/recmat2, SoftLimiter, the two SH + Lift arms)
+# is used or needed: the dispersed lantern measures the piston modulo each of its
+# wavelengths and unwraps it, which is what that machinery was there to do.
+#
+# What the high-order stage provides is the *wavefront* the lantern needs, and it is
+# needed: with both loops open the wavefront carries the full 3.3 um of phase, the
+# 19 channels receive 0.2% of the light and the per-wavelength estimate is 313 nm --
+# lambda/4 at 1200 nm, so the spectral unwrap cannot identify the fringes. Closing
+# the high orders brings the throughput to 56% and the per-wavelength error to 12 nm.
+#
+# The high-order DM controls degrees of freedom disjoint from the piston loop: its
+# influence functions are orthogonal to the five petal pistons, which are left to
+# the lantern. That is the ANDES design -- the pyramid loop does not control the
+# petal pistons, the piston sensors do -- and it keeps the two loops from fighting
+# over the same modes. So once the high orders are closed what is left is a set of
+# micrometre petal pistons, exactly the quantity the lantern is meant to measure.
+#
+# Whether the piston loop can close on that wavefront is the question this
+# configuration answers, and with the reconstructor it uses it does: the five petal
+# pistons go from 1.9 um open loop to 19 nm closed, the per-wavelength error from
+# 313 to 12 nm and the Strehl from 1e-4 to 0.678, all within the 40 steps (the last
+# ten are the converged window quoted above). The alternative strategy, its numbers
+# and the held-out comparison are in the pl_model block at the bottom of this file.
+#
+# The capture range is bounded to +-4 lambda on purpose: on a clean wavefront the
+# unwrap is exact up to that limit (measured 0.0 nm from -4 to +4 lambda, clipped
+# beyond), while a +-8 lambda search lets it lock onto a distant fringe (the same
+# configuration then runs away to +-12 um).
+#
+# Switches:
+#   * seeing.constant: 0.0
+#     -> post-AO configuration: same two stages, no atmospheric residual. Measured
+#        with the delivered model, 20 steps: the flat wavefront gives Strehl 1.000
+#        and 82% throughput, the 1600 nm ejection takes it to 0.585, and the loop
+#        brings it back to 0.996 with a 12 nm residual after 20 steps (piston
+#        commands 1600 -> 1167 -> 733 -> 464 -> ... -> 21 nm). The per-wavelength
+#        error is 20-45 nm there rather than 0, because the delivered model was
+#        fitted on the 120 nm AO dataset: even a model this good is a model of its
+#        training distribution. The characterization-derived variant, which has no
+#        training distribution, is exact on a clean wavefront.
+
+main:
+  class:             'SimulParams'
+  root_dir:          './calib'              # Root directory for the calibration manager
+  pixel_pupil:       400                    # [pixel] the grid of the ANDES influence functions
+  pixel_pitch:       0.0975                 # [m] ELT pupil sampling
+  total_time:        0.040                  # [s] 20 steps: the high-order loop converges in ~10
+  time_step:         0.002                  # [s]
+  zenithAngleInDeg:  30.0                   # [deg] as in the other ANDES simulations
+
+# Standard ANDES atmosphere, with the seeing fixed at 1.0": the petal-piston loop
+# below corrects only 5 modes, so the high orders stay open and the Strehl is far
+# from perfect, as in a piston-only sensing experiment.
+seeing:
+  class:             'WaveGenerator'
+  constant:          0.8                    # [arcsec] seeing value
+  outputs:           ['output']
+
+wind_speed:
+  class:             'WaveGenerator'
+  constant:          [8.0, 8.0, 8.0]        # [m/s] Wind speed value
+  outputs:           ['output']
+
+wind_direction:
+  class:             'WaveGenerator'
+  constant:          [-19.57, -174.84, 29.13]   # [degrees] Wind direction value
+  outputs:           ['output']
+
+atmo:
+  class:             'AtmoEvolution'
+  simul_params_ref:  'main'
+  L0:                50                     # [m] Outer scale
+  heights:           [528.0, 9015.0, 16824.0]   # [m] layer heights at 0 zenith angle
+  Cn2:               [0.7954, 0.154, 0.0506]    # Cn2 weights (total must be eq 1)
+  fov:               120.0                  # available FoV in the turbulence
+  seed:              2                      # layers generation seed
+  inputs:
+    seeing:          'seeing.output'
+    wind_speed:      'wind_speed.output'
+    wind_direction:  'wind_direction.output'
+  outputs:           ['layer_list']
+
+wfs_source:
+  class:             'Source'
+  polar_coordinates: [0.0, 0.0]              # [arcsec, deg] on axis
+  magnitude:         8
+  wavelengthInNm:    1200                   # only photometry: the lantern evaluates its own wavelengths
+
+# The pupil the characterization was computed with: the model is only exact for it
+pupilstop:
+  class:             'Pupilstop'
+  tag:               'andes_400pix_mask'
+
+andes_ifunc:
+  class:             'IFunc'
+  tag:               'ANDES_400pix_all_modes'
+
+# Disturbance: a static 1600 nm piston on petal 0 (1.3 wavelengths at 1200 nm).
+# Use a SIN/SQUARE wave with freq and amp to watch the loop track a moving piston.
+disturbance_petals:
+  class:             'WaveGenerator'
+  constant:          [1600, 0, 0, 0, 0, 0, 0, 0, 0, 0]   # [nm]
+  amp:               [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+dm_petals:
+  class:             'DM'
+  simul_params_ref:  'main'
+  ifunc_ref:         'andes_ifunc'
+  height:            0
+  sign:              1                      # add the disturbance to the wavefront
+  inputs:
+    in_command:      'disturbance_petals.output'
+  outputs:           ['out_layer']
+
+prop:
+  class:             'AtmoPropagation'
+  simul_params_ref:  'main'
+  source_dict_ref:   ['wfs_source']
+  inputs:
+    atmo_layer_list: ['atmo.layer_list']
+    # Both DMs are one step old, as in the other ANDES configurations: that is the
+    # feedback lag of the loop (the atmospheric layers keep the propagation
+    # refreshing at every step).
+    common_layer_list: ['pupilstop',
+                        'dm_petals.out_layer:-1',
+                        'dm_correction.out_layer:-1',
+                        'dm_ho.out_layer:-1']
+  outputs:           ['out_wfs_source_ef']
+
+# ---------------------------------------------------------------------------
+# High-order correcting DM: 79 actuators across the ANDES pupil (the M4 scale), with
+# influence functions orthogonal to the petal pistons, so the two loops control
+# disjoint degrees of freedom. Built by tools/andes/make_high_order_dm.py.
+# In THIS file it is driven by the pyramid chain above, not by a modal analysis.
+# ---------------------------------------------------------------------------
+ho_ifunc:
+  class:             'IFunc'
+  tag:               'andes_ho79'
+
+ho_ifunc_inv:
+  class:             'IFuncInv'
+  tag:               'andes_ho79_inv'
+
+# ---------------------------------------------------------------------------
+# The real ANDES SCAO sensor: a modulated pyramid, configured as in
+# config/ANDES/params_andes.yml (100 subapertures across the pupil, 120 spacing,
+# fov 2.1", modulation 3 lambda/D, 240-pixel detector), sensing the same wavefront
+# the ideal-corrector configuration analysed perfectly, and driving the same
+# 79-actuator high-order DM through a modal reconstructor.
+#
+# Calibrations for this geometry (generated here, not part of the upstream ANDES
+# data set): calib/pupdata/pl19_1200_pyr_pupdata from calib_pl_pyr_pupdata.yml, and
+# calib/rec/pl19_1200_pyr_kl4000_rec from calib_pl_pyr_rec.yml (4000 KL modes).
+# ---------------------------------------------------------------------------
+pyramid:
+  class:             'ModulatedPyramid'
+  simul_params_ref:  'main'
+  pup_diam:          100.0                   # pupil diameter in subapertures
+  pup_dist:          120.0                   # pupil centre separation
+  fov:               2.1                     # [arcsec]
+  fov_errinf:        0.1
+  fov_errsup:        9.0
+  mod_amp:           3.0                     # [lambda/D]
+  output_resolution: 240                     # [pixel]
+  fft_res:           4.0
+  wavelengthInNm:    1200                    # same band the lantern senses
+  rotAnglePhInDeg:   15.0
+  inputs:
+    in_ef: 'prop.out_wfs_source_ef'
+  outputs: ['out_i']
+
+detector:
+  class:             'CCD'
+  simul_params_ref:  'main'
+  size:              [240, 240]
+  dt:                0.002
+  bandw:             400                     # [nm]
+  binning:           1
+  photon_noise:      true
+  readout_noise:     true
+  readout_level:     0.5
+  quantum_eff:       1.0
+  photon_seed:       2
+  readout_seed:      2
+  excess_noise:      true
+  excess_seed:       2
+  background_noise:  false
+  darkcurrent_noise: false
+  inputs:
+    in_i: 'pyramid.out_i'
+  outputs: ['out_pixels']
+
+slopec:
+  class:             'PyrSlopec'
+  pupdata_object:    'pl19_1200_pyr_pupdata'
+  slopes_from_intensity: true
+  inputs:
+    in_pixels: 'detector.out_pixels'
+  outputs: ['out_slopes', 'out_pupdata']
+
+modalrec:
+  class:             'Modalrec'
+  recmat_object:     'pl19_1200_pyr_kl4000_rec'
+  inputs:
+    in_slopes: 'slopec.out_slopes'
+  outputs: ['out_modes']
+
+# The first 4000 KL modes of the high-order DM (calib/m2c/andes_ho79_kl, built by
+# tools/andes/make_ho_kl_basis.py as the ANDES basis is: 5 Zernikes, then KL modes, condition
+# number 1e4): global modes over the whole pupil, as the M4 loop controls (4000 modes). The
+# remaining ~900 KL modes are left to the fitting error.
+control_ho:
+  class:             'Integrator'
+  int_gain:          [0.4]
+  n_modes:           [4000]
+  delay:             1
+  inputs:
+    delta_comm:      'modalrec.out_modes'
+  outputs: ['out_comm']
+
+dm_ho:
+  class:             'DM'
+  simul_params_ref:  'main'
+  ifunc_ref:         'ho_ifunc'
+  m2c_object:        'andes_ho79_kl'          # KL modes -> actuator commands
+  sign:              -1                     # subtract the command: negative feedback (the IM is pushed with +1)
+  nmodes:            4000                   # exactly the calibrated modes of the pyramid loop
+  height:            0
+  inputs:
+    in_command:      'control_ho.out_comm'
+  outputs:           ['out_layer']
+
+# ---------------------------------------------------------------------------
+# The dispersed photonic lantern: pupil field -> per-wavelength channel powers
+# ---------------------------------------------------------------------------
+pl_char:
+  class:             'LanternCharacterization'
+  tag:               'pl19_1200_1100_1300_10nm'
+
+pl_model:
+  # The reconstructor strategy is chosen here and nothing else changes: every
+  # option implements LanternPistonModel (predict_pistons per wavelength) and the
+  # reconstructor, the unwrapper and the loop are the same objects.
+  #
+  # Only strategies fitted on the *realistic* dataset are candidates: a model
+  # trained on piston-only data is not a reconstructor anyone would fly, and its
+  # numbers say nothing about the comparison. The two rows below are therefore
+  # both fitted on spectral_ao120_21wl (identical rows, identical standardisation)
+  # and scored on the same held-out rows 8000-10000, 500 x 21, never used in a fit:
+  #
+  #   closed form, fitted on the AO dataset      RMSE 18.0 nm  (median 13.2)
+  #   cubic OMP, fitted on the AO dataset        RMSE 37.6 nm  (median 27.6)
+  #
+  # In this simulation, piston loop closed, 40 steps, everything averaged over the
+  # same converged window (the last 10 steps -- a single step is noisy: the Strehl
+  # swings by a factor of a few from step to step while the commands settle, which
+  # is why an 8-step average and a last-step value must not be mixed):
+  #
+  # Matched-domain comparison, both models at their training level (0.8", 118 nm
+  # against a model trained at 120 nm):
+  #
+  #   seeing  AO resid   strategy          per-lam unwrapped  pistons  Strehl  thru
+  #   0.8"   117.6 nm    closed form (AO)    12 nm     9 nm      19 nm   0.678  0.560
+  #   0.8"   117.6 nm    cubic OMP (AO)      19 nm     9 nm      23 nm   0.675  0.559
+  #
+  # The closed form away from that point (it needs no retraining, so the row is a
+  # legitimate result rather than a domain shift):
+  #   0.6"     92.5 nm   closed form (AO)    10 nm     6 nm      18 nm   0.784  0.648
+  #
+  # No OMP row is quoted at 0.6": its model was trained at 120 nm, so 92.5 nm is a
+  # different distribution and the number would measure the shift, not the method.
+  # That shift is real and worth recording as a finding -- see below -- but it does
+  # not belong in a capability table.
+  #
+  # At 0.8" both close the loop to the same ~20 nm and the same Strehl: the loop is
+  # limited by the AO residual itself, and only the per-wavelength accuracy differs
+  # (12 against 19 nm, the same 2:1 as on the held-out rows).
+  #
+  # The out-of-domain behaviour of the trained model, as a *finding* rather than a
+  # result. Trained at 120 nm it is 30 nm per wavelength at 0.8" (118 nm) and ~300 nm
+  # at 0.6" (92.5 nm); read offline with the loop open, its unwrapped vectors are:
+  #   0.8"  OMP  +3053 +2596 -1607 -3050 -1091  against truth +3074 +2608 -1590 -3047 -1085  (12 nm)
+  #   0.6"  OMP  +2608 +1947 -1396 -1337 -1048  against truth +2692 +1984 -1319 -2466  -922  (290 nm,
+  #              petal 3 losing two fringes; closed loop, measured with the tool as
+  #              the file is configured, it leaves 342 nm and the Strehl scatters
+  #              between 0.006 and 0.287)
+  #   0.0"  OMP  mean |err| 1926 nm: with no residual at all it is far outside the
+  #              level it saw, a cubic extrapolating outside its training support.
+  # So it degrades *both* above and below 120 nm -- the mirror image of the "OMP
+  # trained clean" row of the PLREC single-wavelength study (~300 nm at 30, 60, 90
+  # nm). PLREC's protocol retrains every method at each level; to put a *trained*
+  # OMP in the 0.6" row one needs a spectral dataset at ~92 nm (gen_wfe_spectral.py),
+  # and until then that row must be read as domain shift. The analytic model has no
+  # such axis: 14 nm at 0.8", 18 nm at 0.6", exact when the wavefront is clean.
+  class:             'LanternClosedFormModel'
+  tag:               'pl19_1200_closed_form_ao120_1100_1300_10nm'
+  # alternative, same training data:
+  # class:           'LanternCubicModel'
+  # tag:             'pl19_1200_ao120_k1282_1100_1300_10nm'
+  # physics reference only (constants derived from the characterization, no dataset
+  # and no model of the AO residual -- it says what the optics alone can do, not
+  # what a reconstructor for this wavefront delivers):
+  # tag:             'pl19_1200_closed_form_char_1100_1300_10nm'
+
+pl_sensor:
+  class:             'DispersedLanternSensor'
+  simul_params_ref:  'main'
+  pl_char_ref:       'pl_char'
+  pad_factor:        4                      # 4 pixels per lambda/D, as the characterization
+  inputs:
+    in_ef:           'prop.out_wfs_source_ef'
+  outputs:           ['out_signals', 'out_mode_amplitudes', 'out_throughput']
+
+# Per-wavelength wrapped pistons: the OMP cubic reconstructor, one model per wavelength
+pl_rec:
+  class:             'LanternPistonReconstructor'
+  piston_model_ref:   'pl_model'
+  inputs:
+    in_signals:      'pl_sensor.out_signals'
+  outputs:           ['out_pistons_wrapped', 'out_confidence']
+
+# ... fused across the wavelengths into the absolute piston
+pl_unwrap:
+  class:             'SpectralPistonUnwrapper'
+  piston_model_ref:   'pl_model'
+  pspan:             4800                   # [nm] capture range, +-4 lambda at 1200 nm
+  inputs:
+    in_pistons_wrapped: 'pl_rec.out_pistons_wrapped'
+    in_confidence:      'pl_rec.out_confidence'
+  outputs:           ['out_pistons', 'out_agreement']
+
+# ---------------------------------------------------------------------------
+# The petal-piston loop
+# ---------------------------------------------------------------------------
+integrator:
+  class:             'Integrator'
+  int_gain:          [0.5]                  # piston loop closed: an ejection in ~7 steps
+  n_modes:           [5]
+  delay:             0                      # [step] on top of the dm layer's own lag: at gain 0.4 one more step oscillates
+  inputs:
+    delta_comm:      'pl_unwrap.out_pistons'
+  outputs:           ['out_comm', 'out_comm_no_delay']
+
+dm_correction:
+  class:             'DM'
+  simul_params_ref:  'main'
+  ifunc_ref:         'andes_ifunc'
+  nmodes:            5                      # the 5 petal pistons
+  height:            0
+  # sign default -1: the command subtracts the measured piston
+  inputs:
+    in_command:      'integrator.out_comm'
+  outputs:           ['out_layer']
+
+# ---------------------------------------------------------------------------
+# Diagnostics: the residual wavefront in the DM modal basis, and the PSF
+# ---------------------------------------------------------------------------
+modal_analysis:
+  class:             'ModalAnalysis'
+  ifunc_ref:         'andes_ifunc'
+  nmodes:            5
+  inputs:
+    in_ef:           'prop.out_wfs_source_ef'
+
+psf:
+  class:             'PSF'
+  simul_params_ref:  'main'
+  wavelengthInNm:    1200
+  nd:                2
+  start_time:        0.004
+  inputs:
+    in_ef:           'prop.out_wfs_source_ef'
+
+data_store:
+  class:             'DataStore'
+  store_dir:         './output/andes_pl_piston'
+  inputs:
+    input_list:      ['resMod-modal_analysis.out_modes',
+                      'measPist-pl_unwrap.out_pistons',
+                      'agreement-pl_unwrap.out_agreement',
+                      'wrapped-pl_rec.out_pistons_wrapped',
+                      'comm-integrator.out_comm',
+                      'srRes-psf.out_sr',
+                      'through-pl_sensor.out_throughput']

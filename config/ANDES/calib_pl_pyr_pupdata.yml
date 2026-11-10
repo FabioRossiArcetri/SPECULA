@@ -1,0 +1,34 @@
+---
+# Calibrate the pyramid WFS pupils for the ANDES-PL simulation (400-pixel ANDES
+# pupil, ANDES pyramid geometry, on axis, DM flat).
+# Result: calib/pupdata/pl19_1200_pyr_pupdata
+#
+#   specula config/ANDES/andes_pl_piston_pyr.yml config/ANDES/calib_pl_pyr_pupdata.yml --cpu
+
+pyr_pupdata:
+  class: 'PyrPupdataCalibrator'
+  thr1: 0.1
+  thr2: 0.25
+  output_tag: 'pl19_1200_pyr_pupdata'
+  inputs:
+    in_i: 'pyramid.out_i'
+
+main_override:
+  total_time: 0.001
+  display_server: false
+
+prop_override:
+  inputs:
+    common_layer_list: ['pupilstop']
+
+pyramid_override:
+  mod_amp: 10.0                 # large modulation: the four pupils are separated
+
+# everything the pupil calibration does not need (all of these exist in the base file);
+# slopec/modalrec/control_ho must go: they would try to load the files this run creates
+remove: ['seeing', 'wind_speed', 'wind_direction', 'atmo',
+         'andes_ifunc', 'disturbance_petals', 'dm_petals',
+         'ho_ifunc', 'ho_ifunc_inv', 'dm_ho',
+         'slopec', 'modalrec', 'control_ho',
+         'pl_char', 'pl_model', 'pl_sensor', 'pl_rec', 'pl_unwrap',
+         'integrator', 'dm_correction', 'modal_analysis', 'psf', 'data_store']

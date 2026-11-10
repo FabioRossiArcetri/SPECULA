@@ -1,0 +1,61 @@
+---
+# Interaction matrix and reconstructor for the ANDES-PL pyramid WFS, on the first 4000 KL modes
+# of the high-order DM (calib/ifunc/andes_ho79 + calib/m2c/andes_ho79_kl), push-pull at 50 nm
+# per mode, no noise: 2 steps per mode, so total_time covers 2 x 4000 steps (the earlier 500-mode
+# run stopped after 505 steps and never pushed modes 253-499).
+# Results: calib/im/pl19_1200_pyr_kl4000_im, calib/rec/pl19_1200_pyr_kl4000_rec
+#
+#   specula config/ANDES/andes_pl_piston_pyr.yml config/ANDES/calib_pl_pyr_rec.yml
+#
+# NMODES must equal `control_ho.n_modes` and `dm_ho.nmodes` in andes_pl_piston_pyr.yml.
+
+pushpull:
+  class: 'PushPullGenerator'
+  nmodes: 4000
+  amp: 50.0
+  constant_amp: true
+  outputs: ['output']
+
+main_override:
+  total_time: 16.000            # 8000 steps of 2 ms: push and pull per mode, exactly (one more raises)
+  display_server: false
+
+prop_override:
+  inputs:
+    common_layer_list: ['pupilstop', 'dm_ho.out_layer']
+
+dm_ho_override:
+  sign: 1
+  inputs:
+    in_command: 'pushpull.output'
+
+detector_override:
+  photon_noise: false
+  readout_noise: false
+  excess_noise: false
+  background_noise: false
+
+im_calibrator:
+  class: 'ImCalibrator'
+  nmodes: 4000
+  im_tag: 'pl19_1200_pyr_kl4000_im'
+  overwrite: true
+  inputs:
+    in_slopes: 'slopec.out_slopes'
+    in_commands: 'pushpull.output'
+  outputs: ['out_intmat']
+
+rec_calibrator:
+  class: 'RecCalibrator'
+  nmodes: 4000
+  rec_tag: 'pl19_1200_pyr_kl4000_rec'
+  overwrite: true
+  inputs:
+    in_intmat: 'im_calibrator.out_intmat'
+
+# modalrec must go: it would try to load the reconstructor this run creates
+remove: ['seeing', 'wind_speed', 'wind_direction', 'atmo',
+         'andes_ifunc', 'disturbance_petals', 'dm_petals',
+         'ho_ifunc_inv', 'control_ho', 'modalrec',
+         'pl_char', 'pl_model', 'pl_sensor', 'pl_rec', 'pl_unwrap',
+         'integrator', 'dm_correction', 'modal_analysis', 'psf', 'data_store']

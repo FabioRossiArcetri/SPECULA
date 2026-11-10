@@ -45,6 +45,13 @@ CALIB_SUBDIRS = {
     'IFuncInv': 'ifunc/',
     'm2c': 'm2c/',
     'M2C': 'm2c/',
+    # Photonic lantern: the per-wavelength characterization and the piston reconstructor
+    'pl_char': 'pl_char/',
+    'LanternCharacterization': 'pl_char/',
+    'pl_rec': 'pl_rec/',
+    'LanternCubicModel': 'pl_rec/',
+    'LanternClosedFormModel': 'pl_rec/',
+    'TimeHistory': 'time_hist/',
     'kernel': 'kernels/',
     'sh': 'kernels/',
     'SH': 'kernels/',
